@@ -7,6 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
+from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.persistence.models import (
     AuditEventRow,
     ConversationRow,
@@ -290,7 +291,7 @@ class MCPToolRepo:
         self,
         server_id: UUID,
         *,
-        tools: list[dict],
+        tools: list[MCPToolDescriptor],
     ) -> None:
         """Replace the tool set for a server atomically (full overwrite)."""
         existing = await self._session.execute(
@@ -303,12 +304,12 @@ class MCPToolRepo:
             self._session.add(
                 MCPToolRow(
                     server_id=server_id,
-                    name=tool["name"],
-                    description=tool.get("description", ""),
-                    input_schema=tool.get("input_schema", {}),
-                    read_only_hint=tool.get("read_only_hint"),
-                    destructive_hint=tool.get("destructive_hint"),
-                    policy_override=tool.get("policy_override"),
+                    name=tool.name,
+                    description=tool.description,
+                    input_schema=tool.input_schema,
+                    read_only_hint=tool.read_only_hint,
+                    destructive_hint=tool.destructive_hint,
+                    policy_override=None,  # not part of the descriptor contract
                 )
             )
         await self._session.commit()
