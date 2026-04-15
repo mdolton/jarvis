@@ -6,10 +6,12 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jarvis.core.types import ChannelKind
+from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.persistence.models import (
+    AuditEventRow,
     ConversationRow,
     MessageRow,
+    ScheduleRow,
     TriggerRow,
 )
 
@@ -134,3 +136,103 @@ class TriggerRepo:
         await self._session.commit()
         await self._session.refresh(trig)
         return trig
+
+
+class AuditRepo:
+    """Append-only audit event store."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def write_many(self, events: list[AuditEvent]) -> None:
+        rows = [
+            AuditEventRow(
+                id=e.id,
+                conversation_id=e.conversation_id,
+                trigger_id=e.trigger_id,
+                type=e.type.value,
+                payload=e.payload,
+                created_at=e.created_at,
+            )
+            for e in events
+        ]
+        self._session.add_all(rows)
+        await self._session.commit()
+
+    async def recent(
+        self,
+        *,
+        types: list[AuditEventType] | None = None,
+        limit: int = 100,
+    ) -> list[AuditEventRow]:
+        stmt = select(AuditEventRow).order_by(AuditEventRow.created_at.desc()).limit(limit)
+        if types:
+            stmt = stmt.where(AuditEventRow.type.in_([t.value for t in types]))
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
+
+class ScheduleRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        name: str,
+        description: str,
+        cron_expr: str,
+        timezone: str,
+        prompt: str,
+        output_mode: str,
+        notify_on_error: bool,
+        enabled: bool,
+    ) -> ScheduleRow:
+        now = _utcnow()
+        row = ScheduleRow(
+            name=name,
+            description=description,
+            cron_expr=cron_expr,
+            timezone=timezone,
+            prompt=prompt,
+            output_mode=output_mode,
+            notify_on_error=notify_on_error,
+            enabled=enabled,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def get(self, schedule_id: UUID) -> ScheduleRow | None:
+        return await self._session.get(ScheduleRow, schedule_id)
+
+    async def list_enabled(self) -> list[ScheduleRow]:
+        result = await self._session.execute(
+            select(ScheduleRow).where(ScheduleRow.enabled.is_(True))
+        )
+        return list(result.scalars())
+
+    async def set_enabled(self, schedule_id: UUID, enabled: bool) -> None:
+        await self._session.execute(
+            update(ScheduleRow)
+            .where(ScheduleRow.id == schedule_id)
+            .values(enabled=enabled, updated_at=_utcnow())
+        )
+        await self._session.commit()
+
+    async def record_run(
+        self,
+        schedule_id: UUID,
+        *,
+        at: datetime,
+        status: str,
+    ) -> None:
+        await self._session.execute(
+            update(ScheduleRow)
+            .where(ScheduleRow.id == schedule_id)
+            .values(last_run_at=at, last_run_status=status)
+        )
+        await self._session.commit()
