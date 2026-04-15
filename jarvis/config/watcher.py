@@ -66,12 +66,19 @@ class ConfigWatcher:
         await self._on_change(cfg)
 
     async def _run(self) -> None:
-        try:
-            async for _ in awatch(self._dir, debounce=int(self._debounce * 1000)):
-                if self._stopping.is_set():
-                    return
-                await self._try_load_and_emit()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            _log.exception("watcher loop error")
+        while not self._stopping.is_set():
+            try:
+                async for _ in awatch(self._dir, debounce=int(self._debounce * 1000)):
+                    if self._stopping.is_set():
+                        return
+                    await self._try_load_and_emit()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("watcher loop error; will retry")
+                # Brief backoff so we don't spin on a persistent error
+                # (e.g., watched directory temporarily unreadable).
+                try:
+                    await asyncio.sleep(1.0)
+                except asyncio.CancelledError:
+                    raise

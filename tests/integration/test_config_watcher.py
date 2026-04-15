@@ -140,3 +140,56 @@ async def test_double_start_raises(config_dir):
             await watcher.start()
     finally:
         await watcher.stop()
+
+
+async def test_watcher_survives_awatch_exception(config_dir, monkeypatch):
+    """An exception out of awatch must NOT silently kill the watcher —
+    it should log, back off, and restart the watch loop.
+    """
+    from jarvis.config import watcher as watcher_module
+
+    calls: list = []
+
+    async def on_change(cfg):
+        calls.append(cfg)
+
+    # Patch awatch to raise once, then fall through to the real watcher.
+    real_awatch = watcher_module.awatch
+    failures_left = [1]
+
+    def fake_awatch(*args, **kwargs):
+        if failures_left[0] > 0:
+            failures_left[0] -= 1
+
+            async def _gen():
+                raise RuntimeError("simulated fs watcher crash")
+                yield  # pragma: no cover — unreachable
+
+            return _gen()
+        return real_awatch(*args, **kwargs)
+
+    monkeypatch.setattr(watcher_module, "awatch", fake_awatch)
+
+    watcher = ConfigWatcher(config_dir, on_change=on_change, debounce_sec=0.05)
+    await watcher.start()
+    # Let the first awatch raise, backoff fire, and the real awatch engage.
+    await asyncio.sleep(1.3)
+
+    _write(
+        config_dir / "jarvis.yaml",
+        """
+llm:
+  base_url: http://x/v1
+  api_key: x
+  model: SURVIVED
+""",
+    )
+    await asyncio.sleep(0.5)
+    await watcher.stop()
+
+    # Initial load fired at start time. After the simulated crash + backoff,
+    # the real awatch resumes and detects the edit — at minimum, that edit
+    # must have produced an on_change call with the new model name.
+    assert any(c.jarvis.llm.model == "SURVIVED" for c in calls), (
+        f"expected post-recovery call with model=SURVIVED, got {[c.jarvis.llm.model for c in calls]}"
+    )
