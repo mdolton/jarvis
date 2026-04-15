@@ -38,6 +38,9 @@ class ConfigWatcher:
         self._stopping = asyncio.Event()
 
     async def start(self) -> None:
+        if self._task is not None:
+            raise RuntimeError("ConfigWatcher already started")
+        self._stopping.clear()
         # Do an immediate load so callers have a baseline config.
         await self._try_load_and_emit()
         self._task = asyncio.create_task(self._run(), name="config-watcher")

@@ -95,3 +95,48 @@ async def test_bad_edit_reports_error_and_keeps_old(config_dir):
     assert len(errors) >= 1
     # Last successful config still callable (the one from the initial load).
     assert calls[-1].jarvis.llm.model == "m"
+
+
+async def test_restart_after_stop_still_detects_changes(config_dir):
+    """stop() must not permanently latch the watcher into stopped state."""
+    calls: list = []
+
+    async def on_change(cfg):
+        calls.append(cfg)
+
+    watcher = ConfigWatcher(config_dir, on_change=on_change, debounce_sec=0.05)
+
+    # First lifecycle.
+    await watcher.start()
+    await asyncio.sleep(0.05)
+    await watcher.stop()
+    first_lifecycle_calls = len(calls)
+
+    # Second lifecycle — must still observe edits.
+    await watcher.start()
+    await asyncio.sleep(0.05)
+    _write(
+        config_dir / "jarvis.yaml",
+        """
+llm:
+  base_url: http://x/v1
+  api_key: x
+  model: AFTER_RESTART
+""",
+    )
+    await asyncio.sleep(0.5)
+    await watcher.stop()
+
+    # At minimum: baseline initial load after restart + the edit reload.
+    assert len(calls) >= first_lifecycle_calls + 2
+    assert calls[-1].jarvis.llm.model == "AFTER_RESTART"
+
+
+async def test_double_start_raises(config_dir):
+    watcher = ConfigWatcher(config_dir, on_change=lambda cfg: asyncio.sleep(0))
+    await watcher.start()
+    try:
+        with pytest.raises(RuntimeError, match="already started"):
+            await watcher.start()
+    finally:
+        await watcher.stop()
