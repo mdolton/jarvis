@@ -61,3 +61,60 @@ class AuditEventRow(Base):
     type: Mapped[str] = mapped_column(String(64), index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+
+
+class ScheduleRow(Base):
+    __tablename__ = "schedules"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(Text, default="")
+    cron_expr: Mapped[str] = mapped_column(String(64))
+    timezone: Mapped[str] = mapped_column(String(64))
+    prompt: Mapped[str] = mapped_column(Text)
+    output_mode: Mapped[str] = mapped_column(String(32))
+    notify_on_error: Mapped[bool] = mapped_column(default=True)
+    enabled: Mapped[bool] = mapped_column(default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+    last_run_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    last_run_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class MCPServerRow(Base):
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    transport: Mapped[str] = mapped_column(String(16))  # 'stdio' | 'http' | 'sse'
+    status: Mapped[str] = mapped_column(String(32), default="disconnected")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_connected_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+    tools: Mapped[list["MCPToolRow"]] = relationship(
+        back_populates="server", cascade="all, delete-orphan"
+    )
+
+
+class MCPToolRow(Base):
+    __tablename__ = "mcp_tools"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    server_id: Mapped[UUID] = mapped_column(
+        ForeignKey("mcp_servers.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(Text, default="")
+    input_schema: Mapped[dict] = mapped_column(JSON, default=dict)
+    read_only_hint: Mapped[bool | None] = mapped_column(nullable=True)
+    destructive_hint: Mapped[bool | None] = mapped_column(nullable=True)
+    policy_override: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    server: Mapped[MCPServerRow] = relationship(back_populates="tools")
+
+
+class SettingRow(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[object] = mapped_column(JSON)
