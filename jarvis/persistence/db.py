@@ -1,7 +1,6 @@
 """SQLAlchemy async engine, session factory, and declarative Base."""
-from __future__ import annotations
 
-from collections.abc import Callable
+from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -33,7 +32,7 @@ def create_engine(url: str, *, echo: bool = False) -> AsyncEngine:
         from sqlalchemy import event
 
         @event.listens_for(engine.sync_engine, "connect")
-        def _set_sqlite_pragma(dbapi_connection, connection_record):  # noqa: ARG001
+        def _set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA foreign_keys=ON")
@@ -42,5 +41,5 @@ def create_engine(url: str, *, echo: bool = False) -> AsyncEngine:
     return engine
 
 
-def session_factory(engine: AsyncEngine) -> Callable[[], AsyncSession]:
+def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
