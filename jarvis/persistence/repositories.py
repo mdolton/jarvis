@@ -10,8 +10,11 @@ from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.persistence.models import (
     AuditEventRow,
     ConversationRow,
+    MCPServerRow,
+    MCPToolRow,
     MessageRow,
     ScheduleRow,
+    SettingRow,
     TriggerRow,
 )
 
@@ -235,4 +238,98 @@ class ScheduleRepo:
             .where(ScheduleRow.id == schedule_id)
             .values(last_run_at=at, last_run_status=status)
         )
+        await self._session.commit()
+
+
+class MCPServerRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def upsert(self, *, name: str, transport: str) -> MCPServerRow:
+        result = await self._session.execute(select(MCPServerRow).where(MCPServerRow.name == name))
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.transport = transport
+            await self._session.commit()
+            await self._session.refresh(existing)
+            return existing
+
+        row = MCPServerRow(name=name, transport=transport, status="disconnected")
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def set_status(
+        self,
+        server_id: UUID,
+        *,
+        status: str,
+        last_error: str | None,
+    ) -> None:
+        values: dict = {"status": status, "last_error": last_error}
+        if status == "connected":
+            values["last_connected_at"] = _utcnow()
+        await self._session.execute(
+            update(MCPServerRow).where(MCPServerRow.id == server_id).values(**values)
+        )
+        await self._session.commit()
+
+    async def list_all(self) -> list[MCPServerRow]:
+        result = await self._session.execute(select(MCPServerRow))
+        return list(result.scalars())
+
+
+class MCPToolRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def replace_for_server(
+        self,
+        server_id: UUID,
+        *,
+        tools: list[dict],
+    ) -> None:
+        """Replace the tool set for a server atomically (full overwrite)."""
+        existing = await self._session.execute(
+            select(MCPToolRow).where(MCPToolRow.server_id == server_id)
+        )
+        for row in existing.scalars():
+            await self._session.delete(row)
+
+        for tool in tools:
+            self._session.add(
+                MCPToolRow(
+                    server_id=server_id,
+                    name=tool["name"],
+                    description=tool.get("description", ""),
+                    input_schema=tool.get("input_schema", {}),
+                    read_only_hint=tool.get("read_only_hint"),
+                    destructive_hint=tool.get("destructive_hint"),
+                    policy_override=tool.get("policy_override"),
+                )
+            )
+        await self._session.commit()
+
+    async def list_for_server(self, server_id: UUID) -> list[MCPToolRow]:
+        result = await self._session.execute(
+            select(MCPToolRow).where(MCPToolRow.server_id == server_id)
+        )
+        return list(result.scalars())
+
+
+class SettingsRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, key: str) -> object | None:
+        row = await self._session.get(SettingRow, key)
+        return row.value if row is not None else None
+
+    async def set(self, key: str, value: object) -> None:
+        existing = await self._session.get(SettingRow, key)
+        if existing is None:
+            self._session.add(SettingRow(key=key, value=value))
+        else:
+            existing.value = value
         await self._session.commit()
