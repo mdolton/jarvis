@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -117,8 +118,6 @@ async def test_message_append_touches_conversation(session):
     original_activity = conv.last_activity_at
 
     # Simulate the conversation aging.
-    import asyncio
-
     await asyncio.sleep(0.02)
 
     msg_repo = MessageRepo(session)
