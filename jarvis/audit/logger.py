@@ -37,6 +37,7 @@ class AuditLogger:
     async def start(self) -> None:
         if self._task is not None:
             raise RuntimeError("AuditLogger already started")
+        self._stopping.clear()
         self._task = asyncio.create_task(self._run(), name="audit-logger")
 
     async def stop(self) -> None:
