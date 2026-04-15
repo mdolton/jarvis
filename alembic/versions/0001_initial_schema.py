@@ -10,7 +10,6 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 
-import jarvis.persistence.db
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -28,8 +27,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("channel_kind", sa.String(length=32), nullable=False),
         sa.Column("channel_ref", sa.String(length=128), nullable=False),
-        sa.Column("started_at", jarvis.persistence.db.TZDateTime(), nullable=False),
-        sa.Column("last_activity_at", jarvis.persistence.db.TZDateTime(), nullable=False),
+        sa.Column("started_at", sa.DateTime(), nullable=False),
+        sa.Column("last_activity_at", sa.DateTime(), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("idle_timeout_sec", sa.Integer(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
@@ -41,7 +40,7 @@ def upgrade() -> None:
         sa.Column("transport", sa.String(length=16), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("last_connected_at", jarvis.persistence.db.TZDateTime(), nullable=True),
+        sa.Column("last_connected_at", sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("name"),
     )
@@ -56,9 +55,9 @@ def upgrade() -> None:
         sa.Column("output_mode", sa.String(length=32), nullable=False),
         sa.Column("notify_on_error", sa.Boolean(), nullable=False),
         sa.Column("enabled", sa.Boolean(), nullable=False),
-        sa.Column("created_at", jarvis.persistence.db.TZDateTime(), nullable=False),
-        sa.Column("updated_at", jarvis.persistence.db.TZDateTime(), nullable=False),
-        sa.Column("last_run_at", jarvis.persistence.db.TZDateTime(), nullable=True),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.Column("last_run_at", sa.DateTime(), nullable=True),
         sa.Column("last_run_status", sa.String(length=32), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -74,7 +73,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("kind", sa.String(length=32), nullable=False),
         sa.Column("source_ref", sa.String(length=256), nullable=False),
-        sa.Column("created_at", jarvis.persistence.db.TZDateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
@@ -84,7 +83,7 @@ def upgrade() -> None:
         sa.Column("trigger_id", sa.Uuid(), nullable=True),
         sa.Column("type", sa.String(length=64), nullable=False),
         sa.Column("payload", sa.JSON(), nullable=False),
-        sa.Column("created_at", jarvis.persistence.db.TZDateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(["conversation_id"], ["conversations.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["trigger_id"], ["triggers.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
@@ -119,7 +118,7 @@ def upgrade() -> None:
         sa.Column("conversation_id", sa.Uuid(), nullable=False),
         sa.Column("role", sa.String(length=16), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("created_at", jarvis.persistence.db.TZDateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(["conversation_id"], ["conversations.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
