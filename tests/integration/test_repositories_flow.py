@@ -105,3 +105,28 @@ async def test_trigger_repo_records(session):
     trig = await repo.record(kind="discord_message", source_ref="discord-msg-abc")
     assert trig.kind == "discord_message"
     assert trig.source_ref == "discord-msg-abc"
+
+
+async def test_message_append_touches_conversation(session):
+    conv_repo = ConversationRepo(session)
+    conv = await conv_repo.find_or_create_open(
+        channel_kind=ChannelKind.DISCORD,
+        channel_ref="user-1",
+        idle_timeout_sec=900,
+    )
+    original_activity = conv.last_activity_at
+
+    # Simulate the conversation aging.
+    import asyncio
+
+    await asyncio.sleep(0.02)
+
+    msg_repo = MessageRepo(session)
+    await msg_repo.append(
+        conversation_id=conv.id,
+        role=MessageRole.USER,
+        content="hello",
+    )
+
+    await session.refresh(conv)
+    assert conv.last_activity_at > original_activity

@@ -101,6 +101,7 @@ class ConversationRepo:
 class MessageRepo:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._conv_repo = ConversationRepo(session)
 
     async def append(
         self,
@@ -118,6 +119,7 @@ class MessageRepo:
         self._session.add(msg)
         await self._session.commit()
         await self._session.refresh(msg)
+        await self._conv_repo.touch(conversation_id)
         return msg
 
     async def history(self, conversation_id: UUID) -> list[MessageRow]:
