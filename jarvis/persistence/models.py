@@ -3,10 +3,10 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from jarvis.persistence.db import Base
+from jarvis.persistence.db import Base, TZDateTime
 
 
 class ConversationRow(Base):
@@ -15,8 +15,8 @@ class ConversationRow(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     channel_kind: Mapped[str] = mapped_column(String(32))
     channel_ref: Mapped[str] = mapped_column(String(128))
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(TZDateTime())
+    last_activity_at: Mapped[datetime] = mapped_column(TZDateTime())
     status: Mapped[str] = mapped_column(String(16), default="open")
     idle_timeout_sec: Mapped[int | None] = mapped_column(default=None)
 
@@ -30,11 +30,11 @@ class MessageRow(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     conversation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE")
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
     )
     role: Mapped[str] = mapped_column(String(16))  # 'user' | 'assistant' | 'system'
     content: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
 
     conversation: Mapped[ConversationRow] = relationship(back_populates="messages")
 
@@ -45,7 +45,7 @@ class TriggerRow(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     kind: Mapped[str] = mapped_column(String(32))
     source_ref: Mapped[str] = mapped_column(String(256))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
 
 
 class AuditEventRow(Base):
@@ -53,11 +53,11 @@ class AuditEventRow(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     conversation_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
     )
     trigger_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("triggers.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("triggers.id", ondelete="SET NULL"), nullable=True, index=True
     )
     type: Mapped[str] = mapped_column(String(64), index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)

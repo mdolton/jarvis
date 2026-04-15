@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+from sqlalchemy import DateTime, TypeDecorator
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -13,6 +16,30 @@ from sqlalchemy.orm import DeclarativeBase
 
 class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
+
+
+class TZDateTime(TypeDecorator[datetime]):
+    """DateTime that stores values as naive UTC and returns them as aware UTC.
+
+    aiosqlite strips tzinfo on roundtrip; this decorator normalizes by
+    converting to UTC on INSERT and re-attaching UTC on SELECT. Use this
+    wherever a Mapped[datetime] column holds a timezone-aware timestamp.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("TZDateTime requires timezone-aware datetimes; got naive value")
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC)
 
 
 def create_engine(url: str, *, echo: bool = False) -> AsyncEngine:

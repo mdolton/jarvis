@@ -98,3 +98,27 @@ async def test_trigger_roundtrip(session):
 
     result = await session.execute(select(TriggerRow))
     assert result.scalar_one().source_ref == "discord-msg-abc"
+
+
+async def test_datetime_preserves_utc_timezone_through_roundtrip(session):
+    """SQLite strips tzinfo by default — TZDateTime decorator must restore it."""
+    original = datetime.now(UTC)
+    conv = ConversationRow(
+        id=uuid4(),
+        channel_kind="discord",
+        channel_ref="user-1",
+        started_at=original,
+        last_activity_at=original,
+        status="open",
+    )
+    session.add(conv)
+    await session.commit()
+
+    # Reload from DB to force a fresh read.
+    await session.refresh(conv)
+
+    assert conv.started_at.tzinfo is UTC
+    assert conv.last_activity_at.tzinfo is UTC
+    # Values should be equal (UTC-equivalent) — not necessarily identical to the
+    # microsecond since SQLite ISO string precision may differ by platform.
+    assert (conv.started_at - original).total_seconds() < 0.001
