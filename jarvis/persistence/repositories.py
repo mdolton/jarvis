@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
+from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
 from jarvis.persistence.models import (
     AuditEventRow,
     ConversationRow,
@@ -106,12 +106,12 @@ class MessageRepo:
         self,
         *,
         conversation_id: UUID,
-        role: str,
+        role: MessageRole,
         content: str,
     ) -> MessageRow:
         msg = MessageRow(
             conversation_id=conversation_id,
-            role=role,
+            role=role.value,
             content=content,
             created_at=_utcnow(),
         )

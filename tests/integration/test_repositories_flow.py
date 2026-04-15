@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from jarvis.core.types import ChannelKind
+from jarvis.core.types import ChannelKind, MessageRole
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import (
     ConversationRepo,
@@ -92,8 +92,8 @@ async def test_message_repo_appends(session):
     )
 
     msg_repo = MessageRepo(session)
-    await msg_repo.append(conversation_id=conv.id, role="user", content="hello")
-    await msg_repo.append(conversation_id=conv.id, role="assistant", content="hi there")
+    await msg_repo.append(conversation_id=conv.id, role=MessageRole.USER, content="hello")
+    await msg_repo.append(conversation_id=conv.id, role=MessageRole.ASSISTANT, content="hi there")
 
     history = await msg_repo.history(conv.id)
     assert [m.role for m in history] == ["user", "assistant"]
