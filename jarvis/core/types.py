@@ -1,31 +1,32 @@
 """Core in-memory types shared across jarvis modules."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Annotated, Literal, Union
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-class ChannelKind(str, Enum):
+class ChannelKind(StrEnum):
     DISCORD = "discord"
     SCHEDULED = "scheduled"
     DASHBOARD = "dashboard"
 
 
-class TriggerKind(str, Enum):
+class TriggerKind(StrEnum):
     DISCORD_MESSAGE = "discord_message"
     SCHEDULE = "schedule"
     MANUAL = "manual"
 
 
-class AuditEventType(str, Enum):
+class AuditEventType(StrEnum):
     TRIGGER_RECEIVED = "trigger.received"
     SCHEDULE_FIRED = "schedule.fired"
     LLM_REQUEST = "llm.request"
@@ -76,7 +77,7 @@ class ManualTrigger(_ModelBase):
 
 
 Trigger = Annotated[
-    Union[ChannelMessage, ScheduledTrigger, ManualTrigger],
+    ChannelMessage | ScheduledTrigger | ManualTrigger,
     Field(discriminator="kind"),
 ]
 

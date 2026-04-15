@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC
 from uuid import UUID
 
 import pytest
@@ -40,7 +40,7 @@ def test_audit_event_required_fields():
         payload={"x": 1},
     )
     assert isinstance(ev.id, UUID)
-    assert ev.created_at.tzinfo is timezone.utc
+    assert ev.created_at.tzinfo is UTC
     assert ev.conversation_id is None
     assert ev.trigger_id is None
 
@@ -79,4 +79,4 @@ def test_invocation_request_accepts_all_trigger_kinds():
 def test_invocation_request_has_uuid_and_time():
     req = InvocationRequest(trigger=ManualTrigger(user="mark", prompt="hi"))
     assert isinstance(req.id, UUID)
-    assert req.created_at.tzinfo is timezone.utc
+    assert req.created_at.tzinfo is UTC
