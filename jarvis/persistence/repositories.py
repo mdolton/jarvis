@@ -177,6 +177,26 @@ class AuditRepo:
         result = await self._session.execute(stmt)
         return list(result.scalars())
 
+    async def recent_as_events(
+        self,
+        *,
+        types: list[AuditEventType] | None = None,
+        limit: int = 100,
+    ) -> list[AuditEvent]:
+        """Same as recent(), but maps each row to an AuditEvent Pydantic model."""
+        rows = await self.recent(types=types, limit=limit)
+        return [
+            AuditEvent(
+                id=r.id,
+                conversation_id=r.conversation_id,
+                trigger_id=r.trigger_id,
+                type=AuditEventType(r.type),
+                payload=r.payload,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+
 
 class ScheduleRepo:
     def __init__(self, session: AsyncSession) -> None:

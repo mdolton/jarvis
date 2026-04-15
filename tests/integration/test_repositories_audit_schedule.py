@@ -84,3 +84,20 @@ async def test_schedule_record_run(session):
     refreshed = await repo.get(sched.id)
     assert refreshed.last_run_status == "success"
     assert refreshed.last_run_at == ts
+
+
+async def test_audit_recent_as_events_returns_pydantic(session):
+    repo = AuditRepo(session)
+    await repo.write_many(
+        [
+            AuditEvent(type=AuditEventType.TRIGGER_RECEIVED, payload={"x": 1}),
+            AuditEvent(type=AuditEventType.LLM_REQUEST, payload={"y": 2}),
+        ]
+    )
+    events = await repo.recent_as_events(limit=10)
+    assert len(events) == 2
+    # Returned as AuditEvent Pydantic instances with typed enums.
+    assert all(isinstance(e, AuditEvent) for e in events)
+    assert all(isinstance(e.type, AuditEventType) for e in events)
+    # Newest first ordering preserved.
+    assert events[0].created_at >= events[-1].created_at
