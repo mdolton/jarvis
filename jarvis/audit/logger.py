@@ -26,13 +26,16 @@ class AuditLogger:
         session_factory: async_sessionmaker[AsyncSession],
         flush_interval_sec: float = 0.1,
         batch_size: int = 50,
+        max_queue_size: int = 10_000,
     ) -> None:
         self._session_factory = session_factory
         self._flush_interval = flush_interval_sec
         self._batch_size = batch_size
-        self._queue: asyncio.Queue[AuditEvent] = asyncio.Queue()
+        self._max_queue_size = max_queue_size
+        self._queue: asyncio.Queue[AuditEvent] = asyncio.Queue(maxsize=max_queue_size)
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
+        self.dropped_count: int = 0
 
     async def start(self) -> None:
         if self._task is not None:
@@ -50,7 +53,22 @@ class AuditLogger:
     async def emit(self, event: AuditEvent) -> None:
         if self._task is None:
             raise RuntimeError("AuditLogger not started")
-        await self._queue.put(event)
+        try:
+            self._queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Drop the oldest event to make room. The flusher never removes
+            # from the head AND from the tail simultaneously, so this is
+            # safe in a single-consumer design.
+            try:
+                self._queue.get_nowait()
+                self.dropped_count += 1
+            except asyncio.QueueEmpty:
+                # Race: flusher just drained it. Still drop this event
+                # to respect backpressure contract.
+                self.dropped_count += 1
+                return
+            # Retry put — guaranteed to succeed now.
+            self._queue.put_nowait(event)
 
     async def _run(self) -> None:
         while True:
