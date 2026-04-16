@@ -1,0 +1,15 @@
+# Jarvis core configuration.
+# Copy this to jarvis.yaml and edit.
+
+llm:
+  # OpenAI-compatible API endpoint (LM Studio, Ollama, etc.)
+  base_url: ${JARVIS_LLM_BASE_URL}
+  api_key: ${JARVIS_LLM_API_KEY}
+  model: ${JARVIS_LLM_MODEL}
+  request_timeout_sec: 60.0
+
+timezone: ${JARVIS_TIMEZONE}
+idle_timeout_sec: 900
+max_concurrent_agents: 3
+log_level: INFO
+default_schedule_output_mode: discord

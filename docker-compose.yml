@@ -1,0 +1,19 @@
+services:
+  jarvis:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${JARVIS_DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    environment:
+      - JARVIS_LLM_BASE_URL
+      - JARVIS_LLM_API_KEY
+      - JARVIS_LLM_MODEL
+      - JARVIS_DISCORD_TOKEN
+      - JARVIS_DISCORD_ALLOWED_USER_IDS
+      - JARVIS_TIMEZONE
+      - JARVIS_LOG_LEVEL
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

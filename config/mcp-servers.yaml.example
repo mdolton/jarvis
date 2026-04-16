@@ -1,0 +1,18 @@
+# MCP server configuration.
+# Copy this to mcp-servers.yaml and edit.
+
+servers: []
+
+# Example stdio server:
+# servers:
+#   - name: filesystem
+#     transport: stdio
+#     command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+#
+# Example HTTP server:
+# servers:
+#   - name: remote-api
+#     transport: http
+#     url: http://localhost:3000/mcp
+#     headers:
+#       Authorization: "Bearer ${MCP_API_TOKEN}"

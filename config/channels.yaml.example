@@ -1,0 +1,8 @@
+# Channel adapter configuration.
+# Copy this to channels.yaml and edit.
+
+# Uncomment to enable Discord:
+# discord:
+#   token: ${JARVIS_DISCORD_TOKEN}
+#   allowed_user_ids:
+#     - "YOUR_DISCORD_USER_ID"
