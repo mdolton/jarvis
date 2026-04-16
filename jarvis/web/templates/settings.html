@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<h2>Core</h2>
+<table>
+    <tr><th>LLM base URL</th><td>{{ jarvis.llm.base_url }}</td></tr>
+    <tr><th>LLM model</th><td>{{ jarvis.llm.model }}</td></tr>
+    <tr><th>Timezone</th><td>{{ jarvis.timezone }}</td></tr>
+    <tr><th>Idle timeout (sec)</th><td>{{ jarvis.idle_timeout_sec }}</td></tr>
+    <tr><th>Max concurrent agents</th><td>{{ jarvis.max_concurrent_agents }}</td></tr>
+    <tr><th>Log level</th><td>{{ jarvis.log_level }}</td></tr>
+</table>
+
+<h2>Channels</h2>
+{% if channels.discord %}
+<table>
+    <tr><th>Discord enabled</th><td>{{ channels.discord.enabled }}</td></tr>
+    <tr><th>Allowed users</th><td>{{ channels.discord.allowed_user_ids | join(", ") }}</td></tr>
+</table>
+{% else %}
+<p class="muted">No Discord channel configured.</p>
+{% endif %}
+
+<h2>MCP Servers (from config)</h2>
+{% if mcp_servers.servers %}
+<table>
+    <thead><tr><th>Name</th><th>Transport</th><th>Enabled</th></tr></thead>
+    <tbody>
+    {% for s in mcp_servers.servers %}
+        <tr><td>{{ s.name }}</td><td>{{ s.transport }}</td><td>{{ s.enabled }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="muted">No MCP servers configured.</p>
+{% endif %}
+
+<p class="muted">Settings are read-only. Edit the YAML config files to change.</p>
+{% endblock %}
