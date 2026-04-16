@@ -45,4 +45,8 @@ def create_app(*, app_context=None) -> FastAPI:
 
     app.include_router(schedules_router)
 
+    from jarvis.web.routes.mcp import router as mcp_router
+
+    app.include_router(mcp_router)
+
     return app
