@@ -26,7 +26,20 @@ async def test_bootstrap_loads_config_and_initializes_db(tmp_path, config_dir):
     )
     try:
         assert ctx.config.jarvis.llm.model == "m"
-        # Engine is live and DB file exists.
         assert db_path.exists()
+    finally:
+        await ctx.shutdown()
+
+
+async def test_bootstrap_exposes_runner_and_dispatcher(tmp_path, config_dir):
+    db_path = tmp_path / "jarvis.db"
+    ctx = await bootstrap(
+        config_dir=config_dir,
+        db_url=f"sqlite+aiosqlite:///{db_path}",
+    )
+    try:
+        assert ctx.agent_runner is not None
+        assert ctx.dispatcher is not None
+        assert ctx.mcp_manager is not None
     finally:
         await ctx.shutdown()

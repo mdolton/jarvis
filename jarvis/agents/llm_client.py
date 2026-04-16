@@ -5,7 +5,7 @@ installs the client as the Agents SDK default so every Runner.run() call
 uses the configured endpoint without per-call plumbing.
 """
 
-from agents import set_default_openai_client, set_tracing_disabled
+from agents import set_default_openai_client
 from openai import AsyncOpenAI
 
 from jarvis.config.schema import LLMConfig
@@ -28,9 +28,8 @@ def build_llm_client(cfg: LLMConfig) -> AsyncOpenAI:
 def install_as_default(client: AsyncOpenAI) -> None:
     """Install `client` as the Agents SDK's default OpenAI client.
 
-    Also disables the default OpenAI tracing exporter, which would try to
-    POST trace spans to platform.openai.com and fail with 401 against a
-    local LLM endpoint. Our custom tracer (Task 11) still receives events.
+    The default OpenAI tracing exporter is replaced by bootstrap() via
+    set_trace_processors([JarvisTraceProcessor(...)]), so we do not need to
+    disable tracing here — doing so would also silence our own tracer.
     """
     set_default_openai_client(client)
-    set_tracing_disabled(True)
