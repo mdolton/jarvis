@@ -41,10 +41,16 @@ def test_invoke_requires_config_and_db(config_dir, tmp_path, monkeypatch):
     from jarvis.agents import runner as runner_mod
 
     async def _fake_run(self, request):
+        from uuid import uuid4
+
+        from jarvis.core.types import ChannelKind
+
         return runner_mod.AgentRunResult(
             final_output="FAKE-CLI-OUTPUT",
-            conversation_id="c",
-            trigger_id="t",
+            conversation_id=uuid4(),
+            trigger_id=uuid4(),
+            channel_kind=ChannelKind.DASHBOARD,
+            channel_ref="cli",
         )
 
     monkeypatch.setattr(runner_mod.AgentRunner, "run", _fake_run)

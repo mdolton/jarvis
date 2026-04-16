@@ -116,6 +116,10 @@ async def test_agent_runner_persists_user_and_assistant_messages(infra):
         ]
         assert msgs[1].content == "response-under-test"
 
+    # Routing fields are populated for the OutputRouter.
+    assert result.channel_kind == ChannelKind.DASHBOARD
+    assert result.channel_ref == "mark"
+
 
 async def test_agent_runner_writes_audit_events(infra):
     _, factory, audit = infra
