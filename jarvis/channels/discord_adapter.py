@@ -78,8 +78,14 @@ class DiscordAdapter:
         self._task = None
 
     async def send(self, msg: OutboundMessage) -> None:
-        # Stub for Task 7. Define now so the class satisfies ChannelAdapter.
-        raise NotImplementedError("DiscordAdapter.send arrives in Task 7")
+        if self._client is None:
+            raise RuntimeError("DiscordAdapter not started")
+        try:
+            user_id = int(msg.channel_ref)
+        except ValueError as e:
+            raise ValueError(f"channel_ref {msg.channel_ref!r} is not a Discord user id") from e
+        user = await self._client.fetch_user(user_id)
+        await user.send(msg.text)
 
     async def _on_message(self, message: discord.Message) -> None:
         if not isinstance(message.channel, discord.DMChannel):
