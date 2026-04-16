@@ -90,6 +90,12 @@ class ConversationRepo:
         await self._session.refresh(conv)
         return conv
 
+    async def list_recent(self, *, limit: int = 50) -> list[ConversationRow]:
+        result = await self._session.execute(
+            select(ConversationRow).order_by(ConversationRow.last_activity_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
     async def touch(self, conversation_id: UUID) -> None:
         await self._session.execute(
             update(ConversationRow)

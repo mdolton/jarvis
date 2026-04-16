@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Conversation {{ conversation.id if conversation else 'Not Found' }}{% endblock %}
+{% block content %}
+{% if conversation %}
+<h1>Conversation <span class="muted">{{ conversation.channel_kind }} / {{ conversation.channel_ref }}</span></h1>
+<p class="muted">Started {{ conversation.started_at.strftime('%Y-%m-%d %H:%M') }} — {{ conversation.status }}</p>
+
+<div class="messages">
+{% for msg in messages %}
+    <div class="audit-row">
+        <span class="{% if msg.role == 'user' %}msg-user{% elif msg.role == 'assistant' %}msg-assistant{% else %}msg-system{% endif %}">{{ msg.role }}</span>:
+        {{ msg.content }}
+    </div>
+{% endfor %}
+</div>
+{% else %}
+<p>Conversation not found.</p>
+{% endif %}
+{% endblock %}
