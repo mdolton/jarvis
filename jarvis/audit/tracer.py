@@ -11,6 +11,7 @@ no traces leak to OpenAI.
 """
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -37,6 +38,9 @@ class JarvisTraceProcessor(TracingProcessor):
 
     def __init__(self, logger: AuditLogger) -> None:
         self._logger = logger
+        # Holds strong references to in-flight emit tasks so the event loop
+        # can't silently drop them. Tasks remove themselves on completion.
+        self._pending: set[asyncio.Task[None]] = set()
 
     def on_trace_start(self, trace: Trace) -> None:
         # Trace-level events aren't in our AuditEventType enum; we emit them
@@ -95,19 +99,23 @@ class JarvisTraceProcessor(TracingProcessor):
         except RuntimeError:
             _log.debug("no running loop; dropping trace event %s", audit_type)
             return
-        _task = loop.create_task(self._logger.emit(event))
-        # Suppress "task was destroyed but it is pending" warnings.
-        _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        task = loop.create_task(self._logger.emit(event))
+        self._pending.add(task)
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task: asyncio.Task[None]) -> None:
+        self._pending.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            _log.warning("audit emit failed in tracer: %r", exc)
 
 
 def _json_safe(value: Any) -> None:
     """Raise TypeError/ValueError if `value` is not JSON-serializable."""
-    import json
-
     json.dumps(value, default=str)
 
 
 def _json_safe_dict(d: dict) -> dict:
-    import json
-
     return json.loads(json.dumps(d, default=str))
