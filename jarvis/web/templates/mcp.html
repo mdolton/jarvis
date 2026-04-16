@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}MCP Servers{% endblock %}
+{% block content %}
+<h1>MCP Servers</h1>
+{% for srv in servers %}
+<div style="margin-bottom: 1.5rem;">
+    <h2>{{ srv.name }} <span class="badge {% if srv.status == 'connected' %}badge-ok{% elif srv.status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h2>
+    <p class="muted">Transport: {{ srv.transport }}{% if srv.last_connected_at %} — Last connected: {{ srv.last_connected_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</p>
+    {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
+    {% set tools = server_tools.get(srv.id, []) %}
+    {% if tools %}
+    <table>
+        <thead><tr><th>Tool</th><th>Description</th><th>Read-only</th><th>Destructive</th><th>Policy</th></tr></thead>
+        <tbody>
+        {% for t in tools %}
+            <tr>
+                <td><code>{{ t.name }}</code></td>
+                <td>{{ t.description or '—' }}</td>
+                <td>{{ '✓' if t.read_only_hint else '—' }}</td>
+                <td>{{ '⚠' if t.destructive_hint else '—' }}</td>
+                <td>{{ t.policy_override or 'auto-detect' }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No tools discovered.</p>
+    {% endif %}
+</div>
+{% endfor %}
+{% if not servers %}
+<p class="muted">No MCP servers configured.</p>
+{% endif %}
+{% endblock %}

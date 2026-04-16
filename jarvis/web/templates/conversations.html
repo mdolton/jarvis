@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Conversations{% endblock %}
+{% block content %}
+<h1>Conversations</h1>
+<table>
+    <thead>
+        <tr><th>Channel</th><th>Ref</th><th>Status</th><th>Last Activity</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for conv in conversations %}
+        <tr>
+            <td>{{ conv.channel_kind }}</td>
+            <td>{{ conv.channel_ref }}</td>
+            <td><span class="badge {% if conv.status == 'open' %}badge-ok{% else %}badge-warn{% endif %}">{{ conv.status }}</span></td>
+            <td class="muted">{{ conv.last_activity_at.strftime('%Y-%m-%d %H:%M') if conv.last_activity_at else 'n/a' }}</td>
+            <td><a href="/conversations/{{ conv.id }}">View</a></td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if not conversations %}
+<p class="muted">No conversations yet.</p>
+{% endif %}
+{% endblock %}

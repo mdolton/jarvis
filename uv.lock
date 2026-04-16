@@ -275,6 +275,22 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi"
+version = "0.135.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/e6/7adb4c5fa231e82c35b8f5741a9f2d055f520c29af5546fd70d3e8e1cd2e/fastapi-0.135.3.tar.gz", hash = "sha256:bd6d7caf1a2bdd8d676843cdcd2287729572a1ef524fc4d65c17ae002a1be654", size = 396524, upload-time = "2026-04-01T16:23:58.188Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/a4/5caa2de7f917a04ada20018eccf60d6cc6145b0199d55ca3711b0fc08312/fastapi-0.135.3-py3-none-any.whl", hash = "sha256:9b0f590c813acd13d0ab43dd8494138eb58e484bfac405db1f3187cfc5810d98", size = 117734, upload-time = "2026-04-01T16:23:59.328Z" },
+]
+
+[[package]]
 name = "freezegun"
 version = "1.5.5"
 source = { registry = "https://pypi.org/simple" }
@@ -411,12 +427,15 @@ dependencies = [
     { name = "alembic" },
     { name = "apscheduler" },
     { name = "discord-py" },
+    { name = "fastapi" },
+    { name = "jinja2" },
     { name = "openai" },
     { name = "openai-agents" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "typer" },
+    { name = "uvicorn" },
     { name = "watchfiles" },
 ]
 
@@ -434,12 +453,15 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "apscheduler", specifier = ">=4.0.0a1" },
     { name = "discord-py", specifier = ">=2.3" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "jinja2", specifier = ">=3.1" },
     { name = "openai", specifier = ">=1.68" },
     { name = "openai-agents", specifier = ">=0.7" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", specifier = ">=0.30" },
     { name = "watchfiles", specifier = ">=0.22" },
 ]
 
@@ -449,6 +471,18 @@ dev = [
     { name = "pytest", specifier = ">=8.2" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.5" },
+]
+
+[[package]]
+name = "jinja2"
+version = "3.1.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markupsafe" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz", hash = "sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d", size = 245115, upload-time = "2025-03-05T20:05:02.478Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl", hash = "sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67", size = 134899, upload-time = "2025-03-05T20:05:00.369Z" },
 ]
 
 [[package]]

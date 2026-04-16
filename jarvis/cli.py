@@ -86,19 +86,29 @@ async def _serve_async(
     db_url: str,
     stop_event: asyncio.Event | None = None,
 ) -> None:
-    """The serve loop. Bootstraps, waits for stop_event, shuts down.
+    import uvicorn
 
-    `stop_event` is injectable for tests; production gets one wired to
-    SIGINT and SIGTERM by `_install_signal_handlers`.
-    """
     ctx = await bootstrap(config_dir=config_dir, db_url=db_url)
     try:
+        # Start uvicorn in the background.
+        uvi_config = uvicorn.Config(
+            ctx.web_app,
+            host="0.0.0.0",
+            port=8080,
+            log_level="warning",
+        )
+        uvi_server = uvicorn.Server(uvi_config)
+        uvi_task = asyncio.create_task(uvi_server.serve(), name="uvicorn")
+
         if stop_event is None:
             stop_event = asyncio.Event()
             _install_signal_handlers(stop_event)
-        typer.echo("jarvis serving (Ctrl-C to stop)")
+        typer.echo("jarvis serving on http://0.0.0.0:8080 (Ctrl-C to stop)")
         await stop_event.wait()
         typer.echo("shutting down...")
+
+        uvi_server.should_exit = True
+        await uvi_task
     finally:
         await ctx.shutdown()
 

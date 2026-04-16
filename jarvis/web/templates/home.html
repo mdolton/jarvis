@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Jarvis — Home{% endblock %}
+{% block content %}
+<h1>Jarvis Status</h1>
+<table>
+    <tr><th>LLM endpoint</th><td>{{ llm_url }}</td></tr>
+    <tr><th>LLM model</th><td>{{ llm_model }}</td></tr>
+    <tr><th>MCP servers connected</th><td>{{ mcp_count }}</td></tr>
+    <tr><th>Active schedules</th><td>{{ schedule_count }}</td></tr>
+    <tr><th>Channel adapters</th><td>{{ adapters | join(", ") or "none" }}</td></tr>
+</table>
+{% endblock %}

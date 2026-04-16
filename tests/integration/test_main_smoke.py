@@ -112,3 +112,18 @@ async def test_bootstrap_exposes_scheduler(tmp_path, config_dir):
         assert ctx.scheduler.active_job_count() == 0  # no schedules in DB
     finally:
         await ctx.shutdown()
+
+
+async def test_bootstrap_exposes_web_app(tmp_path, config_dir):
+    from fastapi import FastAPI
+
+    db_path = tmp_path / "jarvis.db"
+    ctx = await bootstrap(
+        config_dir=config_dir,
+        db_url=f"sqlite+aiosqlite:///{db_path}",
+    )
+    try:
+        assert ctx.web_app is not None
+        assert isinstance(ctx.web_app, FastAPI)
+    finally:
+        await ctx.shutdown()

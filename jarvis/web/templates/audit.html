@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Audit Log{% endblock %}
+{% block content %}
+<h1>Audit Log</h1>
+
+<form method="get" action="/audit" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+    <select name="type">
+        <option value="">All types</option>
+        {% for t in all_types %}
+        <option value="{{ t }}" {% if current_filter == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+</form>
+
+<div id="live-events" hx-ext="sse" sse-connect="/events/stream" sse-swap="audit" hx-swap="afterbegin">
+</div>
+
+<h2>Recent Events</h2>
+<div id="events-table">
+{% for ev in events %}
+    <div class="audit-row">
+        <span class="audit-type">{{ ev.type }}</span>
+        <span class="muted">{{ ev.created_at.strftime('%H:%M:%S') if ev.created_at else '' }}</span>
+        <pre>{{ ev.payload }}</pre>
+    </div>
+{% endfor %}
+</div>
+{% if not events %}
+<p class="muted">No audit events.</p>
+{% endif %}
+{% endblock %}
