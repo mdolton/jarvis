@@ -13,6 +13,7 @@ dependencies = [
   "openai-agents>=0.7",
   "openai>=1.68",
   "typer>=0.12",
+  "discord.py>=2.3",
 ]
 
 [dependency-groups]

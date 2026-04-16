@@ -7,8 +7,10 @@ from agents.models.interface import Model
 from jarvis.agents.runner import AgentRunner
 from jarvis.audit.logger import AuditLogger
 from jarvis.audit.tracer import JarvisTraceProcessor
+from jarvis.channels.base import OutboundMessage
 from jarvis.config.schema import LLMConfig
 from jarvis.core.dispatcher import TriggerDispatcher
+from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import (
     ChannelKind,
     ChannelMessage,
@@ -176,3 +178,80 @@ async def test_dispatch_concurrency_is_bounded(infra):
     ]
     await asyncio.gather(*tasks)
     assert model.max_in_flight <= 2
+
+
+async def test_dispatch_channel_message_routes_reply_to_adapter(infra):
+    _, factory, audit = infra
+    model = _CountingFakeModel()
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers=[],
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model=model,
+    )
+
+    sent_messages: list[OutboundMessage] = []
+
+    class _Recorder:
+        kind = ChannelKind.DISCORD.value
+
+        async def start(self, dispatcher) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def send(self, msg: OutboundMessage) -> None:
+            sent_messages.append(msg)
+
+    router = OutputRouter(adapters=[_Recorder()])
+    dispatcher = TriggerDispatcher(runner=runner, audit=audit, output_router=router)
+
+    msg = ChannelMessage(
+        channel_kind=ChannelKind.DISCORD,
+        channel_ref="user-1",
+        text="hello jarvis",
+        external_id="msg-routing-1",
+    )
+    result = await dispatcher.dispatch_channel_message(msg, allowed_refs={"user-1"})
+    assert result is not None
+    assert "reply-1" in result.final_output
+
+    assert len(sent_messages) == 1
+    assert sent_messages[0].channel_ref == "user-1"
+    assert sent_messages[0].text == result.final_output
+
+
+async def test_dispatch_manual_does_not_route(infra):
+    """Manual triggers go through the CLI/dashboard path, not channel routing."""
+    _, factory, audit = infra
+    model = _CountingFakeModel()
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers=[],
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model=model,
+    )
+
+    sent_messages: list[OutboundMessage] = []
+
+    class _Recorder:
+        kind = ChannelKind.DISCORD.value
+
+        async def start(self, dispatcher) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def send(self, msg: OutboundMessage) -> None:
+            sent_messages.append(msg)
+
+    router = OutputRouter(adapters=[_Recorder()])
+    dispatcher = TriggerDispatcher(runner=runner, audit=audit, output_router=router)
+
+    await dispatcher.dispatch_manual(user="mark", prompt="hi")
+
+    assert sent_messages == []

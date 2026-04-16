@@ -6,6 +6,7 @@ Usage:
 """
 
 import asyncio
+import signal
 from pathlib import Path
 
 import typer
@@ -66,3 +67,47 @@ def check_config_command(
     typer.echo(f"mcp servers        = {len(cfg.mcp_servers.servers)}")
     for s in cfg.mcp_servers.servers:
         typer.echo(f"  - {s.name} ({s.transport}) enabled={s.enabled}")
+
+
+@app.command("serve")
+def serve_command(
+    config_dir: Path = typer.Option(
+        _DEFAULT_CONFIG, "--config-dir", "-c", help="Directory with jarvis.yaml etc."
+    ),
+    db_url: str = typer.Option(_DEFAULT_DB, "--db-url", help="SQLAlchemy DB URL"),
+) -> None:
+    """Run Jarvis as a long-lived process (Discord, scheduler, etc.)."""
+    asyncio.run(_serve_async(config_dir=config_dir, db_url=db_url))
+
+
+async def _serve_async(
+    *,
+    config_dir: Path,
+    db_url: str,
+    stop_event: asyncio.Event | None = None,
+) -> None:
+    """The serve loop. Bootstraps, waits for stop_event, shuts down.
+
+    `stop_event` is injectable for tests; production gets one wired to
+    SIGINT and SIGTERM by `_install_signal_handlers`.
+    """
+    ctx = await bootstrap(config_dir=config_dir, db_url=db_url)
+    try:
+        if stop_event is None:
+            stop_event = asyncio.Event()
+            _install_signal_handlers(stop_event)
+        typer.echo("jarvis serving (Ctrl-C to stop)")
+        await stop_event.wait()
+        typer.echo("shutting down...")
+    finally:
+        await ctx.shutdown()
+
+
+def _install_signal_handlers(stop_event: asyncio.Event) -> None:
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler.
+            signal.signal(sig, lambda *_: stop_event.set())

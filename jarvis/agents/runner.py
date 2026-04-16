@@ -11,6 +11,7 @@ Responsibilities:
 import logging
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from agents import Agent, RunConfig, Runner
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -39,8 +40,10 @@ _log = logging.getLogger(__name__)
 @dataclass(slots=True)
 class AgentRunResult:
     final_output: str
-    conversation_id: Any  # UUID
-    trigger_id: Any  # UUID
+    conversation_id: UUID
+    trigger_id: UUID
+    channel_kind: ChannelKind
+    channel_ref: str
 
 
 class AgentRunner:
@@ -133,6 +136,8 @@ class AgentRunner:
             final_output=final_text,
             conversation_id=conv_id,
             trigger_id=trigger_id,
+            channel_kind=channel_kind,
+            channel_ref=channel_ref,
         )
 
 
