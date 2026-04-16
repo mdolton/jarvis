@@ -115,8 +115,10 @@ async def test_mcp_manager_records_failure_for_bad_command(engine_and_factory):
         async with factory() as s:
             servers = await MCPServerRepo(s).list_all()
             assert len(servers) == 1
-            assert servers[0].status in ("disconnected", "error")
+            assert servers[0].status == "error"
             assert servers[0].last_error is not None
+        # Failed server must NOT be exposed to the Agent.
+        assert manager.agent_mcp_servers() == []
     finally:
         await manager.stop()
 

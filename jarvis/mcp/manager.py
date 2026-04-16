@@ -61,10 +61,14 @@ class MCPManager:
 
         sdk_server = _build_sdk_server(cfg)
         await self._stack.enter_async_context(sdk_server)
-        self._sdk_servers.append(sdk_server)
 
-        # Enumerate tools — this confirms the connection actually works.
+        # Enumerate tools — this confirms the connection actually works. If
+        # list_tools fails, the sdk_server is already registered in the exit
+        # stack (so stop() will still close it) but we must NOT expose it to
+        # the Agent via _sdk_servers, because it has no cataloged tools.
         tools = await _list_tools(sdk_server)
+
+        self._sdk_servers.append(sdk_server)
 
         async with self._session_factory() as session:
             srepo = MCPServerRepo(session)
