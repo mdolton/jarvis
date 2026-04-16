@@ -20,3 +20,11 @@ data/
 *.db-shm
 .env
 !.env.example
+
+# Docker
+*.tar
+
+# Config files with real secrets (examples are committed)
+config/jarvis.yaml
+config/channels.yaml
+config/mcp-servers.yaml
