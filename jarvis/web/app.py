@@ -49,4 +49,10 @@ def create_app(*, app_context=None) -> FastAPI:
 
     app.include_router(mcp_router)
 
+    from jarvis.web.routes.audit import router as audit_router
+    from jarvis.web.routes.events import router as events_router
+
+    app.include_router(audit_router)
+    app.include_router(events_router)
+
     return app
