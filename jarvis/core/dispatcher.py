@@ -15,6 +15,7 @@ from collections import OrderedDict
 
 from jarvis.agents.runner import AgentRunner, AgentRunResult
 from jarvis.audit.logger import AuditLogger
+from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import (
     ChannelMessage,
     InvocationRequest,
@@ -31,11 +32,13 @@ class TriggerDispatcher:
         *,
         runner: AgentRunner,
         audit: AuditLogger,
+        output_router: OutputRouter | None = None,
         max_concurrent: int = 3,
         dedup_window: int = 256,
     ) -> None:
         self._runner = runner
         self._audit = audit
+        self._output_router = output_router
         self._sem = asyncio.Semaphore(max_concurrent)
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._seen_cap = dedup_window
@@ -72,7 +75,10 @@ class TriggerDispatcher:
 
     async def _run(self, request: InvocationRequest) -> AgentRunResult:
         async with self._sem:
-            return await self._runner.run(request)
+            result = await self._runner.run(request)
+        if self._output_router is not None:
+            await self._output_router.route(result)
+        return result
 
     def _remember(self, external_id: str) -> None:
         self._seen[external_id] = None
