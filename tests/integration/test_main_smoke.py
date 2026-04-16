@@ -99,3 +99,16 @@ async def test_bootstrap_no_discord_when_unconfigured(tmp_path, config_dir):
         assert ctx.channel_adapters == []
     finally:
         await ctx.shutdown()
+
+
+async def test_bootstrap_exposes_scheduler(tmp_path, config_dir):
+    db_path = tmp_path / "jarvis.db"
+    ctx = await bootstrap(
+        config_dir=config_dir,
+        db_url=f"sqlite+aiosqlite:///{db_path}",
+    )
+    try:
+        assert ctx.scheduler is not None
+        assert ctx.scheduler.active_job_count() == 0  # no schedules in DB
+    finally:
+        await ctx.shutdown()

@@ -20,8 +20,10 @@ from jarvis.channels.discord_adapter import DiscordAdapter
 from jarvis.config.loader import LoadedConfig, load_config
 from jarvis.core.dispatcher import TriggerDispatcher
 from jarvis.core.output_router import OutputRouter
+from jarvis.core.types import ChannelKind
 from jarvis.mcp.manager import MCPManager
 from jarvis.persistence.db import Base, create_engine, session_factory
+from jarvis.scheduler.scheduler import Scheduler
 
 _log = logging.getLogger(__name__)
 
@@ -37,9 +39,11 @@ class AppContext:
     dispatcher: TriggerDispatcher
     channel_adapters: list[ChannelAdapter]
     output_router: OutputRouter
+    scheduler: Scheduler
 
     async def shutdown(self) -> None:
-        # Stop adapters first so no new triggers arrive while we tear down.
+        await self.scheduler.stop()
+        # Stop adapters so no new triggers arrive while we tear down.
         for adapter in self.channel_adapters:
             try:
                 await adapter.stop()
@@ -108,6 +112,24 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     for adapter in channel_adapters:
         await adapter.start(dispatcher)
 
+    # Find the discord adapter (if any) for scheduled output routing.
+    discord_adapter = next(
+        (a for a in channel_adapters if a.kind == ChannelKind.DISCORD.value),
+        None,
+    )
+
+    # Scheduler.
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=cfg.jarvis.llm,
+        mcp_servers=mcp_manager.agent_mcp_servers(),
+        discord_adapter=discord_adapter,
+        idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
+        max_concurrent=cfg.jarvis.max_concurrent_agents,
+    )
+    await scheduler.start()
+
     _log.info("jarvis bootstrap complete")
     return AppContext(
         config=cfg,
@@ -119,4 +141,5 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         dispatcher=dispatcher,
         channel_adapters=channel_adapters,
         output_router=output_router,
+        scheduler=scheduler,
     )
