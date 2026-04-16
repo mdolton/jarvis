@@ -33,4 +33,8 @@ def create_app(*, app_context=None) -> FastAPI:
 
     app.include_router(health_router)
 
+    from jarvis.web.routes.home import router as home_router
+
+    app.include_router(home_router)
+
     return app
