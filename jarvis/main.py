@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents import set_trace_processors
+from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from jarvis.agents.llm_client import build_llm_client, install_as_default
@@ -24,6 +25,7 @@ from jarvis.core.types import ChannelKind
 from jarvis.mcp.manager import MCPManager
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.scheduler.scheduler import Scheduler
+from jarvis.web.app import create_app as _create_web_app
 
 _log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class AppContext:
     channel_adapters: list[ChannelAdapter]
     output_router: OutputRouter
     scheduler: Scheduler
+    web_app: FastAPI
 
     async def shutdown(self) -> None:
         await self.scheduler.stop()
@@ -130,8 +133,11 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     )
     await scheduler.start()
 
+    # Web dashboard.
+    web_app = _create_web_app(app_context=None)
+
     _log.info("jarvis bootstrap complete")
-    return AppContext(
+    ctx = AppContext(
         config=cfg,
         engine=engine,
         session_factory=factory,
@@ -142,4 +148,8 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         channel_adapters=channel_adapters,
         output_router=output_router,
         scheduler=scheduler,
+        web_app=web_app,
     )
+    # Wire the full context into the web app now that it exists.
+    web_app.state.ctx = ctx
+    return ctx
