@@ -263,6 +263,24 @@ class ScheduleRepo:
         )
         await self._session.commit()
 
+    async def list_all(self) -> list[ScheduleRow]:
+        result = await self._session.execute(select(ScheduleRow))
+        return list(result.scalars())
+
+    async def update(self, schedule_id: UUID, **fields) -> None:
+        """Update arbitrary fields on a schedule row."""
+        fields["updated_at"] = _utcnow()
+        await self._session.execute(
+            update(ScheduleRow).where(ScheduleRow.id == schedule_id).values(**fields)
+        )
+        await self._session.commit()
+
+    async def delete(self, schedule_id: UUID) -> None:
+        row = await self._session.get(ScheduleRow, schedule_id)
+        if row is not None:
+            await self._session.delete(row)
+            await self._session.commit()
+
 
 class MCPServerRepo:
     def __init__(self, session: AsyncSession) -> None:

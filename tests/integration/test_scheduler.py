@@ -1,0 +1,170 @@
+"""Scheduler integration tests. Use fire_now to trigger immediately."""
+
+import asyncio
+
+import pytest_asyncio
+from agents import set_trace_processors
+from agents.models.interface import Model
+
+from jarvis.audit.logger import AuditLogger
+from jarvis.audit.tracer import JarvisTraceProcessor
+from jarvis.config.schema import LLMConfig
+from jarvis.core.types import ChannelKind, MessageRole
+from jarvis.persistence.db import Base, create_engine, session_factory
+from jarvis.persistence.repositories import MessageRepo, ScheduleRepo
+from jarvis.scheduler.scheduler import Scheduler
+
+
+class _FakeModel(Model):
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def get_response(self, *a, **kw):
+        from agents.items import ModelResponse, Usage
+        from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+
+        self.call_count += 1
+        return ModelResponse(
+            output=[
+                ResponseOutputMessage(
+                    id="m1",
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[
+                        ResponseOutputText(
+                            type="output_text",
+                            text=f"scheduled-reply-{self.call_count}",
+                            annotations=[],
+                        )
+                    ],
+                )
+            ],
+            usage=Usage(),
+            response_id=None,
+        )
+
+    async def stream_response(self, *a, **kw):
+        if False:
+            yield None
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def infra(tmp_path):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = session_factory(engine)
+
+    audit = AuditLogger(session_factory=factory, flush_interval_sec=0.02)
+    await audit.start()
+    set_trace_processors([JarvisTraceProcessor(audit)])
+
+    yield engine, factory, audit
+
+    await audit.stop()
+    await engine.dispose()
+
+
+async def test_scheduler_fires_and_records_run(infra):
+    """Create a schedule, trigger via fire_now, verify messages + status."""
+    _, factory, audit = infra
+    model = _FakeModel()
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=model,
+        mcp_servers=[],
+        discord_adapter=None,
+    )
+
+    async with factory() as s:
+        sched = await ScheduleRepo(s).create(
+            name="test-sched",
+            description="test",
+            cron_expr="0 0 * * *",
+            timezone="UTC",
+            prompt="give me a summary",
+            output_mode="dashboard_only",
+            notify_on_error=True,
+            enabled=True,
+        )
+        sched_id = sched.id
+
+    await scheduler.start()
+    try:
+        await scheduler.fire_now(sched_id)
+        await asyncio.sleep(0.3)
+    finally:
+        await scheduler.stop()
+
+    async with factory() as s:
+        refreshed = await ScheduleRepo(s).get(sched_id)
+        assert refreshed.last_run_status == "success"
+        assert refreshed.last_run_at is not None
+
+    async with factory() as s:
+        from sqlalchemy import select
+
+        from jarvis.persistence.models import ConversationRow
+
+        convs = (await s.execute(select(ConversationRow))).scalars().all()
+        assert len(convs) == 1
+        assert convs[0].channel_kind == ChannelKind.SCHEDULED.value
+
+        msgs = await MessageRepo(s).history(convs[0].id)
+        assert len(msgs) == 2
+        assert msgs[0].role == MessageRole.USER.value
+        assert msgs[1].role == MessageRole.ASSISTANT.value
+
+
+async def test_scheduler_handles_disabled_schedule(infra):
+    _, factory, audit = infra
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers=[],
+        discord_adapter=None,
+    )
+
+    async with factory() as s:
+        await ScheduleRepo(s).create(
+            name="disabled",
+            description="",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            prompt="x",
+            output_mode="dashboard_only",
+            notify_on_error=True,
+            enabled=False,
+        )
+
+    await scheduler.start()
+    try:
+        assert scheduler.active_job_count() == 0
+    finally:
+        await scheduler.stop()
+
+
+async def test_scheduler_empty_db_starts_cleanly(infra):
+    _, factory, audit = infra
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers=[],
+        discord_adapter=None,
+    )
+
+    await scheduler.start()
+    try:
+        assert scheduler.active_job_count() == 0
+    finally:
+        await scheduler.stop()

@@ -101,3 +101,71 @@ async def test_audit_recent_as_events_returns_pydantic(session):
     assert all(isinstance(e.type, AuditEventType) for e in events)
     # Newest first ordering preserved.
     assert events[0].created_at >= events[-1].created_at
+
+
+async def test_schedule_list_all(session):
+    repo = ScheduleRepo(session)
+    await repo.create(
+        name="a",
+        description="",
+        cron_expr="* * * * *",
+        timezone="UTC",
+        prompt="x",
+        output_mode="discord",
+        notify_on_error=True,
+        enabled=True,
+    )
+    await repo.create(
+        name="b",
+        description="",
+        cron_expr="* * * * *",
+        timezone="UTC",
+        prompt="y",
+        output_mode="discord",
+        notify_on_error=True,
+        enabled=False,
+    )
+    all_schedules = await repo.list_all()
+    assert len(all_schedules) == 2
+    assert {s.name for s in all_schedules} == {"a", "b"}
+
+
+async def test_schedule_update(session):
+    repo = ScheduleRepo(session)
+    sched = await repo.create(
+        name="orig",
+        description="d",
+        cron_expr="0 8 * * *",
+        timezone="UTC",
+        prompt="go",
+        output_mode="discord",
+        notify_on_error=True,
+        enabled=True,
+    )
+    await repo.update(
+        sched.id,
+        name="renamed",
+        cron_expr="0 9 * * *",
+        prompt="new prompt",
+    )
+    refreshed = await repo.get(sched.id)
+    assert refreshed.name == "renamed"
+    assert refreshed.cron_expr == "0 9 * * *"
+    assert refreshed.prompt == "new prompt"
+    assert refreshed.output_mode == "discord"
+
+
+async def test_schedule_delete(session):
+    repo = ScheduleRepo(session)
+    sched = await repo.create(
+        name="to-delete",
+        description="",
+        cron_expr="* * * * *",
+        timezone="UTC",
+        prompt="x",
+        output_mode="discord",
+        notify_on_error=True,
+        enabled=True,
+    )
+    await repo.delete(sched.id)
+    assert await repo.get(sched.id) is None
