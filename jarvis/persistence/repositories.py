@@ -6,7 +6,8 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
+from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
+from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.persistence.models import (
     AuditEventRow,
     ConversationRow,
@@ -101,23 +102,25 @@ class ConversationRepo:
 class MessageRepo:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._conv_repo = ConversationRepo(session)
 
     async def append(
         self,
         *,
         conversation_id: UUID,
-        role: str,
+        role: MessageRole,
         content: str,
     ) -> MessageRow:
         msg = MessageRow(
             conversation_id=conversation_id,
-            role=role,
+            role=role.value,
             content=content,
             created_at=_utcnow(),
         )
         self._session.add(msg)
         await self._session.commit()
         await self._session.refresh(msg)
+        await self._conv_repo.touch(conversation_id)
         return msg
 
     async def history(self, conversation_id: UUID) -> list[MessageRow]:
@@ -173,6 +176,26 @@ class AuditRepo:
             stmt = stmt.where(AuditEventRow.type.in_([t.value for t in types]))
         result = await self._session.execute(stmt)
         return list(result.scalars())
+
+    async def recent_as_events(
+        self,
+        *,
+        types: list[AuditEventType] | None = None,
+        limit: int = 100,
+    ) -> list[AuditEvent]:
+        """Same as recent(), but maps each row to an AuditEvent Pydantic model."""
+        rows = await self.recent(types=types, limit=limit)
+        return [
+            AuditEvent(
+                id=r.id,
+                conversation_id=r.conversation_id,
+                trigger_id=r.trigger_id,
+                type=AuditEventType(r.type),
+                payload=r.payload,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
 
 
 class ScheduleRepo:
@@ -288,7 +311,7 @@ class MCPToolRepo:
         self,
         server_id: UUID,
         *,
-        tools: list[dict],
+        tools: list[MCPToolDescriptor],
     ) -> None:
         """Replace the tool set for a server atomically (full overwrite)."""
         existing = await self._session.execute(
@@ -301,12 +324,12 @@ class MCPToolRepo:
             self._session.add(
                 MCPToolRow(
                     server_id=server_id,
-                    name=tool["name"],
-                    description=tool.get("description", ""),
-                    input_schema=tool.get("input_schema", {}),
-                    read_only_hint=tool.get("read_only_hint"),
-                    destructive_hint=tool.get("destructive_hint"),
-                    policy_override=tool.get("policy_override"),
+                    name=tool.name,
+                    description=tool.description,
+                    input_schema=tool.input_schema,
+                    read_only_hint=tool.read_only_hint,
+                    destructive_hint=tool.destructive_hint,
+                    policy_override=None,  # not part of the descriptor contract
                 )
             )
         await self._session.commit()

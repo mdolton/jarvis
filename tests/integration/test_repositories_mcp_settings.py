@@ -1,5 +1,6 @@
 import pytest
 
+from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import (
     MCPServerRepo,
@@ -43,20 +44,18 @@ async def test_mcp_tool_replace_for_server(session):
     await trepo.replace_for_server(
         server.id,
         tools=[
-            {
-                "name": "list_events",
-                "description": "",
-                "input_schema": {},
-                "read_only_hint": True,
-                "destructive_hint": False,
-            },
-            {
-                "name": "create_event",
-                "description": "",
-                "input_schema": {},
-                "read_only_hint": False,
-                "destructive_hint": False,
-            },
+            MCPToolDescriptor(
+                name="list_events",
+                input_schema={},
+                read_only_hint=True,
+                destructive_hint=False,
+            ),
+            MCPToolDescriptor(
+                name="create_event",
+                input_schema={},
+                read_only_hint=False,
+                destructive_hint=False,
+            ),
         ],
     )
     got = await trepo.list_for_server(server.id)
@@ -66,13 +65,12 @@ async def test_mcp_tool_replace_for_server(session):
     await trepo.replace_for_server(
         server.id,
         tools=[
-            {
-                "name": "list_events",
-                "description": "",
-                "input_schema": {},
-                "read_only_hint": True,
-                "destructive_hint": False,
-            },
+            MCPToolDescriptor(
+                name="list_events",
+                input_schema={},
+                read_only_hint=True,
+                destructive_hint=False,
+            ),
         ],
     )
     got = await trepo.list_for_server(server.id)

@@ -42,6 +42,12 @@ class AuditEventType(StrEnum):
     MCP_DISCONNECTED = "mcp.disconnected"
 
 
+class MessageRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
 class _ModelBase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

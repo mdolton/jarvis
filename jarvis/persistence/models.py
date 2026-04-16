@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from jarvis.persistence.db import Base, TZDateTime
@@ -19,6 +19,15 @@ class ConversationRow(Base):
     last_activity_at: Mapped[datetime] = mapped_column(TZDateTime())
     status: Mapped[str] = mapped_column(String(16), default="open")
     idle_timeout_sec: Mapped[int | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index(
+            "ix_conversations_lookup",
+            "channel_kind",
+            "channel_ref",
+            "status",
+        ),
+    )
 
     messages: Mapped[list["MessageRow"]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"

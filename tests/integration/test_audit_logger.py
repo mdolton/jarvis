@@ -91,3 +91,36 @@ async def test_restart_after_stop_flushes_new_events(engine_and_factory):
     async with factory() as s:
         rows = await AuditRepo(s).recent(limit=10)
     assert len(rows) == 4  # 1 from first run + 3 from second run
+
+
+async def test_queue_maxsize_drops_oldest(engine_and_factory):
+    """When the queue is full on emit, drop the OLDEST buffered event."""
+    _, factory = engine_and_factory
+    # Very slow flush + tiny queue so we can force overflow deterministically.
+    logger = AuditLogger(
+        session_factory=factory,
+        flush_interval_sec=5.0,  # effectively never auto-flush during the test
+        batch_size=100,
+        max_queue_size=3,
+    )
+    await logger.start()
+    try:
+        # Produce more events than the queue holds; they can't flush yet.
+        for i in range(6):
+            await logger.emit(AuditEvent(type=AuditEventType.LLM_REQUEST, payload={"i": i}))
+        # 6 emits into a 3-slot queue: 3 dropped.
+        assert logger.dropped_count == 3
+    finally:
+        await logger.stop()
+
+    async with factory() as s:
+        rows = await AuditRepo(s).recent(limit=10)
+    # The 3 newest (i=3, 4, 5) survived; the 3 oldest (i=0, 1, 2) dropped.
+    ids = sorted(r.payload["i"] for r in rows)
+    assert ids == [3, 4, 5]
+
+
+async def test_dropped_count_starts_at_zero(engine_and_factory):
+    _, factory = engine_and_factory
+    logger = AuditLogger(session_factory=factory)
+    assert logger.dropped_count == 0
