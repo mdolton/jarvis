@@ -41,4 +41,8 @@ def create_app(*, app_context=None) -> FastAPI:
 
     app.include_router(conversations_router)
 
+    from jarvis.web.routes.schedules import router as schedules_router
+
+    app.include_router(schedules_router)
+
     return app

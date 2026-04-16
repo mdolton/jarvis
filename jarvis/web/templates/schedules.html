@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Schedules{% endblock %}
+{% block content %}
+<h1>Schedules</h1>
+
+<h2>Create Schedule</h2>
+<form method="post" action="/schedules">
+    <input name="name" placeholder="Name" required>
+    <input name="description" placeholder="Description">
+    <input name="cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" required>
+    <input name="timezone" placeholder="Timezone" value="UTC">
+    <textarea name="prompt" placeholder="Agent prompt" rows="3" required></textarea>
+    <select name="output_mode">
+        <option value="discord">Discord</option>
+        <option value="dashboard_only">Dashboard only</option>
+        <option value="discord_if_noteworthy">Discord if noteworthy</option>
+    </select>
+    <button type="submit">Create</button>
+</form>
+
+<h2>Existing Schedules</h2>
+<table>
+    <thead>
+        <tr><th>Name</th><th>Cron</th><th>Output</th><th>Enabled</th><th>Last Run</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+    {% for s in schedules %}
+        <tr>
+            <td>{{ s.name }}</td>
+            <td><code>{{ s.cron_expr }}</code></td>
+            <td>{{ s.output_mode }}</td>
+            <td>
+                <span class="badge {% if s.enabled %}badge-ok{% else %}badge-warn{% endif %}">
+                    {{ "on" if s.enabled else "off" }}
+                </span>
+            </td>
+            <td class="muted">
+                {% if s.last_run_at %}
+                    {{ s.last_run_at.strftime('%Y-%m-%d %H:%M') }}
+                    <span class="badge {% if s.last_run_status == 'success' %}badge-ok{% else %}badge-err{% endif %}">{{ s.last_run_status }}</span>
+                {% else %}
+                    never
+                {% endif %}
+            </td>
+            <td>
+                <form method="post" action="/schedules/{{ s.id }}/toggle" style="display:inline">
+                    <button>{{ "Disable" if s.enabled else "Enable" }}</button>
+                </form>
+                <form method="post" action="/schedules/{{ s.id }}/delete" style="display:inline">
+                    <button class="btn-danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if not schedules %}
+<p class="muted">No schedules yet.</p>
+{% endif %}
+{% endblock %}
