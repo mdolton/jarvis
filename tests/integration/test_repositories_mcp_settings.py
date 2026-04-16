@@ -86,3 +86,89 @@ async def test_settings_get_set(session):
 
     await repo.set("idle_timeout_sec", 600)
     assert await repo.get("idle_timeout_sec") == 600
+
+
+async def test_mcp_tool_replace_preserves_policy_override(session):
+    srepo = MCPServerRepo(session)
+    trepo = MCPToolRepo(session)
+    server = await srepo.upsert(name="gcal", transport="stdio")
+
+    # Initial replace establishes the tool with no override.
+    await trepo.replace_for_server(
+        server.id,
+        tools=[
+            MCPToolDescriptor(
+                name="list_events",
+                input_schema={},
+                read_only_hint=True,
+                destructive_hint=False,
+            ),
+        ],
+    )
+
+    # Simulate the user setting an override directly in the DB.
+    from sqlalchemy import update
+
+    from jarvis.persistence.models import MCPToolRow
+
+    await session.execute(
+        update(MCPToolRow)
+        .where(MCPToolRow.server_id == server.id, MCPToolRow.name == "list_events")
+        .values(policy_override="confirm")
+    )
+    await session.commit()
+
+    # Reconnect — replace_for_server with the same descriptor should preserve
+    # the override (because nothing about the tool definition itself changed).
+    await trepo.replace_for_server(
+        server.id,
+        tools=[
+            MCPToolDescriptor(
+                name="list_events",
+                input_schema={},
+                read_only_hint=True,
+                destructive_hint=False,
+            ),
+        ],
+    )
+
+    rows = await trepo.list_for_server(server.id)
+    assert len(rows) == 1
+    assert rows[0].policy_override == "confirm"
+
+
+async def test_mcp_tool_replace_drops_policy_when_tool_disappears(session):
+    """If the server stops advertising a tool, the override goes with it."""
+    srepo = MCPServerRepo(session)
+    trepo = MCPToolRepo(session)
+    server = await srepo.upsert(name="gcal", transport="stdio")
+
+    await trepo.replace_for_server(
+        server.id,
+        tools=[
+            MCPToolDescriptor(name="old_tool", input_schema={}),
+        ],
+    )
+
+    from sqlalchemy import update
+
+    from jarvis.persistence.models import MCPToolRow
+
+    await session.execute(
+        update(MCPToolRow)
+        .where(MCPToolRow.server_id == server.id, MCPToolRow.name == "old_tool")
+        .values(policy_override="auto")
+    )
+    await session.commit()
+
+    # Replace with a different tool — old_tool's row (and its override) is gone.
+    await trepo.replace_for_server(
+        server.id,
+        tools=[
+            MCPToolDescriptor(name="new_tool", input_schema={}),
+        ],
+    )
+
+    rows = await trepo.list_for_server(server.id)
+    assert {r.name for r in rows} == {"new_tool"}
+    assert rows[0].policy_override is None

@@ -313,11 +313,20 @@ class MCPToolRepo:
         *,
         tools: list[MCPToolDescriptor],
     ) -> None:
-        """Replace the tool set for a server atomically (full overwrite)."""
+        """Replace the tool set for a server atomically (full overwrite),
+        preserving per-tool `policy_override` user-set state across the swap.
+        """
+        # Snapshot existing overrides keyed by tool name so we can re-apply
+        # them after the delete-then-insert.
         existing = await self._session.execute(
             select(MCPToolRow).where(MCPToolRow.server_id == server_id)
         )
-        for row in existing.scalars():
+        existing_rows = list(existing.scalars())
+        overrides: dict[str, str] = {
+            r.name: r.policy_override for r in existing_rows if r.policy_override is not None
+        }
+
+        for row in existing_rows:
             await self._session.delete(row)
 
         for tool in tools:
@@ -329,7 +338,7 @@ class MCPToolRepo:
                     input_schema=tool.input_schema,
                     read_only_hint=tool.read_only_hint,
                     destructive_hint=tool.destructive_hint,
-                    policy_override=None,  # not part of the descriptor contract
+                    policy_override=overrides.get(tool.name),
                 )
             )
         await self._session.commit()
