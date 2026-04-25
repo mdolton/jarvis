@@ -30,8 +30,8 @@ class MCPManager:
     ) -> None:
         self._config = config
         self._session_factory = session_factory
-        self._stack = AsyncExitStack()
-        self._sdk_servers: list[object] = []  # opaque agents.mcp.MCPServer*
+        self._stacks: dict[str, AsyncExitStack] = {}
+        self._sdk_servers: dict[str, object] = {}
 
     async def start(self) -> None:
         """Connect to every enabled server. Failures are recorded, not raised."""
@@ -45,30 +45,36 @@ class MCPManager:
                 await self._record_failure(server_cfg, e)
 
     async def stop(self) -> None:
-        await self._stack.aclose()
-        self._sdk_servers = []
+        for name in list(self._stacks):
+            try:
+                await self._stacks[name].aclose()
+            except Exception:
+                _log.exception("error closing MCP server stack %r", name)
+        self._stacks.clear()
+        self._sdk_servers.clear()
 
     def agent_mcp_servers(self) -> list[object]:
         """Return the SDK server objects to pass into `Agent(mcp_servers=...)`."""
-        return list(self._sdk_servers)
+        return list(self._sdk_servers.values())
 
     async def _connect_one(self, cfg: MCPServerConfig) -> None:
-        # Persist (or upsert) the server row up front so even a connection
-        # failure later has something to attach the error to.
         async with self._session_factory() as session:
             row = await MCPServerRepo(session).upsert(name=cfg.name, transport=cfg.transport)
             server_id = row.id
 
+        stack = AsyncExitStack()
         sdk_server = _build_sdk_server(cfg)
-        await self._stack.enter_async_context(sdk_server)
+        await stack.enter_async_context(sdk_server)
 
-        # Enumerate tools — this confirms the connection actually works. If
-        # list_tools fails, the sdk_server is already registered in the exit
-        # stack (so stop() will still close it) but we must NOT expose it to
-        # the Agent via _sdk_servers, because it has no cataloged tools.
-        tools = await _list_tools(sdk_server)
+        try:
+            tools = await _list_tools(sdk_server)
+        except Exception:
+            # Eagerly close on list_tools failure so we don't keep a half-broken server.
+            await stack.aclose()
+            raise
 
-        self._sdk_servers.append(sdk_server)
+        self._stacks[cfg.name] = stack
+        self._sdk_servers[cfg.name] = sdk_server
 
         async with self._session_factory() as session:
             srepo = MCPServerRepo(session)
