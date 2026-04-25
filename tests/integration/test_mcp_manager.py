@@ -169,3 +169,16 @@ async def test_stop_is_idempotent(engine_and_factory, test_server_script):
     await manager.start()
     await manager.stop()
     await manager.stop()  # second call should not raise
+
+
+async def test_mcp_manager_rejects_yaml_server_named_after_catalog_key(engine_and_factory):
+    """MCPManager.start raises if a YAML server name collides with an OAuth catalog key."""
+    _, factory = engine_and_factory
+    cfg = MCPServersConfig(
+        servers=[
+            MCPServerConfig(name="fastmail", transport="http", url="http://localhost"),
+        ],
+    )
+    manager = MCPManager(config=cfg, session_factory=factory)
+    with pytest.raises(ValueError, match="fastmail"):
+        await manager.start()

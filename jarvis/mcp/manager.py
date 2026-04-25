@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
 from jarvis.mcp.descriptor import MCPToolDescriptor
+from jarvis.oauth.catalog import assert_no_yaml_collision
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
 
 _log = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class MCPManager:
 
     async def start(self) -> None:
         """Connect to every enabled server. Failures are recorded, not raised."""
+        assert_no_yaml_collision(s.name for s in self._config.servers)
         for server_cfg in self._config.servers:
             if not server_cfg.enabled:
                 continue
