@@ -132,3 +132,40 @@ async def test_mcp_manager_handles_empty_config(engine_and_factory):
         assert manager.agent_mcp_servers() == []
     finally:
         await manager.stop()
+
+
+async def test_agent_mcp_servers_stable_identity(engine_and_factory, test_server_script):
+    """Successive calls to agent_mcp_servers() return the same SDK objects."""
+    import sys
+    _, factory = engine_and_factory
+    cfg = MCPServersConfig(
+        servers=[
+            MCPServerConfig(name="echo", transport="stdio",
+                            command=[sys.executable, str(test_server_script)]),
+        ],
+    )
+    manager = MCPManager(config=cfg, session_factory=factory)
+    await manager.start()
+    try:
+        first_call = manager.agent_mcp_servers()
+        second_call = manager.agent_mcp_servers()
+        assert len(first_call) == 1
+        assert first_call[0] is second_call[0]
+    finally:
+        await manager.stop()
+
+
+async def test_stop_is_idempotent(engine_and_factory, test_server_script):
+    """Calling stop() twice doesn't raise."""
+    import sys
+    _, factory = engine_and_factory
+    cfg = MCPServersConfig(
+        servers=[
+            MCPServerConfig(name="echo", transport="stdio",
+                            command=[sys.executable, str(test_server_script)]),
+        ],
+    )
+    manager = MCPManager(config=cfg, session_factory=factory)
+    await manager.start()
+    await manager.stop()
+    await manager.stop()  # second call should not raise
