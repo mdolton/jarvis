@@ -30,6 +30,14 @@ class OAuthCallbackError(RuntimeError):
     """Callback failed validation or token exchange."""
 
 
+class OAuthRefreshTransientError(RuntimeError):
+    """Transient refresh failure (network error or 5xx). Caller may retry."""
+
+
+class OAuthRefreshPermanentError(RuntimeError):
+    """Permanent refresh failure (invalid_grant or missing token). Requires re-auth."""
+
+
 @dataclass(frozen=True, slots=True)
 class RegisteredClient:
     client_id: str
@@ -293,3 +301,82 @@ class OAuthFlow:
             await OAuthPendingRepo(session).delete(state)
 
         return CallbackResult(provider_key=provider_key, scopes_granted=scopes_granted)
+
+    async def refresh(self, provider_key: str) -> dict[str, str]:
+        """Refresh tokens. Returns new headers dict for MCPServerStreamableHttp.
+
+        Raises OAuthRefreshTransientError on network/5xx (caller may retry).
+        Raises OAuthRefreshPermanentError on invalid_grant or missing refresh token
+        (caller marks needs_reauth — already done here for the latter).
+        """
+        if self._session_factory is None:
+            raise RuntimeError("OAuthFlow needs a session_factory for refresh")
+        entry = OAUTH_CATALOG[provider_key]
+        metadata = await self.discover(entry)
+
+        async with self._session_factory() as session:
+            cred = await OAuthCredentialsRepo(session).get(provider_key)
+        if cred is None:
+            raise OAuthRefreshPermanentError(f"{provider_key}: no credentials row")
+        if not cred.refresh_token_enc:
+            await self._mark_needs_reauth(provider_key, "no refresh_token on file")
+            raise OAuthRefreshPermanentError(f"{provider_key}: no refresh_token on file")
+
+        client_id = decrypt_blob(cred.client_id_enc, self._secrets_key).decode()
+        client_secret = (
+            decrypt_blob(cred.client_secret_enc, self._secrets_key).decode()
+            if cred.client_secret_enc
+            else None
+        )
+        refresh_token = decrypt_blob(cred.refresh_token_enc, self._secrets_key).decode()
+
+        form: dict[str, str] = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        headers: dict[str, str] = {}
+        if client_secret is not None:
+            basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+            headers["Authorization"] = f"Basic {basic}"
+        else:
+            form["client_id"] = client_id
+
+        try:
+            resp = await self._http.post(metadata.token_endpoint, data=form, headers=headers)
+        except httpx.HTTPError as e:
+            raise OAuthRefreshTransientError(f"network: {e}") from e
+
+        if 500 <= resp.status_code < 600:
+            raise OAuthRefreshTransientError(f"token endpoint {resp.status_code}")
+        if resp.status_code >= 400:
+            try:
+                err = resp.json().get("error", "")
+            except Exception:
+                err = resp.text[:120]
+            await self._mark_needs_reauth(provider_key, f"refresh failed: {err}")
+            raise OAuthRefreshPermanentError(
+                f"{provider_key}: refresh permanently failed: {err}"
+            )
+
+        data = resp.json()
+        access_token: str = data["access_token"]
+        new_refresh: str | None = data.get("refresh_token")  # may rotate
+        expires_in = int(data.get("expires_in", 3600))
+        expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+
+        async with self._session_factory() as session:
+            await OAuthCredentialsRepo(session).update_tokens(
+                provider_key,
+                access_token_enc=encrypt_blob(access_token.encode(), self._secrets_key),
+                refresh_token_enc=(
+                    encrypt_blob(new_refresh.encode(), self._secrets_key)
+                    if new_refresh
+                    else None
+                ),
+                token_expires_at=expires_at,
+            )
+
+        return {"Authorization": f"Bearer {access_token}"}
+
+    async def _mark_needs_reauth(self, provider_key: str, reason: str) -> None:
+        async with self._session_factory() as session:
+            await OAuthCredentialsRepo(session).set_status(
+                provider_key, status="needs_reauth", last_error=reason
+            )
