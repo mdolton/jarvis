@@ -5,6 +5,13 @@ from typer.testing import CliRunner
 
 from jarvis import cli
 
+_VALID_FERNET_KEY = "L3mlA0FZ8e_kqYxQQHMfVS_Yfg8Lq9YR4xa5p5IhV0g="
+
+
+@pytest.fixture(autouse=True)
+def _set_secrets_key(monkeypatch):
+    monkeypatch.setenv("JARVIS_SECRETS_KEY", _VALID_FERNET_KEY)
+
 
 @pytest.fixture
 def config_dir(tmp_path):

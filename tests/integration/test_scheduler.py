@@ -76,7 +76,7 @@ async def test_scheduler_fires_and_records_run(infra):
         audit=audit,
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model_override=model,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         discord_adapter=None,
     )
 
@@ -128,7 +128,7 @@ async def test_scheduler_handles_disabled_schedule(infra):
         audit=audit,
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model_override=_FakeModel(),
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         discord_adapter=None,
     )
 
@@ -159,7 +159,7 @@ async def test_scheduler_empty_db_starts_cleanly(infra):
         audit=audit,
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model_override=_FakeModel(),
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         discord_adapter=None,
     )
 

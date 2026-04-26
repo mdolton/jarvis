@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from jarvis.config.schema import ChannelsConfig, JarvisConfig, MCPServersConfig
+from jarvis.oauth.crypto import load_secrets_key
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -22,6 +23,8 @@ class LoadedConfig:
     jarvis: JarvisConfig
     channels: ChannelsConfig
     mcp_servers: MCPServersConfig
+    base_url: str
+    secrets_key: bytes
 
 
 def expand_env(value: Any) -> Any:
@@ -72,4 +75,13 @@ def load_config(config_dir: Path | str) -> LoadedConfig:
     except Exception as e:  # pydantic ValidationError or similar
         raise ConfigLoadError(str(e)) from e
 
-    return LoadedConfig(jarvis=jarvis_cfg, channels=channels_cfg, mcp_servers=mcp_cfg)
+    base_url = os.environ.get("JARVIS_BASE_URL", "http://localhost:8080")
+    secrets_key = load_secrets_key()
+
+    return LoadedConfig(
+        jarvis=jarvis_cfg,
+        channels=channels_cfg,
+        mcp_servers=mcp_cfg,
+        base_url=base_url,
+        secrets_key=secrets_key,
+    )

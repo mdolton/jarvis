@@ -40,6 +40,19 @@ class AuditEventType(StrEnum):
     CONFIG_RELOAD_FAILED = "config.reload_failed"
     MCP_CONNECTED = "mcp.connected"
     MCP_DISCONNECTED = "mcp.disconnected"
+    OAUTH_DISCOVERY_STARTED = "oauth.discovery_started"
+    OAUTH_DISCOVERY_SUCCEEDED = "oauth.discovery_succeeded"
+    OAUTH_DISCOVERY_FAILED = "oauth.discovery_failed"
+    OAUTH_DCR_REGISTERED = "oauth.dcr_registered"
+    OAUTH_CONSENT_REDIRECT_ISSUED = "oauth.consent_redirect_issued"
+    OAUTH_CALLBACK_RECEIVED = "oauth.callback_received"
+    OAUTH_STATE_MISMATCH = "oauth.state_mismatch"
+    OAUTH_CONSENT_DECLINED = "oauth.consent_declined"
+    OAUTH_TOKENS_OBTAINED = "oauth.tokens_obtained"
+    OAUTH_REFRESH_SUCCEEDED = "oauth.refresh_succeeded"
+    OAUTH_REFRESH_TRANSIENT_FAILURE = "oauth.refresh_transient_failure"
+    OAUTH_REFRESH_PERMANENTLY_FAILED = "oauth.refresh_permanently_failed"
+    OAUTH_REVOKED = "oauth.revoked"
 
 
 class MessageRole(StrEnum):

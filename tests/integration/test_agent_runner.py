@@ -86,7 +86,7 @@ async def test_agent_runner_persists_user_and_assistant_messages(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
         model=_FakeModel(text="response-under-test"),
     )
@@ -126,7 +126,7 @@ async def test_agent_runner_writes_audit_events(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
         model=_FakeModel(),
     )

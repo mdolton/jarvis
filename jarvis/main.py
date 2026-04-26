@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from agents import set_trace_processors
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -23,6 +24,7 @@ from jarvis.core.dispatcher import TriggerDispatcher
 from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import ChannelKind
 from jarvis.mcp.manager import MCPManager
+from jarvis.oauth.flow import OAuthFlow
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.scheduler.scheduler import Scheduler
 from jarvis.web.app import create_app as _create_web_app
@@ -43,6 +45,8 @@ class AppContext:
     output_router: OutputRouter
     scheduler: Scheduler
     web_app: FastAPI
+    oauth_flow: OAuthFlow
+    oauth_http: httpx.AsyncClient
 
     async def shutdown(self) -> None:
         await self.scheduler.stop()
@@ -53,6 +57,7 @@ class AppContext:
             except Exception:
                 _log.exception("error stopping channel adapter")
         await self.mcp_manager.stop()
+        await self.oauth_http.aclose()
         await self.audit.stop()
         await self.engine.dispose()
 
@@ -78,15 +83,29 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     llm_client = build_llm_client(cfg.jarvis.llm)
     install_as_default(llm_client)
 
+    # OAuth.
+    oauth_http = httpx.AsyncClient(timeout=30.0)
+    oauth_flow = OAuthFlow(
+        http_client=oauth_http,
+        session_factory=factory,
+        base_url=cfg.base_url,
+        secrets_key=cfg.secrets_key,
+    )
+
     # MCP.
-    mcp_manager = MCPManager(config=cfg.mcp_servers, session_factory=factory)
+    mcp_manager = MCPManager(
+        config=cfg.mcp_servers,
+        session_factory=factory,
+        secrets_key=cfg.secrets_key,
+    )
     await mcp_manager.start()
 
-    # Agent runner.
+    # Agent runner. Pass the manager's accessor so each run resolves the
+    # current SDK servers (OAuth servers connected post-bootstrap are visible).
     agent_runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=mcp_manager.agent_mcp_servers(),
+        mcp_servers_provider=mcp_manager.agent_mcp_servers,
         llm_config=cfg.jarvis.llm,
         idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
     )
@@ -126,10 +145,12 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         session_factory=factory,
         audit=audit,
         llm_config=cfg.jarvis.llm,
-        mcp_servers=mcp_manager.agent_mcp_servers(),
+        mcp_servers_provider=mcp_manager.agent_mcp_servers,
         discord_adapter=discord_adapter,
         idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
         max_concurrent=cfg.jarvis.max_concurrent_agents,
+        oauth_flow=oauth_flow,
+        mcp_manager=mcp_manager,
     )
     await scheduler.start()
 
@@ -149,6 +170,8 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         output_router=output_router,
         scheduler=scheduler,
         web_app=web_app,
+        oauth_flow=oauth_flow,
+        oauth_http=oauth_http,
     )
     # Wire the full context into the web app now that it exists.
     web_app.state.ctx = ctx
