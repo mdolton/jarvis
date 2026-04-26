@@ -31,6 +31,8 @@ WORKDIR /app
 # Copy the venv + app from build stage.
 COPY --from=builder /app /app
 
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Copy entrypoint.
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
