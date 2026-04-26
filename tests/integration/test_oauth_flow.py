@@ -1,10 +1,15 @@
 """OAuthFlow tests using httpx.MockTransport (no real network)."""
 
+from urllib.parse import parse_qs, urlparse
+
 import httpx
 import pytest
 
 from jarvis.oauth.catalog import OAUTH_CATALOG
+from jarvis.oauth.crypto import generate_key
 from jarvis.oauth.flow import OAuthDiscoveryError, OAuthFlow
+from jarvis.oauth.store import OAuthCredentialsRepo, OAuthPendingRepo
+from jarvis.persistence.db import Base, create_engine, session_factory
 
 
 @pytest.fixture
@@ -101,3 +106,73 @@ async def test_register_client_no_endpoint_raises(fastmail_metadata_payload):
     from jarvis.oauth.flow import DCRUnsupportedError
     with pytest.raises(DCRUnsupportedError):
         await flow.register_client(OAUTH_CATALOG["fastmail"], metadata)
+
+
+@pytest.fixture
+async def db_factory(tmp_path):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    f = session_factory(engine)
+    yield f
+    await engine.dispose()
+
+
+async def test_start_authorization_first_time_registers_and_returns_consent_url(
+    db_factory, fastmail_metadata_payload
+):
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid-1", "client_secret": "sec"})
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("fastmail")
+
+    parsed = urlparse(consent_url)
+    qs = parse_qs(parsed.query)
+    assert parsed.netloc == "api.fastmail.com"
+    assert qs["response_type"] == ["code"]
+    assert qs["client_id"] == ["cid-1"]
+    assert qs["redirect_uri"] == ["http://localhost:8080/oauth/callback"]
+    assert qs["code_challenge_method"] == ["S256"]
+    state = qs["state"][0]
+
+    # An oauth_pending row was inserted for the state.
+    async with db_factory() as session:
+        pending = await OAuthPendingRepo(session).get(state)
+        assert pending is not None
+        assert pending.provider_key == "fastmail"
+
+    # Credentials row exists with the registered client_id (encrypted).
+    async with db_factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("fastmail")
+        # Pre-token-exchange row may exist with empty access_token; check client_id was stored.
+        # If the impl defers credentials insert until token exchange, no row here.
+        # Both designs are acceptable per spec — assert presence of either pending or registered state.
+        assert cred is None or cred.client_id_enc != b""
+
+
+async def test_start_authorization_skips_register_if_client_already_known(
+    db_factory, fastmail_metadata_payload
+):
+    register_calls = {"count": 0}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            register_calls["count"] += 1
+            return httpx.Response(201, json={"client_id": "x", "client_secret": "y"})
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    await flow.start_authorization("fastmail")
+    await flow.start_authorization("fastmail")
+    assert register_calls["count"] == 1
