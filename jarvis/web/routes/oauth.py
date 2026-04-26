@@ -20,6 +20,10 @@ async def oauth_callback(request: Request):
     error = qp.get("error")
 
     if error is not None:
+        error_description = qp.get("error_description", "")
+        _log.warning(
+            "oauth callback returned error=%r description=%r", error, error_description
+        )
         # Best-effort: sweep any matching pending row but don't fail if absent.
         state = qp.get("state")
         if state:
@@ -29,11 +33,16 @@ async def oauth_callback(request: Request):
                 async with ctx.session_factory() as session:
                     await OAuthPendingRepo(session).delete(state)
             except Exception:
-                _log.exception("failed to sweep pending row on declined callback")
+                _log.exception("failed to sweep pending row on errored callback")
+        # Only access_denied means the user explicitly declined. Everything else
+        # (invalid_scope, invalid_request, server_error, ...) is a real error
+        # we should surface so the user can debug or report it.
+        outcome = "declined" if error == "access_denied" else "error"
+        message = f"{error}: {error_description}" if error_description else error
         return templates.TemplateResponse(
             request,
             "oauth_callback.html",
-            {"outcome": "declined", "provider": "", "message": error},
+            {"outcome": outcome, "provider": "", "message": message},
         )
 
     state = qp.get("state")
