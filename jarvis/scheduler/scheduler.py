@@ -45,9 +45,13 @@ class Scheduler:
         model_override: Any = None,
         idle_timeout_sec: int = 900,
         max_concurrent: int = 3,
+        oauth_flow=None,
+        mcp_manager=None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
+        self._oauth_flow = oauth_flow
+        self._oauth_mcp_manager = mcp_manager
 
         self._output_router = ScheduledOutputRouter(discord_adapter=discord_adapter)
 
@@ -74,6 +78,28 @@ class Scheduler:
         self._aps = AsyncScheduler()
         await self._aps.__aenter__()
         await self._aps.start_in_background()
+
+        if self._oauth_flow is not None and self._oauth_mcp_manager is not None:
+            from apscheduler.triggers.interval import IntervalTrigger
+
+            from jarvis.scheduler.oauth_jobs import oauth_pending_sweep, oauth_token_refresh
+
+            await self._aps.add_schedule(
+                oauth_token_refresh,
+                IntervalTrigger(seconds=60),
+                kwargs={
+                    "flow": self._oauth_flow,
+                    "mcp_manager": self._oauth_mcp_manager,
+                    "session_factory": self._session_factory,
+                },
+                id="oauth_token_refresh",
+            )
+            await self._aps.add_schedule(
+                oauth_pending_sweep,
+                CronTrigger(hour=3, minute=0),
+                kwargs={"session_factory": self._session_factory},
+                id="oauth_pending_sweep",
+            )
 
         async with self._session_factory() as session:
             rows = await ScheduleRepo(session).list_enabled()
