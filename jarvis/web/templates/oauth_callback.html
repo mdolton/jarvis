@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}OAuth — {{ provider or "Jarvis" }}{% endblock %}
+{% block content %}
+<div class="oauth-callback">
+  {% if outcome == "success" %}
+    <h2>Connected to {{ provider }}.</h2>
+    <p>You can close this tab.</p>
+  {% elif outcome == "declined" %}
+    <h2>Authorization declined.</h2>
+    <p>No data was saved. <a href="/mcp">Back to Jarvis</a>.</p>
+  {% else %}
+    <h2>Authorization failed.</h2>
+    <p>{{ message }}</p>
+    <p><a href="/mcp">Back to Jarvis</a></p>
+  {% endif %}
+</div>
+{% endblock %}

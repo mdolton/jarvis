@@ -59,4 +59,8 @@ def create_app(*, app_context=None) -> FastAPI:
 
     app.include_router(settings_router)
 
+    from jarvis.web.routes.oauth import router as oauth_router
+
+    app.include_router(oauth_router)
+
     return app
