@@ -184,6 +184,8 @@ class OAuthFlow:
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
+            # RFC 8707 + MCP authorization spec: identify the protected resource.
+            "resource": entry.mcp_url,
         }
         # Effective scopes: catalog override if present, else everything the provider advertises.
         effective_scopes = list(entry.scopes) if entry.scopes else metadata.scopes_supported
@@ -263,6 +265,8 @@ class OAuthFlow:
             "code": code,
             "redirect_uri": self.redirect_uri,
             "code_verifier": pending.code_verifier,
+            # RFC 8707 + MCP authorization spec: identify the protected resource.
+            "resource": entry.mcp_url,
         }
         headers: dict[str, str] = {}
         if client_secret is not None:
@@ -345,7 +349,12 @@ class OAuthFlow:
         )
         refresh_token = decrypt_blob(cred.refresh_token_enc, self._secrets_key).decode()
 
-        form: dict[str, str] = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        form: dict[str, str] = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            # RFC 8707 + MCP authorization spec: identify the protected resource.
+            "resource": entry.mcp_url,
+        }
         headers: dict[str, str] = {}
         if client_secret is not None:
             basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
