@@ -5,6 +5,7 @@ so unit tests can stub responses with MockTransport."""
 from __future__ import annotations
 
 import base64
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -16,6 +17,8 @@ from jarvis.oauth.catalog import OAUTH_CATALOG, AuthMode, ProviderEntry
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob
 from jarvis.oauth.pkce import generate_code_challenge, generate_code_verifier, generate_state
 from jarvis.oauth.store import OAuthCredentialsRepo, OAuthPendingRepo
+
+_log = logging.getLogger(__name__)
 
 
 class OAuthDiscoveryError(RuntimeError):
@@ -373,6 +376,79 @@ class OAuthFlow:
                 token_expires_at=expires_at,
             )
 
+        return {"Authorization": f"Bearer {access_token}"}
+
+    async def revoke(self, provider_key: str) -> None:
+        """Best-effort RFC 7009 token revocation followed by local credential deletion.
+
+        Network errors and non-200 responses are logged but not raised — the user
+        clicked Disconnect and we always honor that locally.
+        """
+        if self._session_factory is None:
+            raise RuntimeError("OAuthFlow needs a session_factory for revoke")
+        entry = OAUTH_CATALOG[provider_key]
+
+        async with self._session_factory() as session:
+            cred = await OAuthCredentialsRepo(session).get(provider_key)
+        if cred is None:
+            return  # nothing to revoke
+
+        # Best-effort revocation against the provider.
+        try:
+            metadata = await self.discover(entry)
+            if metadata.revocation_endpoint and cred.access_token_enc:
+                access_token = decrypt_blob(cred.access_token_enc, self._secrets_key).decode()
+                client_id = decrypt_blob(cred.client_id_enc, self._secrets_key).decode()
+                client_secret = (
+                    decrypt_blob(cred.client_secret_enc, self._secrets_key).decode()
+                    if cred.client_secret_enc
+                    else None
+                )
+                form: dict[str, str] = {
+                    "token": access_token,
+                    "token_type_hint": "access_token",
+                }
+                headers: dict[str, str] = {}
+                if client_secret is not None:
+                    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+                    headers["Authorization"] = f"Basic {basic}"
+                else:
+                    form["client_id"] = client_id
+                try:
+                    resp = await self._http.post(
+                        metadata.revocation_endpoint, data=form, headers=headers
+                    )
+                    if resp.status_code >= 400:
+                        _log.warning(
+                            "revocation endpoint returned %s for %s",
+                            resp.status_code,
+                            provider_key,
+                        )
+                except httpx.HTTPError as e:
+                    _log.warning("revocation HTTP error for %s: %s", provider_key, e)
+        except Exception:
+            _log.exception(
+                "revocation pre-step failed for %s; proceeding with local cleanup",
+                provider_key,
+            )
+
+        # Always delete local credentials regardless of remote outcome.
+        async with self._session_factory() as session:
+            await OAuthCredentialsRepo(session).delete(provider_key)
+
+    async def current_headers(self, provider_key: str) -> dict[str, str]:
+        """Return ``{"Authorization": "Bearer <access_token>"}`` for an active provider.
+
+        Does NOT refresh — that is the scheduler's responsibility.
+        Raises ``LookupError`` if no credentials row exists or the access token is absent.
+        """
+        if self._session_factory is None:
+            raise RuntimeError("OAuthFlow needs a session_factory for current_headers")
+        async with self._session_factory() as session:
+            cred = await OAuthCredentialsRepo(session).get(provider_key)
+        if cred is None or not cred.access_token_enc:
+            raise LookupError(f"{provider_key}: no active credentials")
+        access_token = decrypt_blob(cred.access_token_enc, self._secrets_key).decode()
         return {"Authorization": f"Bearer {access_token}"}
 
     async def _mark_needs_reauth(self, provider_key: str, reason: str) -> None:

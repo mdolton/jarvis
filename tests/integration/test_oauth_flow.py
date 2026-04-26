@@ -296,3 +296,78 @@ async def test_refresh_invalid_grant_marks_needs_reauth(db_factory, fastmail_met
         cred = await OAuthCredentialsRepo(session).get("fastmail")
         assert cred.status == "needs_reauth"
         assert "invalid_grant" in (cred.last_error or "")
+
+
+async def test_revoke_calls_revocation_endpoint_and_deletes_credentials(
+    db_factory, fastmail_metadata_payload
+):
+    revoke_calls = {"count": 0}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={
+                "access_token": "AT", "refresh_token": "RT", "expires_in": 3600,
+            })
+        if request.url.path == "/oauth/revoke":
+            revoke_calls["count"] += 1
+            return httpx.Response(200)
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("fastmail")
+    s = parse_qs(urlparse(consent_url).query)["state"][0]
+    await flow.handle_callback(state=s, code="abc")
+
+    await flow.revoke("fastmail")
+    assert revoke_calls["count"] >= 1
+    async with db_factory() as session:
+        assert await OAuthCredentialsRepo(session).get("fastmail") is None
+
+
+async def test_revoke_silent_when_endpoint_5xx(db_factory, fastmail_metadata_payload):
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+        if request.url.path == "/oauth/revoke":
+            return httpx.Response(503)
+        return httpx.Response(404)
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("fastmail")
+    s = parse_qs(urlparse(consent_url).query)["state"][0]
+    await flow.handle_callback(state=s, code="abc")
+    # 5xx must not raise — local cleanup proceeds.
+    await flow.revoke("fastmail")
+    async with db_factory() as session:
+        assert await OAuthCredentialsRepo(session).get("fastmail") is None
+
+
+async def test_current_headers_returns_bearer(db_factory, fastmail_metadata_payload):
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+        return httpx.Response(404)
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("fastmail")
+    s = parse_qs(urlparse(consent_url).query)["state"][0]
+    await flow.handle_callback(state=s, code="abc")
+
+    headers = await flow.current_headers("fastmail")
+    assert headers["Authorization"] == "Bearer AT"
