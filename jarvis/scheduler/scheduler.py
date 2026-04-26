@@ -13,6 +13,7 @@ Each job fire:
 """
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -40,7 +41,7 @@ class Scheduler:
         session_factory: async_sessionmaker[AsyncSession],
         audit: AuditLogger,
         llm_config: LLMConfig,
-        mcp_servers: list,
+        mcp_servers_provider: Callable[[], list],
         discord_adapter: ChannelAdapter | None,
         model_override: Any = None,
         idle_timeout_sec: int = 900,
@@ -63,7 +64,7 @@ class Scheduler:
         self._runner = AgentRunner(
             session_factory=session_factory,
             audit=audit,
-            mcp_servers=mcp_servers,
+            mcp_servers_provider=mcp_servers_provider,
             llm_config=llm_config,
             model=model_override,
             idle_timeout_sec=idle_timeout_sec,

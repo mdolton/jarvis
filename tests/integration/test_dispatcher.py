@@ -96,7 +96,7 @@ async def test_dispatch_manual_trigger_runs(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model=model,
     )
@@ -113,7 +113,7 @@ async def test_dispatch_dedups_discord_message_by_external_id(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model=model,
     )
@@ -139,7 +139,7 @@ async def test_dispatch_rejects_disallowed_discord_user(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model=model,
     )
@@ -162,7 +162,7 @@ async def test_dispatch_concurrency_is_bounded(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model=model,
     )
@@ -186,7 +186,7 @@ async def test_dispatch_channel_message_routes_reply_to_adapter(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model=model,
     )
@@ -230,7 +230,7 @@ async def test_dispatch_manual_does_not_route(infra):
     runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=[],
+        mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
         model=model,
     )

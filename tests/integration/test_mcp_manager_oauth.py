@@ -53,7 +53,7 @@ async def test_replace_oauth_server_swaps_sdk_object(factory, monkeypatch):
         builds = iter([first, second])
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers: next(builds),
+            lambda url, headers, *, name: next(builds),
         )
 
         await mgr.replace_oauth_server(
@@ -87,7 +87,7 @@ async def test_replace_oauth_server_aborts_on_list_tools_failure(factory, monkey
         builds = iter([first, broken])
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers: next(builds),
+            lambda url, headers, *, name: next(builds),
         )
         await mgr.replace_oauth_server("fastmail", url="x", headers={"Authorization": "Bearer A1"})
         with pytest.raises(RuntimeError, match="bad token"):
@@ -107,7 +107,7 @@ async def test_remove_oauth_server_closes_and_drops(factory, monkeypatch):
         sdk = FakeSDKServer()
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers: sdk,
+            lambda url, headers, *, name: sdk,
         )
         await mgr.replace_oauth_server("fastmail", url="x", headers={"Authorization": "Bearer A"})
         await mgr.remove_oauth_server("fastmail")
@@ -133,7 +133,7 @@ async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeyp
         )
 
     sdk = FakeSDKServer()
-    monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", lambda url, headers: sdk)
+    monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", lambda url, headers, *, name: sdk)
 
     cfg = MCPServersConfig(servers=[])
     mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=key)
@@ -151,7 +151,7 @@ async def test_start_skips_oauth_provider_without_credentials(factory, monkeypat
     builds = []
     monkeypatch.setattr(
         "jarvis.mcp.manager._build_streamable_http",
-        lambda url, headers: builds.append(1),
+        lambda url, headers, *, name: builds.append(1),
     )
     await mgr.start()
     try:

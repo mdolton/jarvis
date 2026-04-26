@@ -132,7 +132,7 @@ class MCPManager:
         The old stack (if any) is closed on the next event-loop tick via asyncio.create_task.
         """
         new_stack = AsyncExitStack()
-        new_sdk = _build_streamable_http(url, headers)
+        new_sdk = _build_streamable_http(url, headers, name=provider_key)
         await new_stack.enter_async_context(new_sdk)
 
         try:
@@ -166,11 +166,12 @@ class MCPManager:
                 _log.exception("error closing oauth server stack %r", provider_key)
 
 
-def _build_streamable_http(url: str, headers: dict[str, str]) -> object:
+def _build_streamable_http(url: str, headers: dict[str, str], *, name: str) -> object:
     """Module-level builder so tests can patch this single symbol."""
     return MCPServerStreamableHttp(
-        name="oauth",
+        name=name,
         params={"url": url, "headers": headers},
+        cache_tools_list=True,
     )
 
 

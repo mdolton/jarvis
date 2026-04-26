@@ -100,11 +100,12 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     )
     await mcp_manager.start()
 
-    # Agent runner.
+    # Agent runner. Pass the manager's accessor so each run resolves the
+    # current SDK servers (OAuth servers connected post-bootstrap are visible).
     agent_runner = AgentRunner(
         session_factory=factory,
         audit=audit,
-        mcp_servers=mcp_manager.agent_mcp_servers(),
+        mcp_servers_provider=mcp_manager.agent_mcp_servers,
         llm_config=cfg.jarvis.llm,
         idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
     )
@@ -144,7 +145,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         session_factory=factory,
         audit=audit,
         llm_config=cfg.jarvis.llm,
-        mcp_servers=mcp_manager.agent_mcp_servers(),
+        mcp_servers_provider=mcp_manager.agent_mcp_servers,
         discord_adapter=discord_adapter,
         idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
         max_concurrent=cfg.jarvis.max_concurrent_agents,

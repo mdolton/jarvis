@@ -9,6 +9,7 @@ Responsibilities:
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -52,14 +53,14 @@ class AgentRunner:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         audit: AuditLogger,
-        mcp_servers: list,
+        mcp_servers_provider: Callable[[], list],
         llm_config: LLMConfig,
         model: Any = None,  # Override for tests; None means "use config.model"
         idle_timeout_sec: int = 900,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
-        self._mcp_servers = mcp_servers
+        self._mcp_servers_provider = mcp_servers_provider
         self._llm_config = llm_config
         self._model = model
         self._idle_timeout_sec = idle_timeout_sec
@@ -104,11 +105,12 @@ class AgentRunner:
             )
         )
 
-        # Build the SDK agent.
+        # Build the SDK agent. Resolve mcp_servers fresh per run so OAuth
+        # servers connected after bootstrap are visible to new agent invocations.
         agent_kwargs: dict[str, Any] = {
             "name": "jarvis",
             "instructions": _system_prompt(),
-            "mcp_servers": self._mcp_servers,
+            "mcp_servers": self._mcp_servers_provider(),
         }
         if self._model is not None:
             agent_kwargs["model"] = self._model
