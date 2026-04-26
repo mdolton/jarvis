@@ -4,8 +4,9 @@ so unit tests can stub responses with MockTransport."""
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -25,10 +26,20 @@ class DCRUnsupportedError(RuntimeError):
     """Provider doesn't advertise a registration_endpoint."""
 
 
+class OAuthCallbackError(RuntimeError):
+    """Callback failed validation or token exchange."""
+
+
 @dataclass(frozen=True, slots=True)
 class RegisteredClient:
     client_id: str
     client_secret: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CallbackResult:
+    provider_key: str
+    scopes_granted: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,3 +197,99 @@ class OAuthFlow:
             client_id=data["client_id"],
             client_secret=data.get("client_secret"),
         )
+
+    async def handle_callback(self, *, state: str, code: str) -> CallbackResult:
+        """Exchange authorization code for tokens and persist them.
+
+        Looks up the pending row by state (CSRF defense), POSTs to the token
+        endpoint, stores encrypted tokens, deletes the pending row, and returns
+        a CallbackResult. Raises OAuthCallbackError for any validation or HTTP
+        failure; on failure the pending row is left intact so the user can retry.
+        """
+        if self._session_factory is None:
+            raise RuntimeError("OAuthFlow needs a session_factory for handle_callback")
+
+        # --- CSRF defense: state MUST exist before we do anything else ---
+        async with self._session_factory() as session:
+            pending = await OAuthPendingRepo(session).get(state)
+        if pending is None:
+            raise OAuthCallbackError(f"unknown or expired state {state!r}")
+
+        provider_key = pending.provider_key
+        entry = OAUTH_CATALOG[provider_key]
+        metadata = await self.discover(entry)
+
+        # Recover registered client credentials from encrypted storage.
+        async with self._session_factory() as session:
+            cred = await OAuthCredentialsRepo(session).get(provider_key)
+        if cred is None or not cred.client_id_enc:
+            raise OAuthCallbackError(
+                f"{provider_key}: no registered client; cannot complete callback"
+            )
+
+        client_id = decrypt_blob(cred.client_id_enc, self._secrets_key).decode()
+        client_secret = (
+            decrypt_blob(cred.client_secret_enc, self._secrets_key).decode()
+            if cred.client_secret_enc
+            else None
+        )
+
+        # Build the token exchange request.
+        form: dict[str, str] = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": self.redirect_uri,
+            "code_verifier": pending.code_verifier,
+        }
+        headers: dict[str, str] = {}
+        if client_secret is not None:
+            # client_secret_basic: Authorization: Basic base64(client_id:client_secret)
+            basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+            headers["Authorization"] = f"Basic {basic}"
+        else:
+            # Public client: send client_id in form body instead.
+            form["client_id"] = client_id
+
+        # POST to token endpoint. Failure does NOT delete the pending row.
+        resp = await self._http.post(metadata.token_endpoint, data=form, headers=headers)
+        if resp.status_code >= 400:
+            raise OAuthCallbackError(
+                f"token exchange returned {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise OAuthCallbackError(
+                "token endpoint returned non-JSON response"
+            ) from exc
+        if "access_token" not in data:
+            raise OAuthCallbackError(
+                f"token response missing access_token: {str(data)[:300]}"
+            )
+
+        access_token: str = data["access_token"]
+        refresh_token: str | None = data.get("refresh_token")
+        expires_in = int(data.get("expires_in", 3600))
+        scope: str = data.get("scope", "")
+        scopes_granted = scope.split() if scope else []
+        # Write-time uses the raw expires_in; 90s skew buffer is applied at refresh-time.
+        expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+
+        # Persist new tokens and delete the pending row atomically within the same session.
+        async with self._session_factory() as session:
+            await OAuthCredentialsRepo(session).upsert(
+                provider_key=provider_key,
+                client_id_enc=cred.client_id_enc,
+                client_secret_enc=cred.client_secret_enc,
+                access_token_enc=encrypt_blob(access_token.encode(), self._secrets_key),
+                refresh_token_enc=(
+                    encrypt_blob(refresh_token.encode(), self._secrets_key)
+                    if refresh_token
+                    else None
+                ),
+                token_expires_at=expires_at,
+                scopes_granted=scopes_granted,
+            )
+            await OAuthPendingRepo(session).delete(state)
+
+        return CallbackResult(provider_key=provider_key, scopes_granted=scopes_granted)

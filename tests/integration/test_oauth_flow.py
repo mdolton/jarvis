@@ -176,3 +176,53 @@ async def test_start_authorization_skips_register_if_client_already_known(
     await flow.start_authorization("fastmail")
     await flow.start_authorization("fastmail")
     assert register_calls["count"] == 1
+
+
+async def test_handle_callback_happy_path(db_factory, fastmail_metadata_payload):
+    state_seen = {}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            body = request.read().decode()
+            state_seen["body"] = body
+            return httpx.Response(200, json={
+                "access_token": "AT", "refresh_token": "RT",
+                "expires_in": 3600, "token_type": "Bearer",
+                "scope": "mail.read",
+            })
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("fastmail")
+    state = parse_qs(urlparse(consent_url).query)["state"][0]
+
+    result = await flow.handle_callback(state=state, code="abc")
+    assert result.provider_key == "fastmail"
+
+    # The pending row was deleted.
+    async with db_factory() as session:
+        assert await OAuthPendingRepo(session).get(state) is None
+
+    # Credentials updated with real tokens.
+    from jarvis.oauth.crypto import decrypt_blob
+    async with db_factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("fastmail")
+        assert decrypt_blob(cred.access_token_enc, key) == b"AT"
+        assert decrypt_blob(cred.refresh_token_enc, key) == b"RT"
+        assert cred.scopes_granted == ["mail.read"]
+
+
+async def test_handle_callback_unknown_state_raises(db_factory, fastmail_metadata_payload):
+    def handler(request):
+        return httpx.Response(404)
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=generate_key().encode())
+    from jarvis.oauth.flow import OAuthCallbackError
+    with pytest.raises(OAuthCallbackError, match="state"):
+        await flow.handle_callback(state="not-a-real-state", code="abc")
