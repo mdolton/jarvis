@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
 from jarvis.mcp.descriptor import MCPToolDescriptor
-from jarvis.oauth.catalog import assert_no_yaml_collision
+from jarvis.oauth.catalog import OAUTH_CATALOG, AuthMode, assert_no_yaml_collision
+from jarvis.oauth.crypto import decrypt_blob
+from jarvis.oauth.store import OAuthCredentialsRepo
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
 
 _log = logging.getLogger(__name__)
@@ -29,9 +31,11 @@ class MCPManager:
         *,
         config: MCPServersConfig,
         session_factory: async_sessionmaker[AsyncSession],
+        secrets_key: bytes | None = None,
     ) -> None:
         self._config = config
         self._session_factory = session_factory
+        self._secrets_key = secrets_key
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
 
@@ -47,6 +51,9 @@ class MCPManager:
                 _log.exception("failed to connect MCP server %r", server_cfg.name)
                 await self._record_failure(server_cfg, e)
 
+        if self._secrets_key is not None:
+            await self._bootstrap_oauth_catalog()
+
     async def stop(self) -> None:
         for name in list(self._stacks):
             try:
@@ -55,6 +62,31 @@ class MCPManager:
                 _log.exception("error closing MCP server stack %r", name)
         self._stacks.clear()
         self._sdk_servers.clear()
+
+    async def _bootstrap_oauth_catalog(self) -> None:
+        """Attach any already-connected OAuth providers at startup."""
+        async with self._session_factory() as session:
+            rows = await OAuthCredentialsRepo(session).list_all()
+        rows_by_key = {r.provider_key: r for r in rows}
+        for key, entry in OAUTH_CATALOG.items():
+            if entry.auth_mode is not AuthMode.DCR:
+                continue
+            cred = rows_by_key.get(key)
+            if cred is None or cred.status != "connected" or not cred.access_token_enc:
+                continue
+            access_token = decrypt_blob(cred.access_token_enc, self._secrets_key).decode()  # type: ignore[arg-type]
+            try:
+                await self.replace_oauth_server(
+                    key,
+                    url=entry.mcp_url,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+            except Exception as e:
+                _log.exception("failed to attach OAuth MCP %r at boot", key)
+                async with self._session_factory() as session:
+                    await OAuthCredentialsRepo(session).set_status(
+                        key, status="needs_reauth", last_error=f"boot attach failed: {e}"
+                    )
 
     def agent_mcp_servers(self) -> list[object]:
         """Return the SDK server objects to pass into `Agent(mcp_servers=...)`."""

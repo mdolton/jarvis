@@ -1,9 +1,13 @@
 """MCPManager OAuth integration: replace, remove, isolation from YAML servers."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from jarvis.config.schema import MCPServersConfig
 from jarvis.mcp.manager import MCPManager
+from jarvis.oauth.crypto import encrypt_blob, generate_key
+from jarvis.oauth.store import OAuthCredentialsRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 
 
@@ -109,5 +113,49 @@ async def test_remove_oauth_server_closes_and_drops(factory, monkeypatch):
         await mgr.remove_oauth_server("fastmail")
         assert mgr.agent_mcp_servers() == []
         assert sdk.exited
+    finally:
+        await mgr.stop()
+
+
+async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeypatch):
+    """When oauth_credentials has a valid Fastmail row, start() builds the SDK server."""
+    key = generate_key().encode()
+    now = datetime.now(UTC)
+    async with factory() as session:
+        await OAuthCredentialsRepo(session).upsert(
+            provider_key="fastmail",
+            client_id_enc=encrypt_blob(b"cid", key),
+            client_secret_enc=None,
+            access_token_enc=encrypt_blob(b"AT", key),
+            refresh_token_enc=encrypt_blob(b"RT", key),
+            token_expires_at=now + timedelta(hours=1),
+            scopes_granted=[],
+        )
+
+    sdk = FakeSDKServer()
+    monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", lambda url, headers: sdk)
+
+    cfg = MCPServersConfig(servers=[])
+    mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=key)
+    await mgr.start()
+    try:
+        assert sdk.entered
+        assert mgr.agent_mcp_servers() == [sdk]
+    finally:
+        await mgr.stop()
+
+
+async def test_start_skips_oauth_provider_without_credentials(factory, monkeypatch):
+    cfg = MCPServersConfig(servers=[])
+    mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=generate_key().encode())
+    builds = []
+    monkeypatch.setattr(
+        "jarvis.mcp.manager._build_streamable_http",
+        lambda url, headers: builds.append(1),
+    )
+    await mgr.start()
+    try:
+        assert builds == []
+        assert mgr.agent_mcp_servers() == []
     finally:
         await mgr.stop()
