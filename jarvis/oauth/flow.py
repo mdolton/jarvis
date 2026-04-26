@@ -199,10 +199,14 @@ class OAuthFlow:
             "client_name": "Jarvis",
             "redirect_uris": [self.redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
-            "token_endpoint_auth_method": "client_secret_basic",
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
         }
         resp = await self._http.post(metadata.registration_endpoint, json=body)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise OAuthDiscoveryError(
+                f"{entry.key}: DCR registration failed {resp.status_code}: {resp.text[:500]}"
+            )
         data = resp.json()
         return RegisteredClient(
             client_id=data["client_id"],
