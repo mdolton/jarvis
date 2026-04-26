@@ -1,7 +1,35 @@
 {% extends "base.html" %}
 {% block title %}MCP Servers{% endblock %}
 {% block content %}
-<h1>MCP Servers</h1>
+<section style="margin-bottom: 2rem;">
+  <h1>OAuth Providers</h1>
+  {% for card in oauth_cards %}
+    <div style="margin-bottom: 1rem;">
+      <h2>{{ card.display_name }}
+        {% if card.state == "connected" %}
+          <span class="badge badge-ok">Connected</span>
+        {% elif card.state == "needs_reauth" %}
+          <span class="badge badge-warn">Re-authorization required</span>
+        {% else %}
+          <span class="badge">Not connected</span>
+        {% endif %}
+      </h2>
+      {% if card.state == "disconnected" %}
+        <p><a class="btn" href="/oauth/connect/{{ card.key }}">Connect</a></p>
+      {% elif card.state == "connected" %}
+        {% if card.updated_at %}<p class="muted">Last refreshed: {{ card.updated_at.strftime('%Y-%m-%d %H:%M') }}</p>{% endif %}
+        <form method="post" action="/oauth/disconnect/{{ card.key }}" style="display:inline">
+          <button type="submit">Disconnect</button>
+        </form>
+      {% else %}
+        {% if card.last_error %}<pre>{{ card.last_error }}</pre>{% endif %}
+        <p><a class="btn" href="/oauth/connect/{{ card.key }}">Reconnect</a></p>
+      {% endif %}
+    </div>
+  {% endfor %}
+</section>
+
+<h1>MCP Servers (YAML-configured)</h1>
 {% for srv in servers %}
 <div style="margin-bottom: 1.5rem;">
     <h2>{{ srv.name }} <span class="badge {% if srv.status == 'connected' %}badge-ok{% elif srv.status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h2>
