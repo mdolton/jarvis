@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.oauth.crypto import generate_key
 from jarvis.oauth.flow import OAuthFlow
+from jarvis.oauth.store import OAuthCredentialsRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.web.app import create_app
 
@@ -152,3 +153,45 @@ async def test_callback_with_error_param_renders_declined(factory):
     r = client.get("/oauth/callback?error=access_denied&state=anything")
     assert r.status_code == 200
     assert "declined" in r.text.lower()
+
+
+class _ManagerStubWithRemove(_ManagerStub):
+    def __init__(self):
+        super().__init__()
+        self.removed = []
+
+    async def remove_oauth_server(self, key):
+        self.removed.append(key)
+
+
+async def test_disconnect_revokes_and_removes(factory):
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata())
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+        if request.url.path == "/oauth/revoke":
+            return httpx.Response(200)
+        return httpx.Response(404)
+
+    flow = OAuthFlow(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        session_factory=factory,
+        base_url="http://localhost:8080",
+        secrets_key=generate_key().encode(),
+    )
+    ctx = _Ctx(factory, flow)
+    ctx.mcp_manager = _ManagerStubWithRemove()
+
+    client = make_app(ctx)
+    r = client.get("/oauth/connect/fastmail", follow_redirects=False)
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    client.get(f"/oauth/callback?state={state}&code=abc")
+
+    r2 = client.post("/oauth/disconnect/fastmail")
+    assert r2.status_code in (200, 303)
+    assert ctx.mcp_manager.removed == ["fastmail"]
+    async with factory() as session:
+        assert await OAuthCredentialsRepo(session).get("fastmail") is None

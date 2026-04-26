@@ -100,3 +100,14 @@ async def oauth_connect(provider: str, request: Request):
             status_code=502,
         )
     return RedirectResponse(consent_url, status_code=302)
+
+
+@router.post("/disconnect/{provider}")
+async def oauth_disconnect(provider: str, request: Request):
+    if provider not in OAUTH_CATALOG:
+        raise HTTPException(status_code=404, detail=f"unknown provider {provider!r}")
+    ctx = request.app.state.ctx
+    if ctx.mcp_manager is not None:
+        await ctx.mcp_manager.remove_oauth_server(provider)
+    await ctx.oauth_flow.revoke(provider)
+    return RedirectResponse("/mcp", status_code=303)
