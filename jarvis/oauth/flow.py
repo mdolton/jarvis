@@ -60,6 +60,7 @@ class ProviderMetadata:
     registration_endpoint: str | None
     revocation_endpoint: str | None
     code_challenge_methods_supported: list[str]
+    scopes_supported: list[str]
 
 
 class OAuthFlow:
@@ -105,6 +106,7 @@ class OAuthFlow:
                 code_challenge_methods_supported=list(
                     data.get("code_challenge_methods_supported", [])
                 ),
+                scopes_supported=list(data.get("scopes_supported", [])),
             )
         except KeyError as e:
             raise OAuthDiscoveryError(f"{entry.key}: metadata missing field {e}") from e
@@ -183,8 +185,10 @@ class OAuthFlow:
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
-        if entry.scopes:
-            params["scope"] = " ".join(entry.scopes)
+        # Effective scopes: catalog override if present, else everything the provider advertises.
+        effective_scopes = list(entry.scopes) if entry.scopes else metadata.scopes_supported
+        if effective_scopes:
+            params["scope"] = " ".join(effective_scopes)
         params.update(entry.extra_auth_params)
         return f"{metadata.authorization_endpoint}?{urlencode(params)}"
 
@@ -195,13 +199,17 @@ class OAuthFlow:
             raise DCRUnsupportedError(
                 f"{entry.key}: provider does not support DCR; manual-mode OAuth not yet implemented"
             )
-        body = {
+        body: dict = {
             "client_name": "Jarvis",
             "redirect_uris": [self.redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
         }
+        # Effective scopes: catalog override if present, else everything the provider advertises.
+        effective_scopes = list(entry.scopes) if entry.scopes else metadata.scopes_supported
+        if effective_scopes:
+            body["scope"] = " ".join(effective_scopes)
         resp = await self._http.post(metadata.registration_endpoint, json=body)
         if resp.status_code >= 400:
             raise OAuthDiscoveryError(
