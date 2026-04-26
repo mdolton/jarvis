@@ -8,6 +8,7 @@
 - On stop(): async-close each SDK server cleanly.
 """
 
+import asyncio
 import logging
 from contextlib import AsyncExitStack
 
@@ -89,6 +90,64 @@ class MCPManager:
             repo = MCPServerRepo(session)
             row = await repo.upsert(name=cfg.name, transport=cfg.transport)
             await repo.set_status(row.id, status="error", last_error=f"{type(exc).__name__}: {exc}")
+
+    async def replace_oauth_server(
+        self, provider_key: str, *, url: str, headers: dict[str, str]
+    ) -> None:
+        """Build a new streamable-HTTP SDK server, verify list_tools, then atomically swap.
+
+        If list_tools fails the new stack is closed and the old server remains active.
+        The old stack (if any) is closed on the next event-loop tick via asyncio.create_task.
+        """
+        new_stack = AsyncExitStack()
+        new_sdk = _build_streamable_http(url, headers)
+        await new_stack.enter_async_context(new_sdk)
+
+        try:
+            tools = await _list_tools(new_sdk)
+        except Exception:
+            await new_stack.aclose()
+            raise
+
+        old_stack = self._stacks.get(provider_key)
+        self._sdk_servers[provider_key] = new_sdk
+        self._stacks[provider_key] = new_stack
+
+        if old_stack is not None:
+            asyncio.create_task(_aclose_silently(old_stack))  # noqa: RUF006
+
+        async with self._session_factory() as session:
+            srepo = MCPServerRepo(session)
+            trepo = MCPToolRepo(session)
+            row = await srepo.upsert(name=provider_key, transport="http")
+            await srepo.set_status(row.id, status="connected", last_error=None)
+            await trepo.replace_for_server(row.id, tools=tools)
+
+    async def remove_oauth_server(self, provider_key: str) -> None:
+        """Pop and close the stack/sdk_server entries for an OAuth provider."""
+        self._sdk_servers.pop(provider_key, None)
+        stack = self._stacks.pop(provider_key, None)
+        if stack is not None:
+            try:
+                await stack.aclose()
+            except Exception:
+                _log.exception("error closing oauth server stack %r", provider_key)
+
+
+def _build_streamable_http(url: str, headers: dict[str, str]) -> object:
+    """Module-level builder so tests can patch this single symbol."""
+    return MCPServerStreamableHttp(
+        name="oauth",
+        params={"url": url, "headers": headers},
+    )
+
+
+async def _aclose_silently(stack: AsyncExitStack) -> None:
+    """Close an AsyncExitStack, logging any error instead of propagating it."""
+    try:
+        await stack.aclose()
+    except Exception:
+        _log.exception("error closing exit stack")
 
 
 def _build_sdk_server(cfg: MCPServerConfig) -> object:
