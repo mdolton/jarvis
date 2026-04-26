@@ -15,5 +15,7 @@ services:
       - JARVIS_DISCORD_ALLOWED_USER_IDS
       - JARVIS_TIMEZONE
       - JARVIS_LOG_LEVEL
+      - JARVIS_BASE_URL
+      - JARVIS_SECRETS_KEY
     extra_hosts:
       - "host.docker.internal:host-gateway"
