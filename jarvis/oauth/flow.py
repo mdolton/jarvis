@@ -16,6 +16,16 @@ class OAuthDiscoveryError(RuntimeError):
     """Raised when RFC 8414 metadata fetch or validation fails."""
 
 
+class DCRUnsupportedError(RuntimeError):
+    """Provider doesn't advertise a registration_endpoint."""
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredClient:
+    client_id: str
+    client_secret: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderMetadata:
     authorization_endpoint: str
@@ -76,3 +86,24 @@ class OAuthFlow:
                 f"{entry.key}: provider does not advertise S256 PKCE method"
             )
         return metadata
+
+    async def register_client(
+        self, entry: ProviderEntry, metadata: ProviderMetadata
+    ) -> RegisteredClient:
+        if metadata.registration_endpoint is None:
+            raise DCRUnsupportedError(
+                f"{entry.key}: provider does not support DCR; manual-mode OAuth not yet implemented"
+            )
+        body = {
+            "client_name": "Jarvis",
+            "redirect_uris": [self.redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_method": "client_secret_basic",
+        }
+        resp = await self._http.post(metadata.registration_endpoint, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        return RegisteredClient(
+            client_id=data["client_id"],
+            client_secret=data.get("client_secret"),
+        )
