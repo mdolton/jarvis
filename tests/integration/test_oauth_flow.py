@@ -353,6 +353,172 @@ async def test_revoke_silent_when_endpoint_5xx(db_factory, fastmail_metadata_pay
         assert await OAuthCredentialsRepo(session).get("fastmail") is None
 
 
+@pytest.fixture
+def google_metadata_payload():
+    # Mirrors accounts.google.com/.well-known/openid-configuration: no registration_endpoint.
+    return {
+        "issuer": "https://accounts.google.com",
+        "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_endpoint": "https://oauth2.googleapis.com/token",
+        "revocation_endpoint": "https://oauth2.googleapis.com/revoke",
+        "code_challenge_methods_supported": ["plain", "S256"],
+    }
+
+
+async def test_discover_manual_mode_parses_google_metadata(google_metadata_payload):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/.well-known/openid-configuration"
+        return httpx.Response(200, json=google_metadata_payload)
+
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=None,
+                     base_url="http://localhost:8080", secrets_key=b"k")
+    metadata = await flow.discover(OAUTH_CATALOG["gmail"])
+    assert metadata.authorization_endpoint == "https://accounts.google.com/o/oauth2/v2/auth"
+    assert metadata.token_endpoint == "https://oauth2.googleapis.com/token"
+    assert metadata.registration_endpoint is None
+    assert metadata.revocation_endpoint == "https://oauth2.googleapis.com/revoke"
+
+
+async def test_start_authorization_manual_seeds_client_from_env(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=google_metadata_payload)
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="https://jarvis.example/", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+
+    parsed = urlparse(consent_url)
+    qs = parse_qs(parsed.query)
+    assert parsed.netloc == "accounts.google.com"
+    assert qs["client_id"] == ["google-cid"]
+    assert qs["redirect_uri"] == ["https://jarvis.example/oauth/callback"]
+    assert qs["code_challenge_method"] == ["S256"]
+    assert qs["access_type"] == ["offline"]
+    assert qs["prompt"] == ["consent"]
+    assert qs["scope"] == [
+        "https://www.googleapis.com/auth/gmail.readonly "
+        "https://www.googleapis.com/auth/gmail.compose"
+    ]
+
+    async with db_factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("gmail")
+    assert cred is not None
+    assert cred.client_id_enc != b""
+    assert cred.access_token_enc == b""  # not yet authorized
+
+
+async def test_start_authorization_manual_missing_env_raises(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
+
+    def handler(request):
+        return httpx.Response(200, json=google_metadata_payload)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    with pytest.raises(OAuthDiscoveryError, match="GOOGLE_OAUTH_CLIENT_ID"):
+        await flow.start_authorization("gmail")
+
+
+async def test_resource_indicator_omitted_when_disabled(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    import dataclasses
+
+    from jarvis.oauth import catalog as catalog_mod
+
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+    patched = dataclasses.replace(
+        catalog_mod.OAUTH_CATALOG["gmail"], send_resource_indicator=False
+    )
+    monkeypatch.setitem(catalog_mod.OAUTH_CATALOG, "gmail", patched)
+
+    def handler(request):
+        return httpx.Response(200, json=google_metadata_payload)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+    qs = parse_qs(urlparse(consent_url).query)
+    assert "resource" not in qs
+
+
+async def test_resource_indicator_present_by_default(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+
+    def handler(request):
+        return httpx.Response(200, json=google_metadata_payload)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+    qs = parse_qs(urlparse(consent_url).query)
+    assert qs["resource"] == ["https://gmailmcp.googleapis.com/mcp/v1"]
+
+
+async def test_handle_callback_manual_uses_client_secret_basic(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    """Gmail is a confidential client: token exchange must authenticate with
+    client_secret_basic (Authorization: Basic base64(client_id:client_secret))
+    and persist the refresh_token Google returns."""
+    import base64
+
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+    seen = {}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=google_metadata_payload)
+        if request.url.path == "/token":
+            seen["auth"] = request.headers.get("Authorization")
+            seen["body"] = request.read().decode()
+            return httpx.Response(200, json={
+                "access_token": "AT", "refresh_token": "RT",
+                "expires_in": 3600, "token_type": "Bearer",
+                "scope": "https://www.googleapis.com/auth/gmail.readonly",
+            })
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+    state = parse_qs(urlparse(consent_url).query)["state"][0]
+
+    result = await flow.handle_callback(state=state, code="abc")
+    assert result.provider_key == "gmail"
+
+    # Confidential client: Basic auth header, not client_id in the form body.
+    expected_basic = base64.b64encode(b"google-cid:google-secret").decode()
+    assert seen["auth"] == f"Basic {expected_basic}"
+    assert "client_id=" not in seen["body"]
+
+    # Tokens persisted (incl. the refresh_token the proactive scheduler relies on).
+    from jarvis.oauth.crypto import decrypt_blob
+    async with db_factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("gmail")
+        assert decrypt_blob(cred.access_token_enc, key) == b"AT"
+        assert decrypt_blob(cred.refresh_token_enc, key) == b"RT"
+
+
 async def test_current_headers_returns_bearer(db_factory, fastmail_metadata_payload):
     def handler(request):
         if "/.well-known" in request.url.path:

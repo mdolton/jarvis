@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -82,10 +83,6 @@ class OAuthFlow:
         return f"{self._base_url}/oauth/callback"
 
     async def discover(self, entry: ProviderEntry) -> ProviderMetadata:
-        if entry.auth_mode is not AuthMode.DCR:
-            raise NotImplementedError(
-                f"Manual-mode OAuth not yet supported for provider {entry.key!r}"
-            )
         if entry.oauth_metadata_url is None:
             raise OAuthDiscoveryError(f"{entry.key}: no oauth_metadata_url configured")
         try:
@@ -120,6 +117,8 @@ class OAuthFlow:
         """Compose discover + register-if-needed + PKCE + state insert + URL build.
 
         Returns the provider's authorization URL that the user should be redirected to.
+        For MANUAL-mode providers the client credentials are sourced from env vars
+        instead of DCR; everything downstream (PKCE, state, consent URL) is identical.
 
         Intermediate state: after this call, an oauth_credentials row exists with
         access_token_enc=b"" — a sentinel meaning "registered but not authorized."
@@ -136,7 +135,10 @@ class OAuthFlow:
             existing = await OAuthCredentialsRepo(session).get(provider_key)
 
         if existing is None or not existing.client_id_enc:
-            client = await self.register_client(entry, metadata)
+            if entry.auth_mode is AuthMode.MANUAL:
+                client = self._resolve_manual_client(entry)
+            else:
+                client = await self.register_client(entry, metadata)
             # Persist client_id (and optional secret). access_token is empty until callback.
             async with self._session_factory() as session:
                 cid_enc = encrypt_blob(client.client_id.encode(), self._secrets_key)
@@ -184,14 +186,15 @@ class OAuthFlow:
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
-            # RFC 8707 + MCP authorization spec: identify the protected resource.
-            "resource": entry.mcp_url,
         }
         # Effective scopes: catalog override if present, else everything the provider advertises.
         effective_scopes = list(entry.scopes) if entry.scopes else metadata.scopes_supported
         if effective_scopes:
             params["scope"] = " ".join(effective_scopes)
         params.update(entry.extra_auth_params)
+        # RFC 8707 + MCP authorization spec: identify the protected resource.
+        if entry.send_resource_indicator:
+            params["resource"] = entry.mcp_url
         return f"{metadata.authorization_endpoint}?{urlencode(params)}"
 
     async def register_client(
@@ -199,7 +202,7 @@ class OAuthFlow:
     ) -> RegisteredClient:
         if metadata.registration_endpoint is None:
             raise DCRUnsupportedError(
-                f"{entry.key}: provider does not support DCR; manual-mode OAuth not yet implemented"
+                f"{entry.key}: provider does not support DCR; use auth_mode=MANUAL with client_id_env instead"
             )
         body: dict = {
             "client_name": "Jarvis",
@@ -222,6 +225,26 @@ class OAuthFlow:
             client_id=data["client_id"],
             client_secret=data.get("client_secret"),
         )
+
+    def _resolve_manual_client(self, entry: ProviderEntry) -> RegisteredClient:
+        """Read operator-supplied client_id/secret from the environment.
+
+        Manual-mode providers (e.g. Google) don't support DCR; the operator
+        creates the OAuth client by hand and supplies its credentials via env.
+        """
+        if not entry.client_id_env:
+            raise OAuthDiscoveryError(
+                f"{entry.key}: manual-mode provider has no client_id_env configured"
+            )
+        client_id = os.environ.get(entry.client_id_env)
+        if not client_id:
+            raise OAuthDiscoveryError(
+                f"{entry.key}: environment variable {entry.client_id_env} is not set"
+            )
+        client_secret = (
+            os.environ.get(entry.client_secret_env) if entry.client_secret_env else None
+        )
+        return RegisteredClient(client_id=client_id, client_secret=client_secret)
 
     async def handle_callback(self, *, state: str, code: str) -> CallbackResult:
         """Exchange authorization code for tokens and persist them.
@@ -265,9 +288,10 @@ class OAuthFlow:
             "code": code,
             "redirect_uri": self.redirect_uri,
             "code_verifier": pending.code_verifier,
-            # RFC 8707 + MCP authorization spec: identify the protected resource.
-            "resource": entry.mcp_url,
         }
+        # RFC 8707 + MCP authorization spec: identify the protected resource.
+        if entry.send_resource_indicator:
+            form["resource"] = entry.mcp_url
         headers: dict[str, str] = {}
         if client_secret is not None:
             # client_secret_basic: Authorization: Basic base64(client_id:client_secret)
@@ -352,9 +376,10 @@ class OAuthFlow:
         form: dict[str, str] = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            # RFC 8707 + MCP authorization spec: identify the protected resource.
-            "resource": entry.mcp_url,
         }
+        # RFC 8707 + MCP authorization spec: identify the protected resource.
+        if entry.send_resource_indicator:
+            form["resource"] = entry.mcp_url
         headers: dict[str, str] = {}
         if client_secret is not None:
             basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
