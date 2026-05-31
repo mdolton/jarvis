@@ -49,6 +49,65 @@ uv run alembic upgrade head
 uv run python -m jarvis serve
 ```
 
+## Deploying to Production
+
+Production runs a pre-built image from GitHub Container Registry (ghcr.io). You
+build and push from a dev machine; the server pulls and runs it. The image is
+multi-arch (`linux/amd64` + `linux/arm64`), so it runs on x86 or ARM hosts.
+Database migrations run automatically on container start (see `entrypoint.sh`).
+
+### 1. Build and push the image (dev machine)
+
+```bash
+make check                       # lint + tests
+export CR_PAT=ghp_xxx            # GitHub PAT with the write:packages scope
+make login                       # docker login ghcr.io
+make deploy                      # build multi-arch + push :<git-sha> and :latest
+```
+
+`make deploy` pushes `ghcr.io/mdolton/jarvis:<git-sha>` and `:latest`. The
+package is **private** by default — either keep it private and `docker login`
+on the server, or make it public in the GitHub package settings after the first
+push.
+
+### 2. Run it on the server
+
+The server needs Docker, `docker-compose.prod.yml`, the `config/` directory,
+and a `.env`. Clone the repo (or copy those files), then:
+
+```bash
+# Configure.
+cp .env.example .env             # set JARVIS_BASE_URL=https://jarvis.moltonlava.online,
+                                 # JARVIS_SECRETS_KEY, GOOGLE_OAUTH_* etc.
+cp config/jarvis.yaml.example config/jarvis.yaml   # + channels/mcp-servers as needed
+mkdir -p data
+
+# If the ghcr package is private, authenticate to pull:
+export CR_PAT=ghp_xxx
+make login
+
+# Pull and start.
+make prod-pull
+make prod-up
+```
+
+The dashboard listens on port 8080. For `https://jarvis.moltonlava.online`
+(required for the Google OAuth redirect URI to work), terminate TLS at your
+reverse proxy and forward to the container's port 8080.
+
+### 3. Ship an update
+
+```bash
+# Dev machine:
+make deploy
+
+# Server:
+make prod-pull && make prod-up
+```
+
+Pin a specific build instead of `latest` by exporting `JARVIS_IMAGE_TAG` (e.g.
+the git short SHA from `make deploy`) before `make prod-pull`/`make prod-up`.
+
 ## CLI Commands
 
 ```bash
