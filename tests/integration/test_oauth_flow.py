@@ -434,6 +434,7 @@ async def test_resource_indicator_omitted_when_disabled(
     db_factory, google_metadata_payload, monkeypatch
 ):
     import dataclasses
+
     from jarvis.oauth import catalog as catalog_mod
 
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
