@@ -379,6 +379,57 @@ async def test_discover_manual_mode_parses_google_metadata(google_metadata_paylo
     assert metadata.revocation_endpoint == "https://oauth2.googleapis.com/revoke"
 
 
+async def test_start_authorization_manual_seeds_client_from_env(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=google_metadata_payload)
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="https://jarvis.example/", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+
+    parsed = urlparse(consent_url)
+    qs = parse_qs(parsed.query)
+    assert parsed.netloc == "accounts.google.com"
+    assert qs["client_id"] == ["google-cid"]
+    assert qs["redirect_uri"] == ["https://jarvis.example/oauth/callback"]
+    assert qs["code_challenge_method"] == ["S256"]
+    assert qs["access_type"] == ["offline"]
+    assert qs["prompt"] == ["consent"]
+    assert qs["scope"] == [
+        "https://www.googleapis.com/auth/gmail.readonly "
+        "https://www.googleapis.com/auth/gmail.compose"
+    ]
+
+    async with db_factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("gmail")
+    assert cred is not None
+    assert cred.client_id_enc != b""
+    assert cred.access_token_enc == b""  # not yet authorized
+
+
+async def test_start_authorization_manual_missing_env_raises(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
+
+    def handler(request):
+        return httpx.Response(200, json=google_metadata_payload)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    with pytest.raises(OAuthDiscoveryError, match="GOOGLE_OAUTH_CLIENT_ID"):
+        await flow.start_authorization("gmail")
+
+
 async def test_current_headers_returns_bearer(db_factory, fastmail_metadata_payload):
     def handler(request):
         if "/.well-known" in request.url.path:

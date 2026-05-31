@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -13,7 +14,7 @@ from urllib.parse import urlencode
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from jarvis.oauth.catalog import OAUTH_CATALOG, ProviderEntry
+from jarvis.oauth.catalog import OAUTH_CATALOG, AuthMode, ProviderEntry
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob
 from jarvis.oauth.pkce import generate_code_challenge, generate_code_verifier, generate_state
 from jarvis.oauth.store import OAuthCredentialsRepo, OAuthPendingRepo
@@ -132,7 +133,10 @@ class OAuthFlow:
             existing = await OAuthCredentialsRepo(session).get(provider_key)
 
         if existing is None or not existing.client_id_enc:
-            client = await self.register_client(entry, metadata)
+            if entry.auth_mode is AuthMode.MANUAL:
+                client = self._resolve_manual_client(entry)
+            else:
+                client = await self.register_client(entry, metadata)
             # Persist client_id (and optional secret). access_token is empty until callback.
             async with self._session_factory() as session:
                 cid_enc = encrypt_blob(client.client_id.encode(), self._secrets_key)
@@ -218,6 +222,26 @@ class OAuthFlow:
             client_id=data["client_id"],
             client_secret=data.get("client_secret"),
         )
+
+    def _resolve_manual_client(self, entry: ProviderEntry) -> RegisteredClient:
+        """Read operator-supplied client_id/secret from the environment.
+
+        Manual-mode providers (e.g. Google) don't support DCR; the operator
+        creates the OAuth client by hand and supplies its credentials via env.
+        """
+        if not entry.client_id_env:
+            raise OAuthDiscoveryError(
+                f"{entry.key}: manual-mode provider has no client_id_env configured"
+            )
+        client_id = os.environ.get(entry.client_id_env)
+        if not client_id:
+            raise OAuthDiscoveryError(
+                f"{entry.key}: environment variable {entry.client_id_env} is not set"
+            )
+        client_secret = (
+            os.environ.get(entry.client_secret_env) if entry.client_secret_env else None
+        )
+        return RegisteredClient(client_id=client_id, client_secret=client_secret)
 
     async def handle_callback(self, *, state: str, code: str) -> CallbackResult:
         """Exchange authorization code for tokens and persist them.

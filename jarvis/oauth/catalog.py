@@ -10,7 +10,7 @@ from enum import StrEnum
 
 class AuthMode(StrEnum):
     DCR = "dcr"          # RFC 7591 dynamic client registration
-    MANUAL = "manual"    # operator-supplied client_id/secret (not implemented in v1)
+    MANUAL = "manual"    # operator-supplied client_id/secret; DCR registration skipped
 
 
 @dataclass(frozen=True, slots=True)
