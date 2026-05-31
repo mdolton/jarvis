@@ -117,6 +117,8 @@ class OAuthFlow:
         """Compose discover + register-if-needed + PKCE + state insert + URL build.
 
         Returns the provider's authorization URL that the user should be redirected to.
+        For MANUAL-mode providers the client credentials are sourced from env vars
+        instead of DCR; everything downstream (PKCE, state, consent URL) is identical.
 
         Intermediate state: after this call, an oauth_credentials row exists with
         access_token_enc=b"" — a sentinel meaning "registered but not authorized."
@@ -199,7 +201,7 @@ class OAuthFlow:
     ) -> RegisteredClient:
         if metadata.registration_endpoint is None:
             raise DCRUnsupportedError(
-                f"{entry.key}: provider does not support DCR; manual-mode OAuth not yet implemented"
+                f"{entry.key}: provider does not support DCR; use auth_mode=MANUAL with client_id_env instead"
             )
         body: dict = {
             "client_name": "Jarvis",
