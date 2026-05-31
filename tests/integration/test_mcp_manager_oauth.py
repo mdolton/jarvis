@@ -145,6 +145,41 @@ async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeyp
         await mgr.stop()
 
 
+async def test_start_attaches_connected_manual_provider(factory, monkeypatch):
+    """A connected manual-mode (gmail) row must be attached at boot, not skipped."""
+    key = generate_key().encode()
+    now = datetime.now(UTC)
+    async with factory() as session:
+        await OAuthCredentialsRepo(session).upsert(
+            provider_key="gmail",
+            client_id_enc=encrypt_blob(b"cid", key),
+            client_secret_enc=encrypt_blob(b"sec", key),
+            access_token_enc=encrypt_blob(b"AT", key),
+            refresh_token_enc=encrypt_blob(b"RT", key),
+            token_expires_at=now + timedelta(hours=1),
+            scopes_granted=[],
+        )
+
+    captured = {}
+    sdk = FakeSDKServer()
+
+    def fake_build(url, headers, *, name):
+        captured["url"] = url
+        return sdk
+
+    monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", fake_build)
+
+    cfg = MCPServersConfig(servers=[])
+    mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=key)
+    await mgr.start()
+    try:
+        assert sdk.entered
+        assert mgr.agent_mcp_servers() == [sdk]
+        assert captured["url"] == "https://gmailmcp.googleapis.com/mcp/v1"
+    finally:
+        await mgr.stop()
+
+
 async def test_start_skips_oauth_provider_without_credentials(factory, monkeypatch):
     cfg = MCPServersConfig(servers=[])
     mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=generate_key().encode())

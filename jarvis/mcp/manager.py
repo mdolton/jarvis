@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
 from jarvis.mcp.descriptor import MCPToolDescriptor
-from jarvis.oauth.catalog import OAUTH_CATALOG, AuthMode, assert_no_yaml_collision
+from jarvis.oauth.catalog import OAUTH_CATALOG, assert_no_yaml_collision
 from jarvis.oauth.crypto import decrypt_blob
 from jarvis.oauth.store import OAuthCredentialsRepo
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
@@ -69,8 +69,6 @@ class MCPManager:
             rows = await OAuthCredentialsRepo(session).list_all()
         rows_by_key = {r.provider_key: r for r in rows}
         for key, entry in OAUTH_CATALOG.items():
-            if entry.auth_mode is not AuthMode.DCR:
-                continue
             cred = rows_by_key.get(key)
             if cred is None or cred.status != "connected" or not cred.access_token_enc:
                 continue
