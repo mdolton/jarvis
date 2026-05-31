@@ -28,3 +28,6 @@ data/
 config/jarvis.yaml
 config/channels.yaml
 config/mcp-servers.yaml
+
+# Claude Code local settings
+.claude/
