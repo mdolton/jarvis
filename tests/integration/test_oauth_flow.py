@@ -430,6 +430,47 @@ async def test_start_authorization_manual_missing_env_raises(
         await flow.start_authorization("gmail")
 
 
+async def test_resource_indicator_omitted_when_disabled(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    import dataclasses
+    from jarvis.oauth import catalog as catalog_mod
+
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+    patched = dataclasses.replace(
+        catalog_mod.OAUTH_CATALOG["gmail"], send_resource_indicator=False
+    )
+    monkeypatch.setitem(catalog_mod.OAUTH_CATALOG, "gmail", patched)
+
+    def handler(request):
+        return httpx.Response(200, json=google_metadata_payload)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+    qs = parse_qs(urlparse(consent_url).query)
+    assert "resource" not in qs
+
+
+async def test_resource_indicator_present_by_default(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+
+    def handler(request):
+        return httpx.Response(200, json=google_metadata_payload)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+    qs = parse_qs(urlparse(consent_url).query)
+    assert qs["resource"] == ["https://gmailmcp.googleapis.com/mcp/v1"]
+
+
 async def test_current_headers_returns_bearer(db_factory, fastmail_metadata_payload):
     def handler(request):
         if "/.well-known" in request.url.path:
