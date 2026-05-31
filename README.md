@@ -119,37 +119,49 @@ Single Python async process running in Docker:
 
 ## OAuth-protected MCP servers
 
-Jarvis supports OAuth-protected HTTP MCP servers (currently: Fastmail) via the dashboard.
+Jarvis connects to OAuth-protected HTTP MCP servers from the `/mcp` dashboard. Two
+providers ship in the catalog:
 
-1. Generate a Fernet secrets key (one-time):
+- **Fastmail** — Dynamic Client Registration (DCR); no manual client setup.
+- **Gmail** — Google's official Gmail MCP server (`https://gmailmcp.googleapis.com/mcp/v1`).
+  Google does not support DCR, so you create the OAuth client by hand and supply its
+  credentials via environment variables.
 
+### One-time setup (all providers)
+
+1. Generate a Fernet secrets key:
    ```bash
    uv run python -c "from jarvis.oauth.crypto import generate_key; print(generate_key())"
    ```
-
-2. Add to your environment (in `.env` for Docker, or your shell for local dev):
-
+2. Set the base env vars (in `.env` for Docker, or your shell for local dev):
    ```
    JARVIS_SECRETS_KEY=<paste-the-key>
-   JARVIS_BASE_URL=http://localhost:8080   # or https://your-domain for remote deploys
+   JARVIS_BASE_URL=https://jarvis.moltonlava.online   # or http://localhost:8080 locally
    ```
 
-3. Restart Jarvis. Open `http://localhost:8080/mcp` and click **Connect** on the Fastmail card. Complete the consent screen — you'll be redirected back and the card will flip to **Connected**.
+### Gmail-specific setup
 
-4. **Disconnect** at any time using the Disconnect button. This revokes tokens with the provider and deletes local credentials.
+In Google Cloud Console:
 
-> **Key rotation:** changing `JARVIS_SECRETS_KEY` invalidates all stored OAuth credentials. Re-authorize each provider after rotating.
+1. Enable the **Gmail API** and request access to the **Gmail MCP server** (early access).
+2. Configure the **OAuth consent screen** with scopes
+   `https://www.googleapis.com/auth/gmail.readonly` and
+   `https://www.googleapis.com/auth/gmail.compose`. While the app is unverified, add your
+   Google account as a **test user**.
+3. Create an **OAuth client ID** of type **Web application**:
+   - **Authorized redirect URI:** `https://jarvis.moltonlava.online/oauth/callback`
+     (must equal `${JARVIS_BASE_URL}/oauth/callback` exactly).
+   - **Authorized JavaScript origins:** leave empty — Jarvis uses a server-side code flow.
 
-### Manual end-to-end test (required before merging OAuth changes)
+Then add the client credentials to Jarvis's environment:
+```
+GOOGLE_OAUTH_CLIENT_ID=<from Google Cloud Console>
+GOOGLE_OAUTH_CLIENT_SECRET=<from Google Cloud Console>
+```
 
-1. Generate a fresh `JARVIS_SECRETS_KEY` and start Jarvis.
-2. Navigate to `/mcp`. Click **Connect** on Fastmail.
-3. Complete consent on `api.fastmail.com`. Verify redirect to a "Connected to Fastmail" page.
-4. Open `/mcp`. Verify the Fastmail card shows **Connected** and tools list under it.
-5. Trigger an agent call that uses a Fastmail tool (e.g., via Discord DM). Verify it returns a result.
-6. Wait for the access token's `expires_in` to elapse (or manually update `token_expires_at` to a near-past time and wait 60s for the refresh job). Verify the card still shows **Connected** and the tool call still works.
-7. Click **Disconnect**. Verify Fastmail card returns to **Connect** state and `oauth_credentials` table is empty.
-8. Paste log excerpts and a `/mcp` screenshot into the PR.
+Restart Jarvis, open `/mcp`, and click **Connect** on the Gmail card. Jarvis stores the
+encrypted tokens and refreshes them automatically; if a refresh permanently fails the card
+shows **Needs re-auth** with a Reconnect button.
 
 ## License
 
