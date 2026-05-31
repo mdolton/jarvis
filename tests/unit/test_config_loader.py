@@ -27,9 +27,6 @@ def test_expand_env_missing_var_raises(monkeypatch):
         expand_env({"k": "${MISSING}"})
 
 
-_VALID_FERNET_KEY = "L3mlA0FZ8e_kqYxQQHMfVS_Yfg8Lq9YR4xa5p5IhV0g="
-
-
 def _write_minimal_yaml(path):
     """Write the three required YAML config files to *path*."""
     _write(
@@ -45,9 +42,9 @@ llm:
     _write(path / "mcp-servers.yaml", "servers: []")
 
 
-def test_load_config_reads_all_three_files(tmp_path, monkeypatch):
+def test_load_config_reads_all_three_files(tmp_path, monkeypatch, valid_fernet_key):
     monkeypatch.setenv("DISCORD_TOKEN", "tok")
-    monkeypatch.setenv("JARVIS_SECRETS_KEY", _VALID_FERNET_KEY)
+    monkeypatch.setenv("JARVIS_SECRETS_KEY", valid_fernet_key)
 
     _write(
         tmp_path / "jarvis.yaml",
@@ -83,19 +80,19 @@ servers:
     assert cfg.mcp_servers.servers[0].name == "gcal"
 
 
-def test_load_config_reads_base_url_and_secrets_key(tmp_path, monkeypatch):
+def test_load_config_reads_base_url_and_secrets_key(tmp_path, monkeypatch, valid_fernet_key):
     _write_minimal_yaml(tmp_path)
     monkeypatch.setenv("JARVIS_BASE_URL", "https://jarvis.example.com")
-    monkeypatch.setenv("JARVIS_SECRETS_KEY", _VALID_FERNET_KEY)
+    monkeypatch.setenv("JARVIS_SECRETS_KEY", valid_fernet_key)
     cfg = load_config(tmp_path)
     assert cfg.base_url == "https://jarvis.example.com"
-    assert cfg.secrets_key == _VALID_FERNET_KEY.encode()
+    assert cfg.secrets_key == valid_fernet_key.encode()
 
 
-def test_load_config_base_url_defaults_to_localhost(tmp_path, monkeypatch):
+def test_load_config_base_url_defaults_to_localhost(tmp_path, monkeypatch, valid_fernet_key):
     _write_minimal_yaml(tmp_path)
     monkeypatch.delenv("JARVIS_BASE_URL", raising=False)
-    monkeypatch.setenv("JARVIS_SECRETS_KEY", _VALID_FERNET_KEY)
+    monkeypatch.setenv("JARVIS_SECRETS_KEY", valid_fernet_key)
     cfg = load_config(tmp_path)
     assert cfg.base_url == "http://localhost:8080"
 
@@ -109,14 +106,14 @@ def test_load_config_secrets_key_missing_raises(tmp_path, monkeypatch):
         load_config(tmp_path)
 
 
-def test_load_config_missing_required_file(tmp_path, monkeypatch):
-    monkeypatch.setenv("JARVIS_SECRETS_KEY", _VALID_FERNET_KEY)
+def test_load_config_missing_required_file(tmp_path, monkeypatch, valid_fernet_key):
+    monkeypatch.setenv("JARVIS_SECRETS_KEY", valid_fernet_key)
     with pytest.raises(ConfigLoadError, match=r"jarvis\.yaml"):
         load_config(tmp_path)
 
 
-def test_load_config_invalid_yaml(tmp_path, monkeypatch):
-    monkeypatch.setenv("JARVIS_SECRETS_KEY", _VALID_FERNET_KEY)
+def test_load_config_invalid_yaml(tmp_path, monkeypatch, valid_fernet_key):
+    monkeypatch.setenv("JARVIS_SECRETS_KEY", valid_fernet_key)
     _write(tmp_path / "jarvis.yaml", "llm: [not valid")
     with pytest.raises(ConfigLoadError):
         load_config(tmp_path)

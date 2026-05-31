@@ -5,16 +5,12 @@ import pytest
 
 from jarvis.config.watcher import ConfigWatcher
 
-_VALID_FERNET_KEY = "L3mlA0FZ8e_kqYxQQHMfVS_Yfg8Lq9YR4xa5p5IhV0g="
+# JARVIS_SECRETS_KEY is set for every integration test by the autouse
+# `_set_secrets_key` fixture in tests/integration/conftest.py.
 
 
 def _write(p: Path, s: str) -> None:
     p.write_text(s)
-
-
-@pytest.fixture(autouse=True)
-def _set_secrets_key(monkeypatch):
-    monkeypatch.setenv("JARVIS_SECRETS_KEY", _VALID_FERNET_KEY)
 
 
 @pytest.fixture

@@ -2,6 +2,20 @@
 
 import pytest
 
+from jarvis.oauth.crypto import generate_key
+
+
+@pytest.fixture
+def valid_fernet_key() -> str:
+    """A freshly generated, validly-formatted Fernet key.
+
+    Generated per use so no real or look-alike key is ever committed to source.
+    Tests that need ``JARVIS_SECRETS_KEY`` set get it via the integration-level
+    autouse ``_set_secrets_key`` fixture; tests that need the value directly
+    request this fixture.
+    """
+    return generate_key()
+
 
 @pytest.fixture(autouse=True)
 def _reset_agents_sdk_globals():
