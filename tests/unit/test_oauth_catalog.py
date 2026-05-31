@@ -35,3 +35,33 @@ def test_assert_no_yaml_collision_raises_on_match():
 
 def test_assert_no_yaml_collision_empty_list_ok():
     assert_no_yaml_collision([])  # does not raise
+
+
+def test_gmail_entry_present():
+    entry = OAUTH_CATALOG["gmail"]
+    assert isinstance(entry, ProviderEntry)
+    assert entry.auth_mode == AuthMode.MANUAL
+    assert entry.mcp_url == "https://gmailmcp.googleapis.com/mcp/v1"
+    assert entry.oauth_metadata_url == (
+        "https://accounts.google.com/.well-known/openid-configuration"
+    )
+    assert entry.client_id_env == "GOOGLE_OAUTH_CLIENT_ID"
+    assert entry.client_secret_env == "GOOGLE_OAUTH_CLIENT_SECRET"
+    assert entry.scopes == (
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+    )
+    assert entry.extra_auth_params == {"access_type": "offline", "prompt": "consent"}
+    assert entry.send_resource_indicator is True
+
+
+def test_provider_entry_defaults_for_manual_fields():
+    entry = OAUTH_CATALOG["fastmail"]
+    assert entry.client_id_env is None
+    assert entry.client_secret_env is None
+    assert entry.send_resource_indicator is True
+
+
+def test_fastmail_entry_still_present():
+    entry = OAUTH_CATALOG["fastmail"]
+    assert entry.auth_mode == AuthMode.DCR
