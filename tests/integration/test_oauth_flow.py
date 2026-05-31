@@ -472,6 +472,53 @@ async def test_resource_indicator_present_by_default(
     assert qs["resource"] == ["https://gmailmcp.googleapis.com/mcp/v1"]
 
 
+async def test_handle_callback_manual_uses_client_secret_basic(
+    db_factory, google_metadata_payload, monkeypatch
+):
+    """Gmail is a confidential client: token exchange must authenticate with
+    client_secret_basic (Authorization: Basic base64(client_id:client_secret))
+    and persist the refresh_token Google returns."""
+    import base64
+
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+    seen = {}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=google_metadata_payload)
+        if request.url.path == "/token":
+            seen["auth"] = request.headers.get("Authorization")
+            seen["body"] = request.read().decode()
+            return httpx.Response(200, json={
+                "access_token": "AT", "refresh_token": "RT",
+                "expires_in": 3600, "token_type": "Bearer",
+                "scope": "https://www.googleapis.com/auth/gmail.readonly",
+            })
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key)
+    consent_url = await flow.start_authorization("gmail")
+    state = parse_qs(urlparse(consent_url).query)["state"][0]
+
+    result = await flow.handle_callback(state=state, code="abc")
+    assert result.provider_key == "gmail"
+
+    # Confidential client: Basic auth header, not client_id in the form body.
+    expected_basic = base64.b64encode(b"google-cid:google-secret").decode()
+    assert seen["auth"] == f"Basic {expected_basic}"
+    assert "client_id=" not in seen["body"]
+
+    # Tokens persisted (incl. the refresh_token the proactive scheduler relies on).
+    from jarvis.oauth.crypto import decrypt_blob
+    async with db_factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("gmail")
+        assert decrypt_blob(cred.access_token_enc, key) == b"AT"
+        assert decrypt_blob(cred.refresh_token_enc, key) == b"RT"
+
+
 async def test_current_headers_returns_bearer(db_factory, fastmail_metadata_payload):
     def handler(request):
         if "/.well-known" in request.url.path:
