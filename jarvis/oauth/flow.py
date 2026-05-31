@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from jarvis.oauth.catalog import OAUTH_CATALOG, AuthMode, ProviderEntry
+from jarvis.oauth.catalog import OAUTH_CATALOG, ProviderEntry
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob
 from jarvis.oauth.pkce import generate_code_challenge, generate_code_verifier, generate_state
 from jarvis.oauth.store import OAuthCredentialsRepo, OAuthPendingRepo
@@ -82,10 +82,6 @@ class OAuthFlow:
         return f"{self._base_url}/oauth/callback"
 
     async def discover(self, entry: ProviderEntry) -> ProviderMetadata:
-        if entry.auth_mode is not AuthMode.DCR:
-            raise NotImplementedError(
-                f"Manual-mode OAuth not yet supported for provider {entry.key!r}"
-            )
         if entry.oauth_metadata_url is None:
             raise OAuthDiscoveryError(f"{entry.key}: no oauth_metadata_url configured")
         try:

@@ -353,6 +353,32 @@ async def test_revoke_silent_when_endpoint_5xx(db_factory, fastmail_metadata_pay
         assert await OAuthCredentialsRepo(session).get("fastmail") is None
 
 
+@pytest.fixture
+def google_metadata_payload():
+    # Mirrors accounts.google.com/.well-known/openid-configuration: no registration_endpoint.
+    return {
+        "issuer": "https://accounts.google.com",
+        "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_endpoint": "https://oauth2.googleapis.com/token",
+        "revocation_endpoint": "https://oauth2.googleapis.com/revoke",
+        "code_challenge_methods_supported": ["plain", "S256"],
+    }
+
+
+async def test_discover_manual_mode_parses_google_metadata(google_metadata_payload):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/.well-known/openid-configuration"
+        return httpx.Response(200, json=google_metadata_payload)
+
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=None,
+                     base_url="http://localhost:8080", secrets_key=b"k")
+    metadata = await flow.discover(OAUTH_CATALOG["gmail"])
+    assert metadata.authorization_endpoint == "https://accounts.google.com/o/oauth2/v2/auth"
+    assert metadata.token_endpoint == "https://oauth2.googleapis.com/token"
+    assert metadata.registration_endpoint is None
+    assert metadata.revocation_endpoint == "https://oauth2.googleapis.com/revoke"
+
+
 async def test_current_headers_returns_bearer(db_factory, fastmail_metadata_payload):
     def handler(request):
         if "/.well-known" in request.url.path:
