@@ -91,6 +91,13 @@ make prod-pull
 make prod-up
 ```
 
+On Linux, the bind-mounted `./data` must be writable by the container's user, or
+SQLite fails with `unable to open database file`. The container runs as
+`JARVIS_UID:JARVIS_GID` (set in `.env`, default `1000:1000`) — set these to the
+owner of `./data` (`id -u` / `id -g`). If `./data` is already root-owned, fix it
+with `sudo chown -R "$(id -u):$(id -g)" data`. (Docker Desktop on macOS ignores
+ownership, so this only bites on a real Linux host.)
+
 The dashboard listens on port 8080. For `https://jarvis.moltonlava.online`
 (required for the Google OAuth redirect URI to work), terminate TLS at your
 reverse proxy and forward to the container's port 8080.
