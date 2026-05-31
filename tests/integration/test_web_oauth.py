@@ -37,6 +37,16 @@ def make_app(ctx) -> TestClient:
     return TestClient(app)
 
 
+def google_metadata():
+    return {
+        "issuer": "https://accounts.google.com",
+        "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_endpoint": "https://oauth2.googleapis.com/token",
+        "revocation_endpoint": "https://oauth2.googleapis.com/revoke",
+        "code_challenge_methods_supported": ["plain", "S256"],
+    }
+
+
 def fastmail_metadata():
     return {
         "issuer": "https://api.fastmail.com",
@@ -162,6 +172,33 @@ class _ManagerStubWithRemove(_ManagerStub):
 
     async def remove_oauth_server(self, key):
         self.removed.append(key)
+
+
+async def test_connect_gmail_redirects_to_google(factory, monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-secret")
+
+    def handler(request):
+        return httpx.Response(200, json=google_metadata())
+
+    key = generate_key().encode()
+    flow = OAuthFlow(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        session_factory=factory,
+        base_url="https://jarvis.example",
+        secrets_key=key,
+    )
+    ctx = _Ctx(factory, flow)
+    client = make_app(ctx)
+
+    resp = client.get("/oauth/connect/gmail", follow_redirects=False)
+    assert resp.status_code == 302
+    location = resp.headers["location"]
+    qs = parse_qs(urlparse(location).query)
+    assert urlparse(location).netloc == "accounts.google.com"
+    assert qs["client_id"] == ["google-cid"]
+    assert qs["redirect_uri"] == ["https://jarvis.example/oauth/callback"]
+    assert qs["access_type"] == ["offline"]
 
 
 async def test_disconnect_revokes_and_removes(factory):
