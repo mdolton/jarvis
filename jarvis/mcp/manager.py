@@ -165,11 +165,21 @@ class MCPManager:
 
 
 def _build_streamable_http(url: str, headers: dict[str, str], *, name: str) -> object:
-    """Module-level builder so tests can patch this single symbol."""
+    """Module-level builder so tests can patch this single symbol.
+
+    The SDK defaults (5s read timeout, 5s HTTP timeout, no retries) are too tight
+    for OAuth-backed remote servers like Google's early-access Gmail MCP endpoint,
+    which is slow and intermittently returns 502s. Widen the per-call budget to 30s
+    and retry transient failures a couple of times so a single hiccup surfaces to the
+    model as a retry rather than a hard "technical error".
+    """
     return MCPServerStreamableHttp(
         name=name,
-        params={"url": url, "headers": headers},
+        params={"url": url, "headers": headers, "timeout": 30},
         cache_tools_list=True,
+        client_session_timeout_seconds=30,
+        max_retry_attempts=2,
+        retry_backoff_seconds_base=1.0,
     )
 
 
