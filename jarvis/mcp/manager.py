@@ -123,6 +123,14 @@ class MCPManager:
                     raise RuntimeError(f"unknown MCP command {kind!r}")
                 if not fut.done():
                     fut.set_result(result)
+            except asyncio.CancelledError:
+                # A stray cancellation bled out of an MCP connection teardown.
+                # The owner task is never externally cancelled (stop() uses a
+                # command, not task cancellation), so this is always spurious —
+                # log and keep serving rather than let the owner task die.
+                _log.warning("ignoring spurious cancellation in MCP lifecycle loop")
+                if not fut.done():
+                    fut.set_result(None)
             except Exception as e:
                 if not fut.done():
                     fut.set_exception(e)
@@ -167,7 +175,7 @@ class MCPManager:
                 tools = await _list_tools(sdk_server)
             except Exception:
                 # Eagerly close on list_tools failure so we don't keep a half-broken server.
-                await stack.aclose()
+                await _aclose_silently(stack)
                 raise
 
             self._stacks[cfg.name] = stack
@@ -205,16 +213,22 @@ class MCPManager:
         self._sdk_servers[provider_key] = new_sdk
         self._stacks[provider_key] = new_stack
 
-        # Close the old connection on THIS (owner) task — same task it was opened on.
-        if old_stack is not None:
-            await _aclose_silently(old_stack)
-
+        # Persist status/tools BEFORE closing the old connection. Closing an
+        # anyio-based streamable-HTTP connection can emit a stray cancellation
+        # out of its task-group teardown; keeping our DB write ahead of the close
+        # means that write is never disturbed (which previously invalidated and
+        # terminated the connection — "Exception terminating connection").
         async with self._session_factory() as session:
             srepo = MCPServerRepo(session)
             trepo = MCPToolRepo(session)
             row = await srepo.upsert(name=provider_key, transport="http")
             await srepo.set_status(row.id, status="connected", last_error=None)
             await trepo.replace_for_server(row.id, tools=tools)
+
+        # Close the old connection LAST, on THIS (owner) task — the same task it
+        # was opened on. _aclose_silently swallows any stray teardown error.
+        if old_stack is not None:
+            await _aclose_silently(old_stack)
 
     async def _do_remove_oauth(self, provider_key: str) -> None:
         self._sdk_servers.pop(provider_key, None)
@@ -249,10 +263,16 @@ def _build_streamable_http(url: str, headers: dict[str, str], *, name: str) -> o
 
 
 async def _aclose_silently(stack: AsyncExitStack) -> None:
-    """Close an AsyncExitStack, logging any error instead of propagating it."""
+    """Close an AsyncExitStack, logging any error instead of propagating it.
+
+    Catches BaseException because closing an anyio-based streamable-HTTP MCP
+    connection can raise a stray CancelledError out of its task-group teardown.
+    The lifecycle task is never externally cancelled, so such a cancellation is
+    spurious here and must not be allowed to kill the owner task.
+    """
     try:
         await stack.aclose()
-    except Exception:
+    except BaseException:  # best-effort close; see docstring
         _log.exception("error closing exit stack")
 
 
