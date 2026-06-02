@@ -12,12 +12,35 @@ entered and which task exited it.
 """
 
 import asyncio
+import contextlib
 
 import pytest
 
 from jarvis.config.schema import MCPServersConfig
 from jarvis.mcp.manager import MCPManager
 from jarvis.persistence.db import Base, create_engine, session_factory
+from jarvis.persistence.repositories import MCPServerRepo
+
+
+class _OkServer:
+    """A well-behaved fake agents.mcp server."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+    async def list_tools(self):
+        return []
+
+
+class _CancelOnCloseServer(_OkServer):
+    """Fake server whose close raises CancelledError, mimicking the anyio
+    cancellation that bleeds out of MCPServerStreamableHttp teardown."""
+
+    async def __aexit__(self, *exc):
+        raise asyncio.CancelledError("anyio scope teardown bled out")
 
 
 class TaskTrackingServer:
@@ -107,3 +130,54 @@ async def test_stop_closes_server_opened_by_a_short_lived_task(factory, monkeypa
     assert sdk.exit_task is sdk.enter_task, (
         "connection closed on a different task than it was opened on during stop()"
     )
+
+
+async def test_replace_survives_cancelled_error_from_old_connection_close(factory, monkeypatch):
+    """A CancelledError bleeding out of the old connection's close must not kill
+    the lifecycle task, hang the caller, or skip the DB status write.
+
+    Reproduces the production 'Exception terminating connection ... CancelledError'
+    seen when the OAuth refresh job swaps the Gmail MCP connection.
+    """
+    cfg = MCPServersConfig(servers=[])
+    mgr = MCPManager(config=cfg, session_factory=factory)
+    await mgr.start()
+    try:
+        old = _CancelOnCloseServer()
+        new1 = _OkServer()
+        new2 = _OkServer()
+        builds = iter([old, new1, new2])
+        monkeypatch.setattr(
+            "jarvis.mcp.manager._build_streamable_http",
+            lambda url, headers, *, name: next(builds),
+        )
+
+        await mgr.replace_oauth_server("gmail", url="x", headers={"Authorization": "Bearer A"})
+
+        # Swapping closes `old`, whose __aexit__ raises CancelledError. The
+        # replace must still complete, not hang and not kill the owner task.
+        await asyncio.wait_for(
+            mgr.replace_oauth_server("gmail", url="x", headers={"Authorization": "Bearer B"}),
+            timeout=2.0,
+        )
+        assert mgr.agent_mcp_servers() == [new1]
+
+        # The DB status write must have happened despite the bled cancellation.
+        async with factory() as s:
+            servers = {row.name: row.status for row in await MCPServerRepo(s).list_all()}
+        assert servers.get("gmail") == "connected"
+
+        # The owner task must still be alive: a subsequent replace works.
+        await asyncio.wait_for(
+            mgr.replace_oauth_server("gmail", url="x", headers={"Authorization": "Bearer C"}),
+            timeout=2.0,
+        )
+        assert mgr.agent_mcp_servers() == [new2]
+    finally:
+        # Robust cleanup even if the owner task died (the bug under test).
+        if mgr._loop_task is not None and not mgr._loop_task.done():
+            await mgr.stop()
+        elif mgr._loop_task is not None:
+            mgr._loop_task.cancel()
+            with contextlib.suppress(BaseException):
+                await mgr._loop_task
