@@ -1,11 +1,18 @@
 """MCPManager — owns lifecycle of all configured MCP servers.
 
-- On start(): spin up each enabled MCP server (stdio, http, or sse),
-  record status + discovered tools to the DB shadow tables.
-- While running: the Agents SDK owns the actual connections and tool
-  caching via `cache_tools_list=True`. We just keep the SDK server
-  objects alive for the Agent to use.
-- On stop(): async-close each SDK server cleanly.
+- On start(): launch a single long-lived "lifecycle" task, then ask it to
+  spin up each enabled MCP server (stdio, http, or sse) and record status +
+  discovered tools to the DB shadow tables.
+- While running: the Agents SDK owns the actual connections and tool caching
+  via `cache_tools_list=True`. We just keep the SDK server objects alive.
+- On stop(): ask the lifecycle task to async-close each SDK server, then exit.
+
+Why a single owner task? `MCPServerStreamableHttp` is built on anyio, whose
+cancel scopes MUST be entered and exited on the same asyncio task. Connecting
+on one task (e.g. an ephemeral OAuth-refresh job) and closing on another (a
+fire-and-forget task or the shutdown task) corrupts anyio's cancel-scope state
+and tears down the whole event loop. Routing every connect/replace/remove/close
+through one task makes enter and exit always happen on the same task.
 """
 
 import asyncio
@@ -38,30 +45,89 @@ class MCPManager:
         self._secrets_key = secrets_key
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
+        # All connection enter/exit happens on this single owner task.
+        self._cmd_queue: asyncio.Queue[tuple[str, object, asyncio.Future]] | None = None
+        self._loop_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         """Connect to every enabled server. Failures are recorded, not raised."""
         assert_no_yaml_collision(s.name for s in self._config.servers)
+        self._cmd_queue = asyncio.Queue()
+        self._loop_task = asyncio.create_task(self._lifecycle_loop(), name="mcp-lifecycle")
+
         for server_cfg in self._config.servers:
             if not server_cfg.enabled:
                 continue
-            try:
-                await self._connect_one(server_cfg)
-            except Exception as e:  # one bad server mustn't kill the rest
-                _log.exception("failed to connect MCP server %r", server_cfg.name)
-                await self._record_failure(server_cfg, e)
+            # connect failures are recorded inside the owner task, never raised.
+            await self._submit("connect_cfg", server_cfg)
 
         if self._secrets_key is not None:
             await self._bootstrap_oauth_catalog()
 
     async def stop(self) -> None:
-        for name in list(self._stacks):
+        if self._loop_task is None:
+            return  # never started, or already stopped — idempotent
+        try:
+            await self._submit("shutdown", None)
+        finally:
+            await self._loop_task
+            self._loop_task = None
+            self._cmd_queue = None
+
+    def agent_mcp_servers(self) -> list[object]:
+        """Return the SDK server objects to pass into `Agent(mcp_servers=...)`."""
+        return list(self._sdk_servers.values())
+
+    async def replace_oauth_server(
+        self, provider_key: str, *, url: str, headers: dict[str, str]
+    ) -> None:
+        """Build a new streamable-HTTP SDK server, verify list_tools, then atomically swap.
+
+        If list_tools fails the new stack is closed and the old server remains active.
+        Runs entirely on the owner task so enter/exit stay task-consistent.
+        """
+        await self._submit(
+            "replace", {"provider_key": provider_key, "url": url, "headers": headers}
+        )
+
+    async def remove_oauth_server(self, provider_key: str) -> None:
+        """Pop and close the stack/sdk_server entries for an OAuth provider."""
+        await self._submit("remove", provider_key)
+
+    # --- Owner task: the only place stacks are entered and exited ----------
+
+    async def _submit(self, kind: str, payload: object):
+        """Hand a command to the owner task and await its result/exception."""
+        if self._cmd_queue is None:
+            raise RuntimeError("MCPManager not started")
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        await self._cmd_queue.put((kind, payload, fut))
+        return await fut
+
+    async def _lifecycle_loop(self) -> None:
+        assert self._cmd_queue is not None
+        while True:
+            kind, payload, fut = await self._cmd_queue.get()
             try:
-                await self._stacks[name].aclose()
-            except Exception:
-                _log.exception("error closing MCP server stack %r", name)
-        self._stacks.clear()
-        self._sdk_servers.clear()
+                if kind == "connect_cfg":
+                    await self._do_connect_one(payload)  # type: ignore[arg-type]
+                    result = None
+                elif kind == "replace":
+                    result = await self._do_replace_oauth(**payload)  # type: ignore[arg-type]
+                elif kind == "remove":
+                    result = await self._do_remove_oauth(payload)  # type: ignore[arg-type]
+                elif kind == "shutdown":
+                    await self._do_stop_all()
+                    result = None
+                else:  # pragma: no cover - guards programmer error
+                    raise RuntimeError(f"unknown MCP command {kind!r}")
+                if not fut.done():
+                    fut.set_result(result)
+            except Exception as e:
+                if not fut.done():
+                    fut.set_exception(e)
+            if kind == "shutdown":
+                return
 
     async def _bootstrap_oauth_catalog(self) -> None:
         """Attach any already-connected OAuth providers at startup."""
@@ -86,34 +152,35 @@ class MCPManager:
                         key, status="needs_reauth", last_error=f"boot attach failed: {e}"
                     )
 
-    def agent_mcp_servers(self) -> list[object]:
-        """Return the SDK server objects to pass into `Agent(mcp_servers=...)`."""
-        return list(self._sdk_servers.values())
-
-    async def _connect_one(self, cfg: MCPServerConfig) -> None:
-        async with self._session_factory() as session:
-            row = await MCPServerRepo(session).upsert(name=cfg.name, transport=cfg.transport)
-            server_id = row.id
-
-        stack = AsyncExitStack()
-        sdk_server = _build_sdk_server(cfg)
-        await stack.enter_async_context(sdk_server)
-
+    async def _do_connect_one(self, cfg: MCPServerConfig) -> None:
+        """Connect one configured server. Records failure instead of raising."""
         try:
-            tools = await _list_tools(sdk_server)
-        except Exception:
-            # Eagerly close on list_tools failure so we don't keep a half-broken server.
-            await stack.aclose()
-            raise
+            async with self._session_factory() as session:
+                row = await MCPServerRepo(session).upsert(name=cfg.name, transport=cfg.transport)
+                server_id = row.id
 
-        self._stacks[cfg.name] = stack
-        self._sdk_servers[cfg.name] = sdk_server
+            stack = AsyncExitStack()
+            sdk_server = _build_sdk_server(cfg)
+            await stack.enter_async_context(sdk_server)
 
-        async with self._session_factory() as session:
-            srepo = MCPServerRepo(session)
-            trepo = MCPToolRepo(session)
-            await srepo.set_status(server_id, status="connected", last_error=None)
-            await trepo.replace_for_server(server_id, tools=tools)
+            try:
+                tools = await _list_tools(sdk_server)
+            except Exception:
+                # Eagerly close on list_tools failure so we don't keep a half-broken server.
+                await stack.aclose()
+                raise
+
+            self._stacks[cfg.name] = stack
+            self._sdk_servers[cfg.name] = sdk_server
+
+            async with self._session_factory() as session:
+                srepo = MCPServerRepo(session)
+                trepo = MCPToolRepo(session)
+                await srepo.set_status(server_id, status="connected", last_error=None)
+                await trepo.replace_for_server(server_id, tools=tools)
+        except Exception as e:  # one bad server mustn't kill the rest
+            _log.exception("failed to connect MCP server %r", cfg.name)
+            await self._record_failure(cfg, e)
 
     async def _record_failure(self, cfg: MCPServerConfig, exc: Exception) -> None:
         async with self._session_factory() as session:
@@ -121,14 +188,9 @@ class MCPManager:
             row = await repo.upsert(name=cfg.name, transport=cfg.transport)
             await repo.set_status(row.id, status="error", last_error=f"{type(exc).__name__}: {exc}")
 
-    async def replace_oauth_server(
-        self, provider_key: str, *, url: str, headers: dict[str, str]
+    async def _do_replace_oauth(
+        self, *, provider_key: str, url: str, headers: dict[str, str]
     ) -> None:
-        """Build a new streamable-HTTP SDK server, verify list_tools, then atomically swap.
-
-        If list_tools fails the new stack is closed and the old server remains active.
-        The old stack (if any) is closed on the next event-loop tick via asyncio.create_task.
-        """
         new_stack = AsyncExitStack()
         new_sdk = _build_streamable_http(url, headers, name=provider_key)
         await new_stack.enter_async_context(new_sdk)
@@ -143,8 +205,9 @@ class MCPManager:
         self._sdk_servers[provider_key] = new_sdk
         self._stacks[provider_key] = new_stack
 
+        # Close the old connection on THIS (owner) task — same task it was opened on.
         if old_stack is not None:
-            asyncio.create_task(_aclose_silently(old_stack))  # noqa: RUF006
+            await _aclose_silently(old_stack)
 
         async with self._session_factory() as session:
             srepo = MCPServerRepo(session)
@@ -153,15 +216,17 @@ class MCPManager:
             await srepo.set_status(row.id, status="connected", last_error=None)
             await trepo.replace_for_server(row.id, tools=tools)
 
-    async def remove_oauth_server(self, provider_key: str) -> None:
-        """Pop and close the stack/sdk_server entries for an OAuth provider."""
+    async def _do_remove_oauth(self, provider_key: str) -> None:
         self._sdk_servers.pop(provider_key, None)
         stack = self._stacks.pop(provider_key, None)
         if stack is not None:
-            try:
-                await stack.aclose()
-            except Exception:
-                _log.exception("error closing oauth server stack %r", provider_key)
+            await _aclose_silently(stack)
+
+    async def _do_stop_all(self) -> None:
+        for name in list(self._stacks):
+            await _aclose_silently(self._stacks[name])
+        self._stacks.clear()
+        self._sdk_servers.clear()
 
 
 def _build_streamable_http(url: str, headers: dict[str, str], *, name: str) -> object:

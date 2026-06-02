@@ -1,14 +1,22 @@
 """DiscordAdapter — implements ChannelAdapter via discord.py.
 
 Lifecycle:
-  - start(dispatcher): set up intents, instantiate discord.Client, register
-    on_message handler, schedule client.start(token) on the event loop.
-  - stop(): close the client and await the background task.
+  - start(dispatcher): begin a supervised connection loop and wait until the
+    gateway is ready (or a short startup grace elapses).
+  - stop(): signal the supervisor to exit and close the active client.
   - send(msg): fetch the user by ID and call user.send(text).
+
+Supervision: the gateway connection runs under `_run_supervised`, which rebuilds
+the client and reconnects (with capped exponential backoff) if `client.start`
+ever returns or raises. discord.py reconnects internally, but if the event loop
+is disturbed badly enough for the connection task to die, nothing else would
+restart it — so the bot would go permanently deaf. The supervisor closes that
+gap.
 """
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 import discord
 
@@ -18,62 +26,130 @@ from jarvis.core.types import ChannelKind, ChannelMessage
 _log = logging.getLogger(__name__)
 
 
+def _default_client_factory() -> discord.Client:
+    intents = discord.Intents.default()
+    intents.message_content = True
+    return discord.Client(intents=intents)
+
+
 class DiscordAdapter:
     kind = ChannelKind.DISCORD.value
 
-    def __init__(self, *, token: str, allowed_user_ids: set[str]) -> None:
+    def __init__(
+        self,
+        *,
+        token: str,
+        allowed_user_ids: set[str],
+        client_factory: Callable[[], discord.Client] | None = None,
+        reconnect_backoff_base: float = 1.0,
+        reconnect_backoff_max: float = 60.0,
+        startup_grace_sec: float = 30.0,
+    ) -> None:
         self._token = token
         self._allowed = set(allowed_user_ids)
+        self._client_factory = client_factory or _default_client_factory
+        self._backoff_base = reconnect_backoff_base
+        self._backoff_max = reconnect_backoff_max
+        self._backoff = reconnect_backoff_base
+        self._startup_grace = startup_grace_sec
         self._client: discord.Client | None = None
         self._task: asyncio.Task | None = None
         self._dispatcher = None  # set by start()
+        self._closing = False
         self._ready = asyncio.Event()
 
     async def start(self, dispatcher) -> None:
-        if self._client is not None:
+        if self._task is not None:
             raise RuntimeError("DiscordAdapter already started")
         self._dispatcher = dispatcher
         self._ready.clear()
+        self._closing = False
+        self._task = asyncio.create_task(self._run_supervised(), name="discord-adapter")
 
-        intents = discord.Intents.default()
-        intents.message_content = True
-        client = discord.Client(intents=intents)
+        # Wait until the gateway is ready, the supervisor dies, or the grace
+        # window elapses — whichever comes first. We never block boot forever:
+        # if Discord is unreachable the supervisor keeps retrying in the
+        # background and the bot comes online once it can connect.
+        ready_task = asyncio.create_task(self._ready.wait())
+        done, pending = await asyncio.wait(
+            {ready_task, self._task},
+            timeout=self._startup_grace,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for p in pending:
+            if p is not self._task:
+                p.cancel()
+
+        if self._task in done and not self._ready.is_set():
+            # Supervisor exited before ever connecting (only happens if it was
+            # asked to stop). Surface any error.
+            exc = self._task.exception()
+            if exc is not None:
+                raise RuntimeError(f"discord startup failed: {exc!r}") from exc
+        elif not self._ready.is_set():
+            _log.warning(
+                "discord gateway not ready after %.0fs; continuing to retry in background",
+                self._startup_grace,
+            )
+
+    async def _run_supervised(self) -> None:
+        self._backoff = self._backoff_base
+        while not self._closing:
+            client = self._build_client()
+            self._client = client
+            try:
+                await client.start(self._token)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("discord connection crashed; will restart")
+            else:
+                if not self._closing:
+                    _log.warning("discord connection ended unexpectedly; will restart")
+            finally:
+                await self._safe_close(client)
+
+            if self._closing:
+                break
+            await asyncio.sleep(self._backoff)
+            self._backoff = (
+                min(self._backoff * 2, self._backoff_max)
+                if self._backoff > 0
+                else self._backoff_base
+            )
+
+    def _build_client(self) -> discord.Client:
+        client = self._client_factory()
 
         @client.event
         async def on_ready() -> None:
             _log.info("discord adapter ready as %s", client.user)
+            self._backoff = self._backoff_base  # healthy connection; reset backoff
             self._ready.set()
 
         @client.event
         async def on_message(message: discord.Message) -> None:
             await self._on_message(message)
 
-        self._client = client
-        self._task = asyncio.create_task(client.start(self._token), name="discord-adapter")
-        # Wait for ready (or for the task to fail at login).
-        ready_task = asyncio.create_task(self._ready.wait())
-        done, pending = await asyncio.wait(
-            {ready_task, self._task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if self._task in done and not self._ready.is_set():
-            for p in pending:
-                p.cancel()
-            exc = self._task.exception()
-            raise RuntimeError(f"discord login failed: {exc!r}") from exc
-        for p in pending:
-            if p is not self._task:
-                p.cancel()
+        return client
+
+    async def _safe_close(self, client: discord.Client) -> None:
+        try:
+            if not client.is_closed():
+                await client.close()
+        except Exception:
+            _log.exception("error closing discord client")
 
     async def stop(self) -> None:
-        if self._client is None:
-            return
-        await self._client.close()
+        self._closing = True
+        self._ready.clear()
+        if self._client is not None:
+            await self._safe_close(self._client)
         if self._task is not None:
             try:
                 await self._task
             except Exception:
-                _log.exception("discord client task ended with error")
+                _log.exception("discord supervisor task ended with error")
         self._client = None
         self._task = None
 
