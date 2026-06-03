@@ -112,17 +112,16 @@ Visibility is via the **audit log + dashboard ⚠ badge**, not a Discord ping
 (scheduled→Discord notification is the pre-existing gap above and is out of
 scope). The scheduler gets `ModelCatalog` injected.
 
-**Interactive runs — fail loud (attended).** No pre-check; the run proceeds and
-the LLM call raises for an unknown model. This design adds **minimal
-error-surfacing** so the failure is actually visible:
-- Discord: `_on_message`, on a dispatch exception, DMs the user a short message
-  (e.g. "⚠ model `X` is unavailable — pick another with `/model set` or the
-  dashboard") instead of only logging.
-- Dashboard manual run: returns the error text to the page.
-- An audit event is emitted in both cases.
-No automatic substitution — the user re-picks. (This error-surfacing is scoped
-narrowly to the model-unavailable / run-failure case on the interactive path; it
-is not a general reliability overhaul.)
+**Interactive runs — fail loud (attended).** The only interactive *trigger*
+surface is Discord (the dashboard has no run-trigger endpoint; `/` and
+`/settings` are GET-only, and the CLI `ask` path already prints results/errors).
+No pre-check; the run proceeds and the LLM call raises for an unknown model.
+This design adds **minimal error-surfacing** on the Discord path so the failure
+is actually visible: `_on_message`, on a dispatch exception, DMs the user a short
+message (e.g. "⚠ couldn't process that — the selected model may be unavailable;
+pick another with `/model set`") instead of only logging. No automatic
+substitution — the user re-picks. (Scoped narrowly to surfacing run failures on
+the Discord path; not a general reliability overhaul.)
 
 **Dashboard ⚠ badge (both).** When rendering `/settings` and `/schedules`, any
 selected interactive model or per-schedule model not present in the current
@@ -263,8 +262,8 @@ unit-testable without a live gateway.
   expose models the catalog cache hasn't refreshed). The selection is honored;
   staleness is handled per the Hybrid section.
 - Stale selected model: scheduled → auto-fall-back to config default (audit +
-  dashboard badge); interactive → fail loud with a user-facing reply (Discord
-  DM / dashboard) + audit. See the Hybrid section.
+  dashboard badge); interactive → fail loud with a user-facing Discord DM reply.
+  See the Hybrid section.
 - Discord command from a non-allow-listed user → silently rejected (consistent
   with `on_message`).
 
@@ -281,8 +280,8 @@ unit-testable without a live gateway.
   `NULL` → provider (config default); pinned-model **auto-fallback** when
   catalog `ok=True and model absent` (substitutes default + `MODEL_FALLBACK`
   audit); **no** fallback when catalog `ok=False`.
-- Interactive fail-loud: `_on_message` dispatch exception → user-facing reply
-  sent + audit; dashboard manual-run error surfaced to the page.
+- Interactive fail-loud: `_on_message` dispatch exception → user-facing DM reply
+  sent (Discord path only).
 - Dashboard ⚠ badge: rendered when `ok=True and model not in models`; absent
   when `ok=False`.
 - Routes: `POST /settings/model` updates the store + emits audit; `POST
@@ -327,7 +326,6 @@ Modified:
 - `jarvis/channels/discord_adapter.py` (`CommandTree`, `/model`, injected deps;
   user-facing error reply on dispatch failure)
 - `jarvis/web/routes/settings.py` (`POST /settings/model`; ⚠ badge data)
-- `jarvis/web/routes/schedules.py` (`model` form field; ⚠ badge data; surface
-  manual-run errors if applicable)
+- `jarvis/web/routes/schedules.py` (`model` form field; ⚠ badge data)
 - `jarvis/web/templates/settings.html`, `schedules.html` (model selects, ⚠ badges)
 - `README.md` (Discord app DM-context note; model selection usage)
