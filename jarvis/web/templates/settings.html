@@ -6,7 +6,31 @@
 <h2>Core</h2>
 <table>
     <tr><th>LLM base URL</th><td>{{ jarvis.llm.base_url }}</td></tr>
-    <tr><th>LLM model</th><td>{{ jarvis.llm.model }}</td></tr>
+    <tr>
+        <th>LLM model</th>
+        <td>
+            <form method="post" action="/settings/model" style="display:inline">
+                <select name="model">
+                    <option value="" {% if not model_selection %}selected{% endif %}>
+                        Default (from config: {{ config_model }})
+                    </option>
+                    {% for m in available_models %}
+                        <option value="{{ m }}" {% if model_selection == m %}selected{% endif %}>{{ m }}</option>
+                    {% endfor %}
+                    {% if selection_unavailable %}
+                        <option value="{{ model_selection }}" selected>{{ model_selection }} (not available)</option>
+                    {% endif %}
+                </select>
+                <button type="submit">Set</button>
+            </form>
+            {% if not catalog_ok %}
+                <span class="muted">— couldn't load model list; type-only via config</span>
+            {% endif %}
+            {% if selection_unavailable %}
+                <span class="badge badge-warn">selected model not available</span>
+            {% endif %}
+        </td>
+    </tr>
     <tr><th>Timezone</th><td>{{ jarvis.timezone }}</td></tr>
     <tr><th>Idle timeout (sec)</th><td>{{ jarvis.idle_timeout_sec }}</td></tr>
     <tr><th>Max concurrent agents</th><td>{{ jarvis.max_concurrent_agents }}</td></tr>
@@ -37,5 +61,5 @@
 <p class="muted">No MCP servers configured.</p>
 {% endif %}
 
-<p class="muted">Settings are read-only. Edit the YAML config files to change.</p>
+<p class="muted">Most settings are read-only (edit YAML). The active model can be changed above.</p>
 {% endblock %}
