@@ -2,6 +2,7 @@ import pytest_asyncio
 
 from jarvis.agents.model_store import ModelStore
 from jarvis.persistence.db import Base, create_engine, session_factory
+from jarvis.persistence.models import SettingRow
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -45,3 +46,14 @@ async def test_selection_persists_across_reload(factory):
     store2 = ModelStore(session_factory=factory, default_model="cfg-model")
     await store2.load()
     assert store2.current() == "llama-3.1"
+
+
+async def test_set_none_deletes_settings_row(factory):
+    store = ModelStore(session_factory=factory, default_model="cfg-model")
+    await store.load()
+    await store.set("gpt-4o")
+    await store.set(None)
+
+    async with factory() as s:
+        row = await s.get(SettingRow, "llm.active_model")
+        assert row is None  # row removed, not stored as null

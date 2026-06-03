@@ -391,3 +391,9 @@ class SettingsRepo:
         else:
             existing.value = value
         await self._session.commit()
+
+    async def delete(self, key: str) -> None:
+        row = await self._session.get(SettingRow, key)
+        if row is not None:
+            await self._session.delete(row)
+            await self._session.commit()

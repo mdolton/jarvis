@@ -38,7 +38,11 @@ class ModelStore:
         return self._selection or self._default
 
     async def set(self, model: str | None) -> None:
-        """Set the override; None clears it back to the default."""
+        """Set the override; None clears it (removes the row) back to the default."""
         async with self._session_factory() as session:
-            await SettingsRepo(session).set(_KEY, model)
+            repo = SettingsRepo(session)
+            if model is None:
+                await repo.delete(_KEY)
+            else:
+                await repo.set(_KEY, model)
         self._selection = model
