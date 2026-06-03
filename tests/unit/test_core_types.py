@@ -80,3 +80,22 @@ def test_invocation_request_has_uuid_and_time():
     req = InvocationRequest(trigger=ManualTrigger(user="mark", prompt="hi"))
     assert isinstance(req.id, UUID)
     assert req.created_at.tzinfo is UTC
+
+
+def test_scheduled_trigger_model_defaults_none_and_accepts_value():
+    from jarvis.core.types import ScheduledTrigger
+
+    t = ScheduledTrigger(schedule_id="s1", prompt="p", output_mode="discord")
+    assert t.model is None
+
+    t2 = ScheduledTrigger(
+        schedule_id="s1", prompt="p", output_mode="discord", model="gpt-4o"
+    )
+    assert t2.model == "gpt-4o"
+
+
+def test_model_audit_event_types_exist():
+    from jarvis.core.types import AuditEventType
+
+    assert AuditEventType.MODEL_CHANGED.value == "model.changed"
+    assert AuditEventType.MODEL_FALLBACK.value == "model.fallback"

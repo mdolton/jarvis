@@ -38,6 +38,8 @@ class AuditEventType(StrEnum):
     CHANNEL_SENT = "channel.sent"
     OUTPUT_SUPPRESSED = "output.suppressed"
     CONFIG_RELOAD_FAILED = "config.reload_failed"
+    MODEL_CHANGED = "model.changed"
+    MODEL_FALLBACK = "model.fallback"
     MCP_CONNECTED = "mcp.connected"
     MCP_DISCONNECTED = "mcp.disconnected"
     OAUTH_DISCOVERY_STARTED = "oauth.discovery_started"
@@ -87,6 +89,7 @@ class ScheduledTrigger(_ModelBase):
     schedule_id: str
     prompt: str
     output_mode: Literal["discord", "dashboard_only", "discord_if_noteworthy"]
+    model: str | None = None
 
 
 class ManualTrigger(_ModelBase):
