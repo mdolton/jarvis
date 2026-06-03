@@ -88,9 +88,7 @@ def test_scheduled_trigger_model_defaults_none_and_accepts_value():
     t = ScheduledTrigger(schedule_id="s1", prompt="p", output_mode="discord")
     assert t.model is None
 
-    t2 = ScheduledTrigger(
-        schedule_id="s1", prompt="p", output_mode="discord", model="gpt-4o"
-    )
+    t2 = ScheduledTrigger(schedule_id="s1", prompt="p", output_mode="discord", model="gpt-4o")
     assert t2.model == "gpt-4o"
 
 

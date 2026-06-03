@@ -183,13 +183,25 @@ async def test_schedule_create_persists_model(tmp_path):
     async with factory() as s:
         repo = ScheduleRepo(s)
         with_model = await repo.create(
-            name="a", description="", cron_expr="* * * * *", timezone="UTC",
-            prompt="p", output_mode="discord", notify_on_error=True, enabled=True,
+            name="a",
+            description="",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            prompt="p",
+            output_mode="discord",
+            notify_on_error=True,
+            enabled=True,
             model="gpt-4o",
         )
         without_model = await repo.create(
-            name="b", description="", cron_expr="* * * * *", timezone="UTC",
-            prompt="p", output_mode="discord", notify_on_error=True, enabled=True,
+            name="b",
+            description="",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            prompt="p",
+            output_mode="discord",
+            notify_on_error=True,
+            enabled=True,
         )
 
     async with factory() as s:

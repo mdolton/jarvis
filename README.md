@@ -162,6 +162,30 @@ Create schedules via the dashboard at `/schedules`. Each schedule has:
 - A prompt (what to tell the agent)
 - An output mode: `discord` (DM you), `dashboard_only` (silent), or `discord_if_noteworthy` (agent decides)
 
+### Model selection
+
+Jarvis discovers available models from your LLM endpoint's `/v1/models`.
+
+- **Interactive model** (Discord DMs + manual runs): change it from the
+  dashboard **Settings** page (model dropdown) or with the Discord
+  `/model` command:
+  - `/model current` — show the active model
+  - `/model list` — list available models
+  - `/model set <name>` — set it (autocompletes; choose **default** to use the
+    `llm.model` from `jarvis.yaml`)
+  The selection is stored in the database and survives restarts.
+
+- **Per-schedule model**: when creating a schedule on the dashboard, pick a
+  model (or **Use default model**). Scheduled runs are independent of the
+  interactive selection. If a schedule's pinned model is no longer available,
+  the run automatically falls back to the `jarvis.yaml` model (recorded in the
+  audit log); interactive runs instead reply with an error so you can re-pick.
+
+> **Discord DMs:** for `/model` to appear in DMs, install the application as a
+> user-installable app with the DM context enabled in the Discord Developer
+> Portal (Installation → User Install). Guild-only installs expose `/model`
+> in servers only.
+
 ## Dashboard
 
 Available at `http://localhost:8080` when running:

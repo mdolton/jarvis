@@ -10,7 +10,10 @@ def _run_alembic(db_path: Path, cmd: str) -> subprocess.CompletedProcess:
     cwd = Path(__file__).resolve().parents[2]
     return subprocess.run(
         ["uv", "run", "alembic", "-x", f"db_url=sqlite+aiosqlite:///{db_path}", *cmd.split()],
-        capture_output=True, text=True, cwd=cwd, env={**os.environ},
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env={**os.environ},
     )
 
 
