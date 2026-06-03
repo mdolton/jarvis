@@ -130,3 +130,19 @@ async def test_bootstrap_exposes_web_app(tmp_path, config_dir):
         assert isinstance(ctx.web_app, FastAPI)
     finally:
         await ctx.shutdown()
+
+
+async def test_bootstrap_exposes_model_components(tmp_path, config_dir):
+    db_path = tmp_path / "jarvis.db"
+    ctx = await bootstrap(
+        config_dir=config_dir,
+        db_url=f"sqlite+aiosqlite:///{db_path}",
+    )
+    try:
+        assert ctx.llm_client is not None
+        assert ctx.model_catalog is not None
+        assert ctx.model_store is not None
+        # Default selection is None -> current() equals the configured model.
+        assert ctx.model_store.current() == ctx.config.jarvis.llm.model
+    finally:
+        await ctx.shutdown()
