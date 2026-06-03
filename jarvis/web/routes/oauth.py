@@ -1,5 +1,6 @@
 """OAuth connect / callback / disconnect routes."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -75,6 +76,17 @@ async def oauth_callback(request: Request):
             )
         except Exception as e:
             _log.exception("post-callback MCP attach failed for %s", result.provider_key)
+            # Tokens are stored but the server never came up. Don't leave the card
+            # claiming "connected" with no tools — flag it so the dashboard tells
+            # the truth and the user can retry.
+            from jarvis.oauth.store import OAuthCredentialsRepo
+
+            async with ctx.session_factory() as session:
+                await OAuthCredentialsRepo(session).set_status(
+                    result.provider_key,
+                    status="needs_reauth",
+                    last_error=f"MCP attach failed: {e}",
+                )
             return templates.TemplateResponse(
                 request,
                 "oauth_callback.html",
@@ -117,6 +129,12 @@ async def oauth_disconnect(provider: str, request: Request):
         raise HTTPException(status_code=404, detail=f"unknown provider {provider!r}")
     ctx = request.app.state.ctx
     if ctx.mcp_manager is not None:
-        await ctx.mcp_manager.remove_oauth_server(provider)
+        # The user clicked Disconnect — always honor it locally. A slow or failing
+        # MCP teardown (e.g. an unresponsive remote) must not block revocation,
+        # so bound it and fall through to revoke regardless of the outcome.
+        try:
+            await asyncio.wait_for(ctx.mcp_manager.remove_oauth_server(provider), timeout=10.0)
+        except Exception:
+            _log.exception("MCP teardown failed during disconnect of %s; revoking anyway", provider)
     await ctx.oauth_flow.revoke(provider)
     return RedirectResponse("/mcp", status_code=303)

@@ -39,10 +39,15 @@ class MCPManager:
         config: MCPServersConfig,
         session_factory: async_sessionmaker[AsyncSession],
         secrets_key: bytes | None = None,
+        connect_timeout: float = 60.0,
     ) -> None:
         self._config = config
         self._session_factory = session_factory
         self._secrets_key = secrets_key
+        # Hard ceiling on a single connect+list_tools so a transiently
+        # unresponsive remote can never wedge the serial lifecycle loop (and
+        # thereby block Disconnect/remove, which run through the same task).
+        self._connect_timeout = connect_timeout
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
         # All connection enter/exit happens on this single owner task.
@@ -169,12 +174,14 @@ class MCPManager:
 
             stack = AsyncExitStack()
             sdk_server = _build_sdk_server(cfg)
-            await stack.enter_async_context(sdk_server)
 
             try:
-                tools = await _list_tools(sdk_server)
-            except Exception:
-                # Eagerly close on list_tools failure so we don't keep a half-broken server.
+                async with asyncio.timeout(self._connect_timeout):
+                    await stack.enter_async_context(sdk_server)
+                    tools = await _list_tools(sdk_server)
+            except BaseException:
+                # Eagerly close on connect/list_tools failure or timeout so we
+                # never keep a half-broken (or hung) server around.
                 await _aclose_silently(stack)
                 raise
 
@@ -201,12 +208,16 @@ class MCPManager:
     ) -> None:
         new_stack = AsyncExitStack()
         new_sdk = _build_streamable_http(url, headers, name=provider_key)
-        await new_stack.enter_async_context(new_sdk)
 
         try:
-            tools = await _list_tools(new_sdk)
-        except Exception:
-            await new_stack.aclose()
+            async with asyncio.timeout(self._connect_timeout):
+                await new_stack.enter_async_context(new_sdk)
+                tools = await _list_tools(new_sdk)
+        except BaseException:
+            # Connect/list_tools failed or timed out. Drop the half-open stack so
+            # a hung connection can't linger, then surface the error to the caller
+            # (the old server, if any, stays active).
+            await _aclose_silently(new_stack)
             raise
 
         old_stack = self._stacks.get(provider_key)

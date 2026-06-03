@@ -201,6 +201,85 @@ async def test_connect_gmail_redirects_to_google(factory, monkeypatch):
     assert qs["access_type"] == ["offline"]
 
 
+class _ManagerStubRemoveRaises(_ManagerStub):
+    async def remove_oauth_server(self, key):
+        raise RuntimeError("teardown boom")
+
+
+class _ManagerStubReplaceRaises(_ManagerStub):
+    async def replace_oauth_server(self, key, *, url, headers):
+        raise RuntimeError("attach boom")
+
+
+async def test_disconnect_revokes_even_if_remove_fails(factory):
+    """A failing/slow MCP teardown must not stop Disconnect from honoring the
+    click. The credential row must be deleted regardless."""
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata())
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+        if request.url.path == "/oauth/revoke":
+            return httpx.Response(200)
+        return httpx.Response(404)
+
+    flow = OAuthFlow(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        session_factory=factory,
+        base_url="http://localhost:8080",
+        secrets_key=generate_key().encode(),
+    )
+    ctx = _Ctx(factory, flow)
+    ctx.mcp_manager = _ManagerStubRemoveRaises()
+
+    client = make_app(ctx)
+    r = client.get("/oauth/connect/fastmail", follow_redirects=False)
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    client.get(f"/oauth/callback?state={state}&code=abc")
+
+    r2 = client.post("/oauth/disconnect/fastmail")
+    assert r2.status_code in (200, 303)
+    async with factory() as session:
+        assert await OAuthCredentialsRepo(session).get("fastmail") is None
+
+
+async def test_callback_marks_needs_reauth_when_attach_fails(factory):
+    """If the MCP attach fails after token exchange, the provider must not be
+    left showing 'connected' — it should be flagged needs_reauth so the
+    dashboard card tells the truth."""
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata())
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+        return httpx.Response(404)
+
+    flow = OAuthFlow(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        session_factory=factory,
+        base_url="http://localhost:8080",
+        secrets_key=generate_key().encode(),
+    )
+    ctx = _Ctx(factory, flow)
+    ctx.mcp_manager = _ManagerStubReplaceRaises()
+
+    client = make_app(ctx)
+    r = client.get("/oauth/connect/fastmail", follow_redirects=False)
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    r2 = client.get(f"/oauth/callback?state={state}&code=abc")
+    assert r2.status_code == 500
+    async with factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("fastmail")
+        assert cred is not None
+        assert cred.status == "needs_reauth"
+
+
 async def test_disconnect_revokes_and_removes(factory):
     def handler(request):
         if "/.well-known" in request.url.path:
