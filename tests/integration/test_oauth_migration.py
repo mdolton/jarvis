@@ -20,7 +20,9 @@ def _run_alembic(db_path: Path, cmd: str) -> subprocess.CompletedProcess:
 
 def test_migrate_up_creates_oauth_tables(tmp_path):
     db_path = tmp_path / "test.db"
-    result = _run_alembic(db_path, "upgrade head")
+    # Pin to 0003 (the migration under test) rather than head, so later
+    # migrations don't change what `downgrade -1` reverts.
+    result = _run_alembic(db_path, "upgrade 0003")
     assert result.returncode == 0, result.stderr
 
     conn = sqlite3.connect(db_path)
@@ -43,7 +45,9 @@ def test_migrate_up_creates_oauth_tables(tmp_path):
 
 def test_migrate_down_drops_oauth_tables(tmp_path):
     db_path = tmp_path / "test.db"
-    up = _run_alembic(db_path, "upgrade head")
+    # Pin to 0003 so `downgrade -1` reverts the oauth migration (0003 -> 0002),
+    # regardless of any later migrations on top of head.
+    up = _run_alembic(db_path, "upgrade 0003")
     assert up.returncode == 0, up.stderr
     down = _run_alembic(db_path, "downgrade -1")
     assert down.returncode == 0, down.stderr
