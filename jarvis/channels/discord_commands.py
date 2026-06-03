@@ -99,6 +99,10 @@ def register_model_commands(
 
     @set_cmd.autocomplete("name")
     async def _set_autocomplete(interaction: discord.Interaction, current: str):
+        # Gate autocomplete too, so non-allow-listed users can't stream the
+        # model catalog out of the endpoint before the submit-time rejection.
+        if not is_authorized(str(interaction.user.id), allowed):
+            return []
         cat = await deps.list_models()
         choices = [app_commands.Choice(name="default (config model)", value=_DEFAULT_SENTINEL)]
         for m in cat.models:

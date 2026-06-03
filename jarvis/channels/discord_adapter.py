@@ -203,8 +203,8 @@ class DiscordAdapter:
             _log.exception("discord dispatch failed")
             try:
                 await message.channel.send(
-                    "⚠ Couldn't process that — the selected model may be "
-                    "unavailable. Pick another with `/model set`."
+                    "⚠ Couldn't process that. If it keeps happening, the selected "
+                    "model may be unavailable — try changing it with `/model set`."
                 )
             except Exception:
                 _log.exception("failed to send discord error reply")
