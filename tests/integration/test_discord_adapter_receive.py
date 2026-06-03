@@ -91,3 +91,25 @@ async def test_non_dm_messages_are_ignored():
     await adapter._on_message(msg)
 
     assert dispatcher.calls == []
+
+
+async def test_dispatch_failure_dms_user():
+    class _BoomDispatcher:
+        async def dispatch_channel_message(self, msg, *, allowed_refs):
+            raise RuntimeError("model unavailable")
+
+    adapter = DiscordAdapter(token="tok", allowed_user_ids={"111"})
+    adapter._dispatcher = _BoomDispatcher()
+
+    msg = _make_dm_message(content="hello", author_id=111, message_id=7)
+    sent = []
+
+    async def _send(text):
+        sent.append(text)
+
+    msg.channel.send = _send
+
+    await adapter._on_message(msg)
+
+    assert len(sent) == 1
+    assert "/model set" in sent[0]

@@ -19,8 +19,10 @@ import logging
 from collections.abc import Callable
 
 import discord
+from discord import app_commands
 
 from jarvis.channels.base import OutboundMessage
+from jarvis.channels.discord_commands import ModelCommandDeps, register_model_commands
 from jarvis.core.types import ChannelKind, ChannelMessage
 
 _log = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ class DiscordAdapter:
         *,
         token: str,
         allowed_user_ids: set[str],
+        model_command_deps: ModelCommandDeps | None = None,
         client_factory: Callable[[], discord.Client] | None = None,
         reconnect_backoff_base: float = 1.0,
         reconnect_backoff_max: float = 60.0,
@@ -47,12 +50,14 @@ class DiscordAdapter:
     ) -> None:
         self._token = token
         self._allowed = set(allowed_user_ids)
+        self._model_command_deps = model_command_deps
         self._client_factory = client_factory or _default_client_factory
         self._backoff_base = reconnect_backoff_base
         self._backoff_max = reconnect_backoff_max
         self._backoff = reconnect_backoff_base
         self._startup_grace = startup_grace_sec
         self._client: discord.Client | None = None
+        self._tree: app_commands.CommandTree | None = None
         self._task: asyncio.Task | None = None
         self._dispatcher = None  # set by start()
         self._closing = False
@@ -120,12 +125,23 @@ class DiscordAdapter:
 
     def _build_client(self) -> discord.Client:
         client = self._client_factory()
+        self._tree = None  # reset before possibly rebuilding for this client
+
+        if self._model_command_deps is not None:
+            tree = app_commands.CommandTree(client)
+            register_model_commands(tree, allowed=self._allowed, deps=self._model_command_deps)
+            self._tree = tree
 
         @client.event
         async def on_ready() -> None:
             _log.info("discord adapter ready as %s", client.user)
             self._backoff = self._backoff_base  # healthy connection; reset backoff
             self._ready.set()
+            if self._tree is not None:
+                try:
+                    await self._tree.sync()
+                except Exception:
+                    _log.exception("failed to sync discord application commands")
 
         @client.event
         async def on_message(message: discord.Message) -> None:
@@ -185,3 +201,10 @@ class DiscordAdapter:
             await self._dispatcher.dispatch_channel_message(ch_msg, allowed_refs=self._allowed)
         except Exception:
             _log.exception("discord dispatch failed")
+            try:
+                await message.channel.send(
+                    "⚠ Couldn't process that — the selected model may be "
+                    "unavailable. Pick another with `/model set`."
+                )
+            except Exception:
+                _log.exception("failed to send discord error reply")
