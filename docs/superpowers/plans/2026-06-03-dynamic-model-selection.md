@@ -153,7 +153,7 @@ Expected: FAIL (`TypeError: create() got an unexpected keyword 'model'`).
 In `jarvis/persistence/models.py`, in `class ScheduleRow(Base)`, add after `output_mode`:
 
 ```python
-    model: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
 ```
 
 - [ ] **Step 4: Add the `model` param to `ScheduleRepo.create`**
