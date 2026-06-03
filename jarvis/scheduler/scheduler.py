@@ -27,7 +27,7 @@ from jarvis.audit.logger import AuditLogger
 from jarvis.channels.base import ChannelAdapter
 from jarvis.config.schema import LLMConfig
 from jarvis.core.dispatcher import TriggerDispatcher
-from jarvis.core.types import ScheduledTrigger
+from jarvis.core.types import AuditEvent, AuditEventType, ScheduledTrigger
 from jarvis.persistence.repositories import ScheduleRepo
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
@@ -44,6 +44,7 @@ class Scheduler:
         mcp_servers_provider: Callable[[], list],
         discord_adapter: ChannelAdapter | None,
         model_override: Any = None,
+        model_catalog=None,
         idle_timeout_sec: int = 900,
         max_concurrent: int = 3,
         oauth_flow=None,
@@ -51,6 +52,8 @@ class Scheduler:
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
+        self._llm_config = llm_config
+        self._model_catalog = model_catalog
         self._oauth_flow = oauth_flow
         self._oauth_mcp_manager = mcp_manager
 
@@ -152,11 +155,28 @@ class Scheduler:
 
             prompt = row.prompt
             output_mode = row.output_mode
+            model = row.model
+
+        if model is not None and self._model_catalog is not None:
+            catalog = await self._model_catalog.list_models()
+            if catalog.ok and model not in catalog.models:
+                await self._audit.emit(
+                    AuditEvent(
+                        type=AuditEventType.MODEL_FALLBACK,
+                        payload={
+                            "schedule_id": str(schedule_id),
+                            "requested": model,
+                            "substituted": self._llm_config.model,
+                        },
+                    )
+                )
+                model = None  # None -> runner falls back to the config default
 
         trigger = ScheduledTrigger(
             schedule_id=str(schedule_id),
             prompt=prompt,
             output_mode=output_mode,
+            model=model,
         )
 
         try:
