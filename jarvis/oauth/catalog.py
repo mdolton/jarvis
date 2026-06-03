@@ -55,6 +55,25 @@ OAUTH_CATALOG: dict[str, ProviderEntry] = {
         client_id_env="GOOGLE_OAUTH_CLIENT_ID",
         client_secret_env="GOOGLE_OAUTH_CLIENT_SECRET",
     ),
+    "calendar": ProviderEntry(
+        key="calendar",
+        display_name="Google Calendar",
+        mcp_url="https://calendarmcp.googleapis.com/mcp/v1",
+        auth_mode=AuthMode.MANUAL,
+        oauth_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        # Read-only scopes documented for the Calendar MCP server. See
+        # developers.google.com/workspace/calendar/api/guides/configure-mcp-server
+        scopes=(
+            "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+            "https://www.googleapis.com/auth/calendar.events.freebusy",
+            "https://www.googleapis.com/auth/calendar.events.readonly",
+        ),
+        extra_auth_params={"access_type": "offline", "prompt": "consent"},
+        # Reuses the same Google Cloud OAuth client as Gmail; one Web-application
+        # client can request any scopes, so no separate credentials are needed.
+        client_id_env="GOOGLE_OAUTH_CLIENT_ID",
+        client_secret_env="GOOGLE_OAUTH_CLIENT_SECRET",
+    ),
 }
 
 
