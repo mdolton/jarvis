@@ -219,6 +219,7 @@ class ScheduleRepo:
         output_mode: str,
         notify_on_error: bool,
         enabled: bool,
+        model: str | None = None,
     ) -> ScheduleRow:
         now = _utcnow()
         row = ScheduleRow(
@@ -228,6 +229,7 @@ class ScheduleRepo:
             timezone=timezone,
             prompt=prompt,
             output_mode=output_mode,
+            model=model,
             notify_on_error=notify_on_error,
             enabled=enabled,
             created_at=now,

@@ -169,3 +169,34 @@ async def test_schedule_delete(session):
     )
     await repo.delete(sched.id)
     assert await repo.get(sched.id) is None
+
+
+async def test_schedule_create_persists_model(tmp_path):
+    from jarvis.persistence.db import Base, create_engine, session_factory
+    from jarvis.persistence.repositories import ScheduleRepo
+
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'm.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = session_factory(engine)
+
+    async with factory() as s:
+        repo = ScheduleRepo(s)
+        with_model = await repo.create(
+            name="a", description="", cron_expr="* * * * *", timezone="UTC",
+            prompt="p", output_mode="discord", notify_on_error=True, enabled=True,
+            model="gpt-4o",
+        )
+        without_model = await repo.create(
+            name="b", description="", cron_expr="* * * * *", timezone="UTC",
+            prompt="p", output_mode="discord", notify_on_error=True, enabled=True,
+        )
+
+    async with factory() as s:
+        repo = ScheduleRepo(s)
+        a = await repo.get(with_model.id)
+        b = await repo.get(without_model.id)
+        assert a.model == "gpt-4o"
+        assert b.model is None
+
+    await engine.dispose()
