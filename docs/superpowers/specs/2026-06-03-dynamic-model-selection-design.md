@@ -47,6 +47,11 @@ YAML and restarting:
    finish on their current model. No confirmation step.
 5. **"Default" is an explicit, selectable option** in both the dashboard
    dropdown and `/model set`, mapping to the YAML config model.
+6. **Model list is fetched on-demand with a ~30s TTL cache** — no startup fetch,
+   no background poller. New models appear within ~30s of the next picker use.
+7. **Stale / unavailable model = Hybrid handling** (see dedicated section):
+   scheduled runs auto-fall-back to the config default; interactive runs
+   fail loud with a user-visible message; both get a dashboard ⚠ badge.
 
 ## Architecture
 
@@ -80,17 +85,74 @@ Consequences:
   the YAML config model.
 - Interactive specific pick → that model, verbatim.
 
+### Stale / unavailable model handling (Hybrid)
+
+Run-time model **resolution** stays network-free and deterministic (above). The
+availability policy is layered on top, and differs by run type. A selected model
+can only become stale when it is removed *after* selection — pickers are
+populated from the catalog, so you normally can't select an unavailable model.
+
+**Pre-existing gaps this design works around (not fixing):**
+- The scheduled→Discord output passes an empty `discord_user_id`
+  (`scheduler.py:165`) and `notify_on_error` is not consulted in
+  `_execute_schedule`. So scheduled runs cannot reliably DM the user today.
+- The interactive error path swallows exceptions: `discord_adapter._on_message`
+  catches and only logs (`"discord dispatch failed"`); a failed run is silent to
+  the user. The dashboard manual-run path is similarly bare.
+
+Given those, Hybrid is realized as:
+
+**Scheduled runs — auto-fall-back (unattended).** In `_execute_schedule`, if
+`row.model` is set, consult `ModelCatalog` (cached). If the fetch **succeeds and
+confirms the model is gone** (`ok=True and row.model not in models`), substitute
+the config default for that run, emit a `MODEL_FALLBACK` audit event, and log
+it; the run proceeds on the default. If the fetch **fails** (`ok=False`), do
+*not* substitute — attempt `row.model`; a real failure records `error` as today.
+Visibility is via the **audit log + dashboard ⚠ badge**, not a Discord ping
+(scheduled→Discord notification is the pre-existing gap above and is out of
+scope). The scheduler gets `ModelCatalog` injected.
+
+**Interactive runs — fail loud (attended).** No pre-check; the run proceeds and
+the LLM call raises for an unknown model. This design adds **minimal
+error-surfacing** so the failure is actually visible:
+- Discord: `_on_message`, on a dispatch exception, DMs the user a short message
+  (e.g. "⚠ model `X` is unavailable — pick another with `/model set` or the
+  dashboard") instead of only logging.
+- Dashboard manual run: returns the error text to the page.
+- An audit event is emitted in both cases.
+No automatic substitution — the user re-picks. (This error-surfacing is scoped
+narrowly to the model-unavailable / run-failure case on the interactive path; it
+is not a general reliability overhaul.)
+
+**Dashboard ⚠ badge (both).** When rendering `/settings` and `/schedules`, any
+selected interactive model or per-schedule model not present in the current
+catalog list (`ok=True and model not in models`) shows a "not available" badge,
+so stale selections are obvious before they fail. If the catalog fetch fails
+(`ok=False`), no badge is shown (we can't assert absence).
+
+**Config-YAML model gone.** Terminal — it *is* the fallback target, so
+substitution cannot rescue it. Scheduled fallback resolves to it and still
+fails; interactive surfaces the error; the dashboard shows a ⚠ badge on the
+default. No code-level recovery is possible.
+
 ### Components
 
 **`ModelCatalog`** — `jarvis/agents/model_catalog.py`
 - Wraps the `AsyncOpenAI` client; `async list_models() -> list[str]` calls
   `client.models.list()` (the `/v1/models` endpoint) and returns sorted model
   IDs.
-- In-memory TTL cache (~30s) so dashboard loads and Discord autocomplete
-  keystrokes don't hammer the endpoint.
-- Errors (endpoint lacks `/v1/models`, network failure) are caught and reported
-  as an empty list plus an `ok: bool` / error flag so callers can show
-  "couldn't load models — type a name manually."
+- **Fetch lifecycle:** on-demand only, with an in-memory ~30s TTL cache. There
+  is no startup fetch and no background poller — the list is queried lazily when
+  a UI surface needs it (dashboard render, `/model list`, `/model set`
+  autocomplete, and the scheduled-run availability check). The cache prevents a
+  burst of autocomplete keystrokes or a page refresh from hammering the
+  endpoint; a request past the TTL re-queries. New models therefore appear
+  within ~30s of the next picker use, with no restart.
+- Returns a small result object distinguishing **success** from **fetch
+  failure**: `Catalog(models: list[str], ok: bool)` (or equivalent). `ok=False`
+  on endpoint/network error with `models=[]`. This distinction is load-bearing
+  for the Hybrid fallback (we only auto-fall-back on a *confirmed* absence,
+  i.e. `ok=True and model not in models`, never on `ok=False`).
 - Reachable via `AppContext`. To enable this, the `AsyncOpenAI` client built in
   `main.py` is stored on `AppContext.llm_client`.
 
@@ -125,8 +187,9 @@ non-model use.
 3. Create `ModelStore(settings_repo factory, default=cfg.jarvis.llm.model)`,
    `await store.load()` → `AppContext.model_store`.
 4. Interactive `AgentRunner(model_provider=store.current, ...)`.
-5. `Scheduler(... )` builds its runner with
-   `model_provider=lambda: cfg.jarvis.llm.model`.
+5. `Scheduler(...)` builds its runner with
+   `model_provider=lambda: cfg.jarvis.llm.model` and also receives
+   `model_catalog` for the scheduled availability pre-check.
 6. `DiscordAdapter` receives injected callables (see below).
 
 ## Dashboard
@@ -182,30 +245,46 @@ unit-testable without a live gateway.
 
 ## Audit
 
-New `AuditEventType.MODEL_CHANGED = "model.changed"`. Emitted on every
-interactive change (dashboard or Discord) with payload
-`{old, new, source}` where `source ∈ {"dashboard", "discord"}`.
+- New `AuditEventType.MODEL_CHANGED = "model.changed"`. Emitted on every
+  interactive change (dashboard or Discord) with payload `{old, new, source}`
+  where `source ∈ {"dashboard", "discord"}`.
+- New `AuditEventType.MODEL_FALLBACK = "model.fallback"`. Emitted when a
+  scheduled run's pinned model is confirmed absent and the config default is
+  substituted, with payload `{schedule_id, requested, substituted}`.
+- The interactive model-unavailable failure reuses the existing LLM-error audit
+  path plus the new user-facing reply; no extra event type is required for it.
 
 ## Error handling
 
-- `/v1/models` failure → empty list + flag; UIs degrade to manual text entry,
-  never crash a page or command.
+- `/v1/models` failure → `Catalog(models=[], ok=False)`; UIs degrade to manual
+  text entry, never crash a page or command, and no ⚠ badges or auto-fallback
+  are triggered (we can't assert absence).
 - `model_store.set` with an unknown model string is allowed (the endpoint may
   expose models the catalog cache hasn't refreshed). The selection is honored;
-  a bad model surfaces as a normal run-time LLM error on the next run.
+  staleness is handled per the Hybrid section.
+- Stale selected model: scheduled → auto-fall-back to config default (audit +
+  dashboard badge); interactive → fail loud with a user-facing reply (Discord
+  DM / dashboard) + audit. See the Hybrid section.
 - Discord command from a non-allow-listed user → silently rejected (consistent
   with `on_message`).
 
 ## Testing
 
 - `ModelCatalog`: mocked `client.models.list` returns IDs (sorted); error path
-  returns empty + flag; cache TTL behavior.
+  returns `Catalog(models=[], ok=False)`; cache TTL behavior (no re-query within
+  TTL, re-query after).
 - `ModelStore`: `current()` fallback to config default when unset; `set(x)` then
   `current()`; `set(None)` clears; persistence via in-memory SQLite + reload.
 - `AgentRunner` resolution precedence: ctor override > scheduled-trigger model >
   `model_provider()`; interactive trigger always uses provider.
 - `Scheduler`: `_execute_schedule` carries `row.model` onto `ScheduledTrigger`;
-  `NULL` → provider (config default).
+  `NULL` → provider (config default); pinned-model **auto-fallback** when
+  catalog `ok=True and model absent` (substitutes default + `MODEL_FALLBACK`
+  audit); **no** fallback when catalog `ok=False`.
+- Interactive fail-loud: `_on_message` dispatch exception → user-facing reply
+  sent + audit; dashboard manual-run error surfaced to the page.
+- Dashboard ⚠ badge: rendered when `ok=True and model not in models`; absent
+  when `ok=False`.
 - Routes: `POST /settings/model` updates the store + emits audit; `POST
   /schedules` with/without `model`.
 - Discord: extracted handler functions — allow-list gate, `current`, `list`,
@@ -219,7 +298,14 @@ interactive change (dashboard or Discord) with payload
   selection only).
 - Writing selections back to YAML.
 - Validating that a selected model exists before saving (endpoints vary; we
-  surface failures at run time).
+  surface staleness per the Hybrid section instead).
+- Fully wiring scheduled→Discord notifications (the empty `discord_user_id` /
+  unused `notify_on_error` gap). The scheduled fallback is surfaced via the
+  audit log + dashboard badge, not a Discord ping. Fixing scheduled DM delivery
+  is a separate concern.
+- A general interactive-reliability overhaul. The interactive error-surfacing
+  added here is scoped to making run failures (notably model-unavailable)
+  visible to the user; broader retry/queueing is not addressed.
 
 ## Files touched
 
@@ -230,13 +316,18 @@ New:
 
 Modified:
 - `jarvis/agents/runner.py` (model_provider)
-- `jarvis/core/types.py` (`ScheduledTrigger.model`, `AuditEventType.MODEL_CHANGED`)
+- `jarvis/core/types.py` (`ScheduledTrigger.model`, `AuditEventType.MODEL_CHANGED`,
+  `AuditEventType.MODEL_FALLBACK`)
 - `jarvis/persistence/models.py` (`ScheduleRow.model`)
 - `jarvis/persistence/repositories.py` (`ScheduleRepo.create/.update`)
-- `jarvis/scheduler/scheduler.py` (carry `row.model`; provider wiring)
-- `jarvis/main.py` (store client, build catalog + store, wire providers + adapter)
-- `jarvis/channels/discord_adapter.py` (`CommandTree`, `/model`, injected deps)
-- `jarvis/web/routes/settings.py` (`POST /settings/model`)
-- `jarvis/web/routes/schedules.py` (`model` form field)
-- `jarvis/web/templates/settings.html`, `schedules.html`
+- `jarvis/scheduler/scheduler.py` (carry `row.model`; provider wiring; catalog
+  pre-check + auto-fallback + `MODEL_FALLBACK` audit)
+- `jarvis/main.py` (store client, build catalog + store, wire providers, catalog,
+  and adapter deps)
+- `jarvis/channels/discord_adapter.py` (`CommandTree`, `/model`, injected deps;
+  user-facing error reply on dispatch failure)
+- `jarvis/web/routes/settings.py` (`POST /settings/model`; ⚠ badge data)
+- `jarvis/web/routes/schedules.py` (`model` form field; ⚠ badge data; surface
+  manual-run errors if applicable)
+- `jarvis/web/templates/settings.html`, `schedules.html` (model selects, ⚠ badges)
 - `README.md` (Discord app DM-context note; model selection usage)
