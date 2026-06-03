@@ -14,9 +14,20 @@ router = APIRouter()
 async def schedule_list(request: Request):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
+    catalog = await ctx.model_catalog.list_models()
     async with ctx.session_factory() as session:
         schedules = await ScheduleRepo(session).list_all()
-    return templates.TemplateResponse(request, "schedules.html", {"schedules": schedules})
+    available = set(catalog.models) if catalog.ok else None
+    return templates.TemplateResponse(
+        request,
+        "schedules.html",
+        {
+            "schedules": schedules,
+            "available_models": catalog.models,
+            "catalog_ok": catalog.ok,
+            "available_set": available,
+        },
+    )
 
 
 @router.post("/schedules")
@@ -28,6 +39,7 @@ async def schedule_create(
     timezone: str = Form("UTC"),
     prompt: str = Form(...),
     output_mode: str = Form("discord"),
+    model: str = Form(""),
 ):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
@@ -40,6 +52,7 @@ async def schedule_create(
             output_mode=output_mode,
             notify_on_error=True,
             enabled=True,
+            model=model.strip() or None,
         )
     return RedirectResponse(url="/schedules", status_code=303)
 

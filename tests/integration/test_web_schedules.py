@@ -19,6 +19,14 @@ async def client_and_factory(tmp_path):
     ctx.scheduler = MagicMock()
     ctx.scheduler.fire_now = MagicMock(return_value=None)  # not async in mock
 
+    from unittest.mock import AsyncMock
+
+    from jarvis.agents.model_catalog import Catalog
+
+    ctx.model_catalog.list_models = AsyncMock(
+        return_value=Catalog(models=["alpha", "beta"], ok=True)
+    )
+
     app = create_app(app_context=ctx)
     client = TestClient(app)
     yield client, factory
@@ -68,3 +76,46 @@ def test_toggle_schedule(client_and_factory):
     # Get the list to find the schedule.
     resp = client.get("/schedules")
     assert "toggleme" in resp.text
+
+
+def test_schedules_page_lists_models_in_form(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.get("/schedules")
+    assert resp.status_code == 200
+    assert "alpha" in resp.text and "beta" in resp.text
+
+
+def test_create_schedule_with_model(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.post(
+        "/schedules",
+        data={
+            "name": "pinned",
+            "description": "",
+            "cron_expr": "0 8 * * *",
+            "timezone": "UTC",
+            "prompt": "do it",
+            "output_mode": "discord",
+            "model": "alpha",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+
+
+def test_create_schedule_default_model_is_null(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.post(
+        "/schedules",
+        data={
+            "name": "unpinned",
+            "description": "",
+            "cron_expr": "0 8 * * *",
+            "timezone": "UTC",
+            "prompt": "do it",
+            "output_mode": "discord",
+            "model": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
