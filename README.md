@@ -185,13 +185,16 @@ Single Python async process running in Docker:
 
 ## OAuth-protected MCP servers
 
-Jarvis connects to OAuth-protected HTTP MCP servers from the `/mcp` dashboard. Two
+Jarvis connects to OAuth-protected HTTP MCP servers from the `/mcp` dashboard. Three
 providers ship in the catalog:
 
 - **Fastmail** — Dynamic Client Registration (DCR); no manual client setup.
 - **Gmail** — Google's official Gmail MCP server (`https://gmailmcp.googleapis.com/mcp/v1`).
   Google does not support DCR, so you create the OAuth client by hand and supply its
   credentials via environment variables.
+- **Google Calendar** — Google's official Calendar MCP server
+  (`https://calendarmcp.googleapis.com/mcp/v1`). Manual-mode like Gmail, and reuses the
+  same Google OAuth client credentials.
 
 ### One-time setup (all providers)
 
@@ -228,6 +231,24 @@ GOOGLE_OAUTH_CLIENT_SECRET=<from Google Cloud Console>
 Restart Jarvis, open `/mcp`, and click **Connect** on the Gmail card. Jarvis stores the
 encrypted tokens and refreshes them automatically; if a refresh permanently fails the card
 shows **Needs re-auth** with a Reconnect button.
+
+### Google Calendar-specific setup
+
+Calendar reuses the same Google Cloud OAuth client as Gmail (one Web-application client can
+request any scopes), so there are **no extra environment variables** — just expand the
+existing client's project. In Google Cloud Console:
+
+1. Enable the **Google Calendar API** (`calendar-json.googleapis.com`) and the **Google
+   Calendar MCP API** (`calendarmcp.googleapis.com`). The MCP API is part of the Google
+   Workspace Developer Preview Program (early access) — enroll your project there first.
+2. Add the Calendar scopes to the **OAuth consent screen**:
+   `https://www.googleapis.com/auth/calendar.calendarlist.readonly`,
+   `https://www.googleapis.com/auth/calendar.events.freebusy`, and
+   `https://www.googleapis.com/auth/calendar.events.readonly`. The existing Web-application
+   client and its redirect URI (`${JARVIS_BASE_URL}/oauth/callback`) are reused unchanged.
+
+Restart Jarvis, open `/mcp`, and click **Connect** on the Google Calendar card. Re-consent
+grants the new scopes; tokens are stored encrypted and refreshed automatically.
 
 ## License
 
