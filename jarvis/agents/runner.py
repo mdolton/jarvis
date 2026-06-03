@@ -56,6 +56,7 @@ class AgentRunner:
         mcp_servers_provider: Callable[[], list],
         llm_config: LLMConfig,
         model: Any = None,  # Override for tests; None means "use config.model"
+        model_provider: Callable[[], str] | None = None,
         idle_timeout_sec: int = 900,
     ) -> None:
         self._session_factory = session_factory
@@ -63,6 +64,7 @@ class AgentRunner:
         self._mcp_servers_provider = mcp_servers_provider
         self._llm_config = llm_config
         self._model = model
+        self._model_provider = model_provider
         self._idle_timeout_sec = idle_timeout_sec
 
     async def run(self, request: InvocationRequest) -> AgentRunResult:
@@ -112,10 +114,12 @@ class AgentRunner:
             "instructions": _system_prompt(),
             "mcp_servers": self._mcp_servers_provider(),
         }
-        if self._model is not None:
-            agent_kwargs["model"] = self._model
-        else:
-            agent_kwargs["model"] = self._llm_config.model
+        agent_kwargs["model"] = resolve_model(
+            request.trigger,
+            explicit=self._model,
+            model_provider=self._model_provider,
+            config_default=self._llm_config.model,
+        )
         agent = Agent(**agent_kwargs)
 
         sdk_result = await Runner.run(
@@ -185,3 +189,15 @@ def _extract_text(sdk_result) -> str:
     if hasattr(sdk_result, "final_output") and sdk_result.final_output is not None:
         return str(sdk_result.final_output)
     return ""
+
+
+def resolve_model(trigger, *, explicit, model_provider, config_default):
+    """Pick the model for a run. Precedence: explicit (test override) >
+    a scheduled trigger's pinned model > model_provider() > config default."""
+    if explicit is not None:
+        return explicit
+    if isinstance(trigger, ScheduledTrigger) and trigger.model:
+        return trigger.model
+    if model_provider is not None:
+        return model_provider()
+    return config_default
