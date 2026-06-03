@@ -33,6 +33,28 @@ class FakeSDKServer:
         return self._list_returns
 
 
+class HangingSDKServer:
+    """A server whose connect (aenter) never returns — models a transiently
+    unresponsive remote like Google's early-access Calendar MCP endpoint."""
+
+    def __init__(self):
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self):
+        self.entered = True
+        import asyncio
+
+        await asyncio.Event().wait()  # hang forever
+        return self
+
+    async def __aexit__(self, *exc):
+        self.exited = True
+
+    async def list_tools(self):
+        return []
+
+
 @pytest.fixture
 async def factory(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
@@ -176,6 +198,38 @@ async def test_start_attaches_connected_manual_provider(factory, monkeypatch):
         assert sdk.entered
         assert mgr.agent_mcp_servers() == [sdk]
         assert captured["url"] == "https://gmailmcp.googleapis.com/mcp/v1"
+    finally:
+        await mgr.stop()
+
+
+async def test_hung_replace_times_out_and_does_not_block_remove(factory, monkeypatch):
+    """A connect that hangs must not wedge the lifecycle loop.
+
+    Regression for the Google Calendar wedge: a transiently unresponsive
+    endpoint hung _do_replace_oauth, head-of-line-blocking every later command
+    so Disconnect (remove) never ran. The replace must time out, and a
+    subsequent remove must complete promptly.
+    """
+    import asyncio
+
+    mgr = MCPManager(
+        config=MCPServersConfig(servers=[]),
+        session_factory=factory,
+        connect_timeout=0.3,
+    )
+    await mgr.start()
+    try:
+        monkeypatch.setattr(
+            "jarvis.mcp.manager._build_streamable_http",
+            lambda url, headers, *, name: HangingSDKServer(),
+        )
+        with pytest.raises(TimeoutError):
+            await mgr.replace_oauth_server(
+                "calendar", url="x", headers={"Authorization": "Bearer X"}
+            )
+        # The loop must be free now — remove completes well within the timeout.
+        await asyncio.wait_for(mgr.remove_oauth_server("calendar"), timeout=2.0)
+        assert mgr.agent_mcp_servers() == []
     finally:
         await mgr.stop()
 
