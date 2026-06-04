@@ -1,8 +1,11 @@
 """MCPManager integration tests using a real in-process stdio MCP server."""
 
 import sys
+from types import MethodType
 
 import pytest
+from agents.mcp import MCPUtil
+from mcp.types import Tool
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
 from jarvis.mcp.manager import MCPManager, _build_sdk_server, _build_streamable_http
@@ -137,11 +140,13 @@ async def test_mcp_manager_handles_empty_config(engine_and_factory):
 async def test_agent_mcp_servers_stable_identity(engine_and_factory, test_server_script):
     """Successive calls to agent_mcp_servers() return the same SDK objects."""
     import sys
+
     _, factory = engine_and_factory
     cfg = MCPServersConfig(
         servers=[
-            MCPServerConfig(name="echo", transport="stdio",
-                            command=[sys.executable, str(test_server_script)]),
+            MCPServerConfig(
+                name="echo", transport="stdio", command=[sys.executable, str(test_server_script)]
+            ),
         ],
     )
     manager = MCPManager(config=cfg, session_factory=factory)
@@ -158,11 +163,13 @@ async def test_agent_mcp_servers_stable_identity(engine_and_factory, test_server
 async def test_stop_is_idempotent(engine_and_factory, test_server_script):
     """Calling stop() twice doesn't raise."""
     import sys
+
     _, factory = engine_and_factory
     cfg = MCPServersConfig(
         servers=[
-            MCPServerConfig(name="echo", transport="stdio",
-                            command=[sys.executable, str(test_server_script)]),
+            MCPServerConfig(
+                name="echo", transport="stdio", command=[sys.executable, str(test_server_script)]
+            ),
         ],
     )
     manager = MCPManager(config=cfg, session_factory=factory)
@@ -182,6 +189,17 @@ async def test_mcp_manager_rejects_yaml_server_named_after_catalog_key(engine_an
     manager = MCPManager(config=cfg, session_factory=factory)
     with pytest.raises(ValueError, match="fastmail"):
         await manager.start()
+
+
+async def test_mcp_manager_clear_policy_cache_delegates(engine_and_factory):
+    _, factory = engine_and_factory
+    manager = MCPManager(config=MCPServersConfig(servers=[]), session_factory=factory)
+    manager._approval_policy = _RecordingCachePolicy()
+
+    manager.clear_policy_cache()
+    manager.clear_policy_cache("calendar")
+
+    assert manager._approval_policy.calls == [("clear_cache", None), ("clear_server", "calendar")]
 
 
 @pytest.mark.parametrize(
@@ -218,17 +236,34 @@ async def test_sdk_server_builders_wire_two_arg_tool_filter_for_all_transports(c
     assert policy.calls == [("filter_tool", cfg.name, "send_email")]
 
 
-async def test_sdk_dynamic_tool_filter_uses_two_arg_callback_without_dropping_tools():
+async def test_mcp_util_get_function_tools_uses_two_arg_filter_without_dropping_tools():
     policy = _RecordingApprovalPolicy(filter_result=True)
     sdk_server = _build_sdk_server(
         MCPServerConfig(name="stdio-server", transport="stdio", command=[sys.executable]),
         approval_policy=policy,
     )
-    tool = _SdkTool("search_docs")
+    tool = Tool(name="search_docs", inputSchema={})
 
-    filtered = await sdk_server._apply_dynamic_tool_filter([tool], object(), object())
+    async def list_tools(self, run_context, agent):
+        filter_context = _FilterContext(
+            run_context=run_context,
+            agent=agent,
+            server_name=self.name,
+        )
+        if await self.tool_filter(filter_context, tool):
+            return [tool]
+        return []
 
-    assert filtered == [tool]
+    sdk_server.list_tools = MethodType(list_tools, sdk_server)
+
+    function_tools = await MCPUtil.get_function_tools(
+        sdk_server,
+        convert_schemas_to_strict=False,
+        run_context=object(),
+        agent=object(),
+    )
+
+    assert [tool.name for tool in function_tools] == ["search_docs"]
     assert policy.calls == [("filter_tool", "stdio-server", "search_docs")]
 
 
@@ -262,6 +297,24 @@ class _RecordingApprovalPolicy:
     async def filter_tool(self, server_name, tool):
         self.calls.append(("filter_tool", server_name, tool.name))
         return self._filter_result
+
+
+class _RecordingCachePolicy:
+    def __init__(self):
+        self.calls = []
+
+    def clear_cache(self):
+        self.calls.append(("clear_cache", None))
+
+    def clear_server(self, server_name):
+        self.calls.append(("clear_server", server_name))
+
+
+class _FilterContext:
+    def __init__(self, *, run_context, agent, server_name):
+        self.run_context = run_context
+        self.agent = agent
+        self.server_name = server_name
 
 
 class _SdkTool:

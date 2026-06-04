@@ -85,6 +85,12 @@ class MCPManager:
         """Return the SDK server objects to pass into `Agent(mcp_servers=...)`."""
         return list(self._sdk_servers.values())
 
+    def clear_policy_cache(self, server_name: str | None = None) -> None:
+        if server_name is None:
+            self._approval_policy.clear_cache()
+        else:
+            self._approval_policy.clear_server(server_name)
+
     async def replace_oauth_server(
         self, provider_key: str, *, url: str, headers: dict[str, str]
     ) -> None:
@@ -278,12 +284,10 @@ def _build_streamable_http(
     """
     kwargs = {}
     if approval_policy is not None:
-        kwargs["require_approval"] = (
-            lambda ctx, agent, tool: approval_policy.needs_approval(name, tool)
+        kwargs["require_approval"] = lambda ctx, agent, tool: approval_policy.needs_approval(
+            name, tool
         )
-        kwargs["tool_filter"] = (
-            lambda filter_context, tool: approval_policy.filter_tool(name, tool)
-        )
+        kwargs["tool_filter"] = lambda filter_context, tool: approval_policy.filter_tool(name, tool)
 
     return MCPServerStreamableHttp(
         name=name,
@@ -318,12 +322,10 @@ def _build_sdk_server(
     kwargs = {}
     if approval_policy is not None:
         name = cfg.name
-        kwargs["require_approval"] = (
-            lambda ctx, agent, tool: approval_policy.needs_approval(name, tool)
+        kwargs["require_approval"] = lambda ctx, agent, tool: approval_policy.needs_approval(
+            name, tool
         )
-        kwargs["tool_filter"] = (
-            lambda filter_context, tool: approval_policy.filter_tool(name, tool)
-        )
+        kwargs["tool_filter"] = lambda filter_context, tool: approval_policy.filter_tool(name, tool)
 
     if cfg.transport == "stdio":
         params: dict = {
@@ -356,7 +358,11 @@ def _build_sdk_server(
 
 
 async def _list_tools(sdk_server: object) -> list[MCPToolDescriptor]:
-    """Ask the SDK server for its tools and map to our typed descriptors."""
+    """Ask the SDK server for its tools and map to our typed descriptors.
+
+    Any temporary `tool_filter` mutation is deliberately scoped and restored in
+    `finally`; the SDK server object is retained for later Agent use.
+    """
     # This manager call catalogs the raw server tool set before an Agent run
     # context exists. The Agents SDK applies dynamic tool filters from
     # list_tools(), but those filters require run_context+agent, so temporarily

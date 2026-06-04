@@ -48,7 +48,9 @@ def test_mcp_tool_policy_can_be_set_and_cleared(client):
     resp = client.get("/mcp")
     assert resp.status_code == 200
 
-    match = re.search(r'<form(?=[^>]+data-policy-tool="list_events")(?=[^>]+action="([^"]+)")', resp.text)
+    match = re.search(
+        r'<form(?=[^>]+data-policy-tool="list_events")(?=[^>]+action="([^"]+)")', resp.text
+    )
     assert match is not None
     action = match.group(1)
 
@@ -59,6 +61,23 @@ def test_mcp_tool_policy_can_be_set_and_cleared(client):
     clear_resp = client.post(action, data={"policy_override": ""}, follow_redirects=False)
     assert clear_resp.status_code in (302, 303)
     assert "auto-detect" in client.get("/mcp").text
+
+
+def test_mcp_tool_policy_update_clears_runtime_policy_cache(client):
+    client.app.state.ctx.mcp_manager = MagicMock()
+    resp = client.get("/mcp")
+    assert resp.status_code == 200
+
+    match = re.search(
+        r'<form(?=[^>]+data-policy-tool="list_events")(?=[^>]+action="([^"]+)")', resp.text
+    )
+    assert match is not None
+    action = match.group(1)
+
+    set_resp = client.post(action, data={"policy_override": "deny"}, follow_redirects=False)
+
+    assert set_resp.status_code in (302, 303)
+    client.app.state.ctx.mcp_manager.clear_policy_cache.assert_called_once_with()
 
 
 @pytest_asyncio.fixture(loop_scope="function")

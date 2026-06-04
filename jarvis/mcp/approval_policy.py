@@ -13,42 +13,71 @@ from jarvis.persistence.models import MCPServerRow, MCPToolRow
 class MCPApprovalPolicy:
     def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+        self._cache: dict[str, dict[str, tuple[MCPToolDescriptor, str | None]]] = {}
 
     async def needs_approval(self, server_name: str, tool: Any) -> bool:
         descriptor, override = await self._lookup(server_name, tool)
-        return runtime_decision(descriptor, override=override) == RuntimeToolDecision.CONFIRM
+        return runtime_decision(descriptor, override=override) in {
+            RuntimeToolDecision.CONFIRM,
+            RuntimeToolDecision.DENY,
+        }
 
     async def filter_tool(self, server_name: str, tool: Any) -> bool:
         descriptor, override = await self._lookup(server_name, tool)
         return runtime_decision(descriptor, override=override) != RuntimeToolDecision.DENY
 
+    def clear_cache(self) -> None:
+        self._cache.clear()
+
+    def clear_server(self, server_name: str) -> None:
+        self._cache.pop(server_name, None)
+
     async def _lookup(self, server_name: str, tool: Any) -> tuple[MCPToolDescriptor, str | None]:
         tool_name = tool.name
+        server_tools = await self._tools_for_server(server_name)
+        cached = server_tools.get(tool_name)
+        if cached is not None:
+            return cached
+
+        return _descriptor_from_sdk_tool(tool), None
+
+    async def _tools_for_server(
+        self,
+        server_name: str,
+    ) -> dict[str, tuple[MCPToolDescriptor, str | None]]:
+        cached = self._cache.get(server_name)
+        if cached is not None:
+            return cached
+
         async with self._session_factory() as session:
             result = await session.execute(
-                select(MCPToolRow)
-                .join(MCPServerRow)
-                .where(MCPServerRow.name == server_name, MCPToolRow.name == tool_name)
+                select(MCPToolRow).join(MCPServerRow).where(MCPServerRow.name == server_name)
             )
-            row = result.scalar_one_or_none()
+            rows = list(result.scalars())
 
-        if row is None:
-            return _descriptor_from_sdk_tool(tool), None
-
-        return (
-            MCPToolDescriptor(
-                name=row.name,
-                description=row.description,
-                input_schema=row.input_schema,
-                read_only_hint=row.read_only_hint,
-                destructive_hint=row.destructive_hint,
-            ),
-            row.policy_override,
-        )
+        server_tools = {
+            row.name: (
+                MCPToolDescriptor(
+                    name=row.name,
+                    description=row.description,
+                    input_schema=row.input_schema,
+                    read_only_hint=row.read_only_hint,
+                    destructive_hint=row.destructive_hint,
+                ),
+                row.policy_override,
+            )
+            for row in rows
+        }
+        self._cache[server_name] = server_tools
+        return server_tools
 
 
 def _descriptor_from_sdk_tool(tool: Any) -> MCPToolDescriptor:
+    annotations = getattr(tool, "annotations", None)
     return MCPToolDescriptor(
         name=tool.name,
+        description=getattr(tool, "description", "") or "",
         input_schema=dict(getattr(tool, "inputSchema", None) or {}),
+        read_only_hint=getattr(annotations, "readOnlyHint", None) if annotations else None,
+        destructive_hint=getattr(annotations, "destructiveHint", None) if annotations else None,
     )
