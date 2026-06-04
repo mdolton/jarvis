@@ -281,7 +281,9 @@ def _build_streamable_http(
         kwargs["require_approval"] = (
             lambda ctx, agent, tool: approval_policy.needs_approval(name, tool)
         )
-        kwargs["tool_filter"] = lambda ctx, agent, tool: approval_policy.filter_tool(name, tool)
+        kwargs["tool_filter"] = (
+            lambda filter_context, tool: approval_policy.filter_tool(name, tool)
+        )
 
     return MCPServerStreamableHttp(
         name=name,
@@ -319,7 +321,9 @@ def _build_sdk_server(
         kwargs["require_approval"] = (
             lambda ctx, agent, tool: approval_policy.needs_approval(name, tool)
         )
-        kwargs["tool_filter"] = lambda ctx, agent, tool: approval_policy.filter_tool(name, tool)
+        kwargs["tool_filter"] = (
+            lambda filter_context, tool: approval_policy.filter_tool(name, tool)
+        )
 
     if cfg.transport == "stdio":
         params: dict = {

@@ -198,11 +198,38 @@ async def test_sdk_server_builders_wire_approval_policy_for_all_transports(cfg):
     tool = _SdkTool("send_email")
 
     assert await sdk_server._needs_approval_policy(None, None, tool) is True
-    assert await sdk_server.tool_filter(None, None, tool) is False
-    assert policy.calls == [
-        ("needs_approval", cfg.name, "send_email"),
-        ("filter_tool", cfg.name, "send_email"),
-    ]
+    assert policy.calls == [("needs_approval", cfg.name, "send_email")]
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        MCPServerConfig(name="stdio-server", transport="stdio", command=[sys.executable]),
+        MCPServerConfig(name="http-server", transport="http", url="http://localhost/mcp"),
+        MCPServerConfig(name="sse-server", transport="sse", url="http://localhost/sse"),
+    ],
+)
+async def test_sdk_server_builders_wire_two_arg_tool_filter_for_all_transports(cfg):
+    policy = _RecordingApprovalPolicy()
+    sdk_server = _build_sdk_server(cfg, approval_policy=policy)
+    tool = _SdkTool("send_email")
+
+    assert await sdk_server.tool_filter(object(), tool) is False
+    assert policy.calls == [("filter_tool", cfg.name, "send_email")]
+
+
+async def test_sdk_dynamic_tool_filter_uses_two_arg_callback_without_dropping_tools():
+    policy = _RecordingApprovalPolicy(filter_result=True)
+    sdk_server = _build_sdk_server(
+        MCPServerConfig(name="stdio-server", transport="stdio", command=[sys.executable]),
+        approval_policy=policy,
+    )
+    tool = _SdkTool("search_docs")
+
+    filtered = await sdk_server._apply_dynamic_tool_filter([tool], object(), object())
+
+    assert filtered == [tool]
+    assert policy.calls == [("filter_tool", "stdio-server", "search_docs")]
 
 
 async def test_streamable_http_builder_wires_approval_policy():
@@ -216,7 +243,7 @@ async def test_streamable_http_builder_wires_approval_policy():
     tool = _SdkTool("delete_event")
 
     assert await sdk_server._needs_approval_policy(None, None, tool) is True
-    assert await sdk_server.tool_filter(None, None, tool) is False
+    assert await sdk_server.tool_filter(object(), tool) is False
     assert policy.calls == [
         ("needs_approval", "oauth-server", "delete_event"),
         ("filter_tool", "oauth-server", "delete_event"),
@@ -224,8 +251,9 @@ async def test_streamable_http_builder_wires_approval_policy():
 
 
 class _RecordingApprovalPolicy:
-    def __init__(self):
+    def __init__(self, *, filter_result=False):
         self.calls = []
+        self._filter_result = filter_result
 
     async def needs_approval(self, server_name, tool):
         self.calls.append(("needs_approval", server_name, tool.name))
@@ -233,7 +261,7 @@ class _RecordingApprovalPolicy:
 
     async def filter_tool(self, server_name, tool):
         self.calls.append(("filter_tool", server_name, tool.name))
-        return False
+        return self._filter_result
 
 
 class _SdkTool:
