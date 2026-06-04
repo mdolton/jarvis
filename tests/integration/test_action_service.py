@@ -6,6 +6,7 @@ import pytest_asyncio
 
 from jarvis.actions.service import ActionService
 from jarvis.audit.logger import AuditLogger
+from jarvis.channels.base import OutboundMessage
 from jarvis.config.schema import LLMConfig
 from jarvis.core.types import (
     AuditEventType,
@@ -19,8 +20,10 @@ from jarvis.persistence.repositories import (
     AuditRepo,
     ConversationRepo,
     MessageRepo,
+    ScheduleRepo,
     TriggerRepo,
 )
+from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
 
 class _FakeRunState:
@@ -54,6 +57,22 @@ class _FakeInterruptedResult:
 
     def to_state(self):
         return SimpleNamespace(to_json=lambda: {"state": "second-serialized"})
+
+
+class _RecordingAdapter:
+    kind = ChannelKind.DISCORD.value
+
+    def __init__(self) -> None:
+        self.sent: list[OutboundMessage] = []
+
+    async def start(self, dispatcher) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    async def send(self, msg: OutboundMessage) -> None:
+        self.sent.append(msg)
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -106,6 +125,35 @@ async def _action(factory, *, conversation: bool = False):
         )
 
 
+async def _scheduled_action(factory):
+    async with factory() as s:
+        schedule = await ScheduleRepo(s).create(
+            name="Morning digest",
+            description="",
+            cron_expr="0 9 * * *",
+            timezone="UTC",
+            prompt="send digest",
+            output_mode="discord",
+            notify_on_error=True,
+            enabled=True,
+            discord_user_id="111",
+        )
+        action = await ActionRepo(s).create_pending(
+            conversation_id=None,
+            trigger_id=None,
+            channel_kind=ChannelKind.SCHEDULED.value,
+            channel_ref=str(schedule.id),
+            server_name="gmail",
+            tool_name="send_email",
+            tool_call_id="call-1",
+            arguments_json={"to": "me@example.com"},
+            run_state_json={"state": "serialized"},
+            approval_item_json={"raw_item": {"name": "send_email"}},
+            model="test-model",
+        )
+        return action, schedule
+
+
 async def test_approve_uses_restored_interruption_and_routes(monkeypatch, infra):
     factory, audit = infra
     action = await _action(factory, conversation=True)
@@ -154,6 +202,40 @@ async def test_approve_uses_restored_interruption_and_routes(monkeypatch, infra)
             assert event.payload["action_id"] == str(action.id)
             assert event.payload["server_name"] == "gmail"
             assert event.payload["tool_name"] == "send_email"
+
+
+async def test_route_failure_after_success_leaves_action_completed(monkeypatch, infra):
+    factory, audit = infra
+    action = await _action(factory, conversation=True)
+    canonical_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    state = _FakeRunState([canonical_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr("jarvis.actions.service.Runner.run", AsyncMock(return_value=_FakeResult()))
+    router = SimpleNamespace(route=AsyncMock(side_effect=RuntimeError("discord send failed")))
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=router,
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+    )
+
+    result = await service.approve(action.id)
+
+    assert result.final_output == "resume complete"
+    router.route.assert_awaited_once()
+
+    await audit.stop()
+    async with factory() as s:
+        got = await ActionRepo(s).get(action.id)
+        assert got.status == "completed"
+        assert got.error is None
+        failed_events = await AuditRepo(s).recent(types=[AuditEventType.ACTION_FAILED], limit=10)
+        assert failed_events == []
 
 
 async def test_reject_sends_reason_to_restored_interruption(monkeypatch, infra):
@@ -275,6 +357,41 @@ async def test_second_interruption_creates_new_pending_action(monkeypatch, infra
         assert completed.payload["tool_name"] == "send_email"
 
 
+async def test_scheduled_resume_output_routes_through_scheduled_router(monkeypatch, infra):
+    factory, audit = infra
+    action, _schedule = await _scheduled_action(factory)
+    canonical_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    state = _FakeRunState([canonical_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr("jarvis.actions.service.Runner.run", AsyncMock(return_value=_FakeResult()))
+    adapter = _RecordingAdapter()
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=None,
+        scheduled_output_router=ScheduledOutputRouter(discord_adapter=adapter),
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+    )
+
+    result = await service.approve(action.id)
+
+    assert result.final_output == "resume complete"
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0].channel_kind == ChannelKind.DISCORD
+    assert adapter.sent[0].channel_ref == "111"
+    assert adapter.sent[0].text == "resume complete"
+
+    await audit.stop()
+    async with factory() as s:
+        got = await ActionRepo(s).get(action.id)
+        assert got.status == "completed"
+
+
 async def test_resume_failure_marks_failed_and_routes_notice(monkeypatch, infra):
     factory, audit = infra
     action = await _action(factory, conversation=True)
@@ -303,8 +420,11 @@ async def test_resume_failure_marks_failed_and_routes_notice(monkeypatch, infra)
 
     router.route.assert_awaited_once()
     routed = router.route.await_args.args[0]
-    assert routed.final_output.startswith(f"Action failed: gmail.send_email ({action.id}).")
-    assert "server disconnected" in routed.final_output
+    assert (
+        routed.final_output
+        == f"Action failed: gmail.send_email ({action.id}). Check the Action Inbox for details."
+    )
+    assert "server disconnected" not in routed.final_output
 
     await audit.stop()
     async with factory() as s:
@@ -316,6 +436,82 @@ async def test_resume_failure_marks_failed_and_routes_notice(monkeypatch, infra)
         assert events[0].payload["action_id"] == str(action.id)
         assert events[0].payload["server_name"] == "gmail"
         assert events[0].payload["tool_name"] == "send_email"
+        assert events[0].payload["error"] == "server disconnected"
+
+
+async def test_scheduled_resume_failure_routes_safe_notice_through_scheduled_router(
+    monkeypatch, infra
+):
+    factory, audit = infra
+    action, _schedule = await _scheduled_action(factory)
+    canonical_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    state = _FakeRunState([canonical_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr(
+        "jarvis.actions.service.Runner.run",
+        AsyncMock(side_effect=RuntimeError("server disconnected")),
+    )
+    adapter = _RecordingAdapter()
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=None,
+        scheduled_output_router=ScheduledOutputRouter(discord_adapter=adapter),
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+    )
+
+    with pytest.raises(RuntimeError, match="server disconnected"):
+        await service.approve(action.id)
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0].channel_ref == "111"
+    assert (
+        adapter.sent[0].text
+        == f"Action failed: gmail.send_email ({action.id}). Check the Action Inbox for details."
+    )
+    assert "server disconnected" not in adapter.sent[0].text
+
+    await audit.stop()
+    async with factory() as s:
+        got = await ActionRepo(s).get(action.id)
+        assert got.status == "failed"
+        assert "server disconnected" in got.error
+
+
+async def test_interruption_call_id_mismatch_fails_closed(monkeypatch, infra):
+    factory, audit = infra
+    action = await _action(factory)
+    mismatched_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-other"})
+    state = _FakeRunState([mismatched_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    run_mock = AsyncMock(return_value=_FakeResult())
+    monkeypatch.setattr("jarvis.actions.service.Runner.run", run_mock)
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=None,
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+    )
+
+    with pytest.raises(RuntimeError, match="no approval interruption matching tool call"):
+        await service.approve(action.id)
+    run_mock.assert_not_awaited()
+
+    await audit.stop()
+    async with factory() as s:
+        got = await ActionRepo(s).get(action.id)
+        assert got.status == "failed"
+        assert "call-1" in got.error
 
 
 async def test_decision_fails_cleanly_when_restored_state_has_no_interruptions(monkeypatch, infra):

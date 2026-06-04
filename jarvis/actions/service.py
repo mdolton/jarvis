@@ -20,7 +20,8 @@ from jarvis.config.schema import LLMConfig
 from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
 from jarvis.persistence.models import ActionRow
-from jarvis.persistence.repositories import ActionRepo, MessageRepo
+from jarvis.persistence.repositories import ActionRepo, MessageRepo, ScheduleRepo
+from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
 _log = logging.getLogger(__name__)
 
@@ -34,10 +35,12 @@ class ActionService:
         output_router: OutputRouter | None,
         llm_config: LLMConfig,
         mcp_servers_provider: Callable[[], list],
+        scheduled_output_router: ScheduledOutputRouter | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
         self._output_router = output_router
+        self._scheduled_output_router = scheduled_output_router
         self._llm_config = llm_config
         self._mcp_servers_provider = mcp_servers_provider
 
@@ -119,9 +122,6 @@ class ActionService:
                         content=final_text,
                     )
 
-            if self._output_router is not None:
-                await self._output_router.route(result)
-
             async with self._session_factory() as session:
                 await ActionRepo(session).mark_completed(action_id)
 
@@ -134,6 +134,7 @@ class ActionService:
                 )
             )
 
+            await self._route_result(result)
             return result
         except Exception as exc:
             await self._fail_action(action, exc)
@@ -151,18 +152,14 @@ class ActionService:
                 payload=_action_payload(action, error=str(exc)),
             )
         )
-        if self._output_router is not None:
-            result = AgentRunResult(
-                final_output=_failure_notice(action, exc),
-                conversation_id=action.conversation_id,
-                trigger_id=action.trigger_id,
-                channel_kind=ChannelKind(action.channel_kind),
-                channel_ref=action.channel_ref,
-            )
-            try:
-                await self._output_router.route(result)
-            except Exception:
-                _log.exception("failed to route action failure notice")
+        result = AgentRunResult(
+            final_output=_failure_notice(action),
+            conversation_id=action.conversation_id,
+            trigger_id=action.trigger_id,
+            channel_kind=ChannelKind(action.channel_kind),
+            channel_ref=action.channel_ref,
+        )
+        await self._route_result(result)
 
     async def _create_followup_action(
         self,
@@ -219,9 +216,6 @@ class ActionService:
             channel_kind=ChannelKind(action.channel_kind),
             channel_ref=action.channel_ref,
         )
-        if self._output_router is not None:
-            await self._output_router.route(result)
-
         async with self._session_factory() as session:
             await ActionRepo(session).mark_completed(action.id)
 
@@ -233,7 +227,32 @@ class ActionService:
                 payload=_action_payload(action),
             )
         )
+        await self._route_result(result)
         return result
+
+    async def _route_result(self, result: AgentRunResult) -> None:
+        try:
+            if result.channel_kind == ChannelKind.SCHEDULED:
+                await self._route_scheduled_result(result)
+            elif self._output_router is not None:
+                await self._output_router.route(result)
+        except Exception:
+            _log.exception("failed to route action resume output")
+
+    async def _route_scheduled_result(self, result: AgentRunResult) -> None:
+        if self._scheduled_output_router is None:
+            _log.warning("scheduled action resume has no scheduled output router")
+            return
+        schedule_id = UUID(result.channel_ref)
+        async with self._session_factory() as session:
+            row = await ScheduleRepo(session).get(schedule_id)
+        if row is None:
+            raise LookupError(f"schedule {schedule_id} not found for action resume output")
+        await self._scheduled_output_router.route(
+            result=result,
+            output_mode=row.output_mode,
+            discord_user_id=row.discord_user_id or "",
+        )
 
 
 def _approval_interruption_for_action(run_state: Any, action: ActionRow) -> Any:
@@ -248,7 +267,9 @@ def _approval_interruption_for_action(run_state: Any, action: ActionRow) -> Any:
     for interruption in interruptions:
         if _tool_call_id(interruption) == action.tool_call_id:
             return interruption
-    return interruptions[0]
+    raise RuntimeError(
+        f"action {action.id} has no approval interruption matching tool call {action.tool_call_id}"
+    )
 
 
 def _tool_call_id(approval_item: Any) -> str | None:
@@ -280,8 +301,11 @@ def _approval_required_notice(action: ActionRow) -> str:
     )
 
 
-def _failure_notice(action: ActionRow, exc: Exception) -> str:
-    return f"Action failed: {action.server_name}.{action.tool_name} ({action.id}). {exc}"
+def _failure_notice(action: ActionRow) -> str:
+    return (
+        f"Action failed: {action.server_name}.{action.tool_name} ({action.id}). "
+        "Check the Action Inbox for details."
+    )
 
 
 def _action_payload(action: ActionRow, **extra: Any) -> dict[str, Any]:

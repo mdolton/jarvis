@@ -31,6 +31,7 @@ from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.mcp.manager import MCPManager
 from jarvis.oauth.flow import OAuthFlow
 from jarvis.persistence.db import Base, create_engine, session_factory
+from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 from jarvis.scheduler.scheduler import Scheduler
 from jarvis.web.app import create_app as _create_web_app
 
@@ -158,15 +159,6 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     # Output router knows how to send replies through any of the adapters.
     output_router = OutputRouter(adapters=channel_adapters)
 
-    # Action service resumes paused SDK runs after dashboard decisions.
-    action_service = ActionService(
-        session_factory=factory,
-        audit=audit,
-        output_router=output_router,
-        llm_config=cfg.jarvis.llm,
-        mcp_servers_provider=mcp_manager.agent_mcp_servers,
-    )
-
     # Dispatcher gets the router so channel-triggered runs auto-reply.
     dispatcher = TriggerDispatcher(
         runner=agent_runner,
@@ -183,6 +175,16 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     discord_adapter = next(
         (a for a in channel_adapters if a.kind == ChannelKind.DISCORD.value),
         None,
+    )
+
+    # Action service resumes paused SDK runs after dashboard decisions.
+    action_service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=output_router,
+        llm_config=cfg.jarvis.llm,
+        mcp_servers_provider=mcp_manager.agent_mcp_servers,
+        scheduled_output_router=ScheduledOutputRouter(discord_adapter=discord_adapter),
     )
 
     # Scheduler.
