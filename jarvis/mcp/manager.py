@@ -23,6 +23,7 @@ from agents.mcp import MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
+from jarvis.mcp.approval_policy import MCPApprovalPolicy
 from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.oauth.catalog import OAUTH_CATALOG, assert_no_yaml_collision
 from jarvis.oauth.crypto import decrypt_blob
@@ -48,6 +49,7 @@ class MCPManager:
         # unresponsive remote can never wedge the serial lifecycle loop (and
         # thereby block Disconnect/remove, which run through the same task).
         self._connect_timeout = connect_timeout
+        self._approval_policy = MCPApprovalPolicy(session_factory=session_factory)
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
         # All connection enter/exit happens on this single owner task.
@@ -173,7 +175,7 @@ class MCPManager:
                 server_id = row.id
 
             stack = AsyncExitStack()
-            sdk_server = _build_sdk_server(cfg)
+            sdk_server = _build_sdk_server(cfg, approval_policy=self._approval_policy)
 
             try:
                 async with asyncio.timeout(self._connect_timeout):
@@ -207,7 +209,12 @@ class MCPManager:
         self, *, provider_key: str, url: str, headers: dict[str, str]
     ) -> None:
         new_stack = AsyncExitStack()
-        new_sdk = _build_streamable_http(url, headers, name=provider_key)
+        new_sdk = _build_streamable_http(
+            url,
+            headers,
+            name=provider_key,
+            approval_policy=self._approval_policy,
+        )
 
         try:
             async with asyncio.timeout(self._connect_timeout):
@@ -254,7 +261,13 @@ class MCPManager:
         self._sdk_servers.clear()
 
 
-def _build_streamable_http(url: str, headers: dict[str, str], *, name: str) -> object:
+def _build_streamable_http(
+    url: str,
+    headers: dict[str, str],
+    *,
+    name: str,
+    approval_policy: MCPApprovalPolicy | None = None,
+) -> object:
     """Module-level builder so tests can patch this single symbol.
 
     The SDK defaults (5s read timeout, 5s HTTP timeout, no retries) are too tight
@@ -263,6 +276,13 @@ def _build_streamable_http(url: str, headers: dict[str, str], *, name: str) -> o
     and retry transient failures a couple of times so a single hiccup surfaces to the
     model as a retry rather than a hard "technical error".
     """
+    kwargs = {}
+    if approval_policy is not None:
+        kwargs["require_approval"] = (
+            lambda ctx, agent, tool: approval_policy.needs_approval(name, tool)
+        )
+        kwargs["tool_filter"] = lambda ctx, agent, tool: approval_policy.filter_tool(name, tool)
+
     return MCPServerStreamableHttp(
         name=name,
         params={"url": url, "headers": headers, "timeout": 30},
@@ -270,6 +290,7 @@ def _build_streamable_http(url: str, headers: dict[str, str], *, name: str) -> o
         client_session_timeout_seconds=30,
         max_retry_attempts=2,
         retry_backoff_seconds_base=1.0,
+        **kwargs,
     )
 
 
@@ -287,8 +308,19 @@ async def _aclose_silently(stack: AsyncExitStack) -> None:
         _log.exception("error closing exit stack")
 
 
-def _build_sdk_server(cfg: MCPServerConfig) -> object:
+def _build_sdk_server(
+    cfg: MCPServerConfig,
+    approval_policy: MCPApprovalPolicy | None = None,
+) -> object:
     """Instantiate the right `agents.mcp` server class for `cfg`."""
+    kwargs = {}
+    if approval_policy is not None:
+        name = cfg.name
+        kwargs["require_approval"] = (
+            lambda ctx, agent, tool: approval_policy.needs_approval(name, tool)
+        )
+        kwargs["tool_filter"] = lambda ctx, agent, tool: approval_policy.filter_tool(name, tool)
+
     if cfg.transport == "stdio":
         params: dict = {
             "command": cfg.command[0],
@@ -300,25 +332,39 @@ def _build_sdk_server(cfg: MCPServerConfig) -> object:
             name=cfg.name,
             params=params,
             cache_tools_list=True,
+            **kwargs,
         )
     if cfg.transport == "http":
         return MCPServerStreamableHttp(
             name=cfg.name,
             params={"url": cfg.url, "headers": cfg.headers or {}},
             cache_tools_list=True,
+            **kwargs,
         )
     if cfg.transport == "sse":
         return MCPServerSse(
             name=cfg.name,
             params={"url": cfg.url, "headers": cfg.headers or {}},
             cache_tools_list=True,
+            **kwargs,
         )
     raise ValueError(f"unsupported transport: {cfg.transport}")
 
 
 async def _list_tools(sdk_server: object) -> list[MCPToolDescriptor]:
     """Ask the SDK server for its tools and map to our typed descriptors."""
-    raw_tools = await sdk_server.list_tools()  # type: ignore[attr-defined]
+    # This manager call catalogs the raw server tool set before an Agent run
+    # context exists. The Agents SDK applies dynamic tool filters from
+    # list_tools(), but those filters require run_context+agent, so temporarily
+    # bypass filtering only for shadow-table discovery.
+    tool_filter = getattr(sdk_server, "tool_filter", None)
+    if tool_filter is not None:
+        sdk_server.tool_filter = None  # type: ignore[attr-defined]
+    try:
+        raw_tools = await sdk_server.list_tools()  # type: ignore[attr-defined]
+    finally:
+        if tool_filter is not None:
+            sdk_server.tool_filter = tool_filter  # type: ignore[attr-defined]
     descriptors: list[MCPToolDescriptor] = []
     for t in raw_tools:
         ann = getattr(t, "annotations", None)

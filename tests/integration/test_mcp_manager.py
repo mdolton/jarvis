@@ -5,7 +5,7 @@ import sys
 import pytest
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
-from jarvis.mcp.manager import MCPManager
+from jarvis.mcp.manager import MCPManager, _build_sdk_server, _build_streamable_http
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
 
@@ -182,3 +182,63 @@ async def test_mcp_manager_rejects_yaml_server_named_after_catalog_key(engine_an
     manager = MCPManager(config=cfg, session_factory=factory)
     with pytest.raises(ValueError, match="fastmail"):
         await manager.start()
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        MCPServerConfig(name="stdio-server", transport="stdio", command=[sys.executable]),
+        MCPServerConfig(name="http-server", transport="http", url="http://localhost/mcp"),
+        MCPServerConfig(name="sse-server", transport="sse", url="http://localhost/sse"),
+    ],
+)
+async def test_sdk_server_builders_wire_approval_policy_for_all_transports(cfg):
+    policy = _RecordingApprovalPolicy()
+    sdk_server = _build_sdk_server(cfg, approval_policy=policy)
+    tool = _SdkTool("send_email")
+
+    assert await sdk_server._needs_approval_policy(None, None, tool) is True
+    assert await sdk_server.tool_filter(None, None, tool) is False
+    assert policy.calls == [
+        ("needs_approval", cfg.name, "send_email"),
+        ("filter_tool", cfg.name, "send_email"),
+    ]
+
+
+async def test_streamable_http_builder_wires_approval_policy():
+    policy = _RecordingApprovalPolicy()
+    sdk_server = _build_streamable_http(
+        "http://localhost/mcp",
+        {},
+        name="oauth-server",
+        approval_policy=policy,
+    )
+    tool = _SdkTool("delete_event")
+
+    assert await sdk_server._needs_approval_policy(None, None, tool) is True
+    assert await sdk_server.tool_filter(None, None, tool) is False
+    assert policy.calls == [
+        ("needs_approval", "oauth-server", "delete_event"),
+        ("filter_tool", "oauth-server", "delete_event"),
+    ]
+
+
+class _RecordingApprovalPolicy:
+    def __init__(self):
+        self.calls = []
+
+    async def needs_approval(self, server_name, tool):
+        self.calls.append(("needs_approval", server_name, tool.name))
+        return True
+
+    async def filter_tool(self, server_name, tool):
+        self.calls.append(("filter_tool", server_name, tool.name))
+        return False
+
+
+class _SdkTool:
+    def __init__(self, name):
+        self.name = name
+        self.inputSchema = {}
+        self.description = ""
+        self.annotations = None
