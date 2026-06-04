@@ -1,7 +1,7 @@
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 import pytest_asyncio
 
 from jarvis.agents.runner import AgentRunner
@@ -77,10 +77,44 @@ async def test_runner_creates_pending_action_on_tool_approval(monkeypatch, infra
         msgs = await MessageRepo(s).history(actions[0].conversation_id)
         assert msgs[-1].content == result.final_output
 
-    await asyncio.sleep(0.15)
+    await audit.stop()
 
     async with factory() as s:
         events = await AuditRepo(s).recent(types=[AuditEventType.ACTION_CREATED], limit=10)
         assert len(events) == 1
         assert events[0].payload["server_name"] == "gmail"
         assert events[0].payload["tool_name"] == "send_email"
+
+
+async def test_runner_rolls_back_pending_action_when_assistant_message_fails(monkeypatch, infra):
+    factory, audit = infra
+    monkeypatch.setattr(
+        "jarvis.agents.runner.Runner.run",
+        AsyncMock(return_value=_FakeResult()),
+    )
+
+    async def fail_append_no_commit(self, **kwargs):
+        raise RuntimeError("message append failed")
+
+    monkeypatch.setattr(
+        "jarvis.agents.runner.MessageRepo.append_no_commit",
+        fail_append_no_commit,
+        raising=False,
+    )
+
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers_provider=lambda: [],
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        model_provider=lambda: "m",
+    )
+
+    with pytest.raises(RuntimeError, match="message append failed"):
+        await runner.run(
+            InvocationRequest(trigger=ManualTrigger(user="dashboard", prompt="send it"))
+        )
+
+    async with factory() as s:
+        actions = await ActionRepo(s).list_pending()
+        assert actions == []

@@ -98,12 +98,15 @@ class ConversationRepo:
         return list(result.scalars())
 
     async def touch(self, conversation_id: UUID) -> None:
+        await self.touch_no_commit(conversation_id)
+        await self._session.commit()
+
+    async def touch_no_commit(self, conversation_id: UUID) -> None:
         await self._session.execute(
             update(ConversationRow)
             .where(ConversationRow.id == conversation_id)
             .values(last_activity_at=_utcnow())
         )
-        await self._session.commit()
 
 
 class MessageRepo:
@@ -118,6 +121,22 @@ class MessageRepo:
         role: MessageRole,
         content: str,
     ) -> MessageRow:
+        msg = await self.append_no_commit(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+        )
+        await self._session.commit()
+        await self._session.refresh(msg)
+        return msg
+
+    async def append_no_commit(
+        self,
+        *,
+        conversation_id: UUID,
+        role: MessageRole,
+        content: str,
+    ) -> MessageRow:
         msg = MessageRow(
             conversation_id=conversation_id,
             role=role.value,
@@ -125,9 +144,8 @@ class MessageRepo:
             created_at=_utcnow(),
         )
         self._session.add(msg)
-        await self._session.commit()
-        await self._session.refresh(msg)
-        await self._conv_repo.touch(conversation_id)
+        await self._conv_repo.touch_no_commit(conversation_id)
+        await self._session.flush()
         return msg
 
     async def history(self, conversation_id: UUID) -> list[MessageRow]:
@@ -429,6 +447,38 @@ class ActionRepo:
         approval_item_json: dict,
         model: str,
     ) -> ActionRow:
+        row = await self.create_pending_no_commit(
+            conversation_id=conversation_id,
+            trigger_id=trigger_id,
+            channel_kind=channel_kind,
+            channel_ref=channel_ref,
+            server_name=server_name,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            arguments_json=arguments_json,
+            run_state_json=run_state_json,
+            approval_item_json=approval_item_json,
+            model=model,
+        )
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def create_pending_no_commit(
+        self,
+        *,
+        conversation_id: UUID | None,
+        trigger_id: UUID | None,
+        channel_kind: str,
+        channel_ref: str,
+        server_name: str,
+        tool_name: str,
+        tool_call_id: str | None,
+        arguments_json: dict,
+        run_state_json: dict,
+        approval_item_json: dict,
+        model: str,
+    ) -> ActionRow:
         row = ActionRow(
             status="pending",
             decision=None,
@@ -446,8 +496,7 @@ class ActionRepo:
             created_at=_utcnow(),
         )
         self._session.add(row)
-        await self._session.commit()
-        await self._session.refresh(row)
+        await self._session.flush()
         return row
 
     async def get(self, action_id: UUID) -> ActionRow | None:

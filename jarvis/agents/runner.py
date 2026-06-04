@@ -138,28 +138,29 @@ class AgentRunner:
                 raise RuntimeError("approval interruption did not include a serializable run state")
 
             async with self._session_factory() as session:
-                action = await ActionRepo(session).create_pending(
-                    conversation_id=conv_id,
-                    trigger_id=trigger_id,
-                    channel_kind=channel_kind.value,
-                    channel_ref=channel_ref,
-                    server_name=approval_payload["server_name"],
-                    tool_name=approval_payload["tool_name"],
-                    tool_call_id=approval_payload["tool_call_id"],
-                    arguments_json=approval_payload["arguments_json"],
-                    run_state_json=run_state_to_json(run_state),
-                    approval_item_json=approval_payload,
-                    model=resolved_model,
-                )
-                final_text = (
-                    f"Action approval required: {action.server_name}.{action.tool_name} "
-                    f"({action.id}). Review it in the Action Inbox."
-                )
-                await MessageRepo(session).append(
-                    conversation_id=conv_id,
-                    role=MessageRole.ASSISTANT,
-                    content=final_text,
-                )
+                async with session.begin():
+                    action = await ActionRepo(session).create_pending_no_commit(
+                        conversation_id=conv_id,
+                        trigger_id=trigger_id,
+                        channel_kind=channel_kind.value,
+                        channel_ref=channel_ref,
+                        server_name=approval_payload["server_name"],
+                        tool_name=approval_payload["tool_name"],
+                        tool_call_id=approval_payload["tool_call_id"],
+                        arguments_json=approval_payload["arguments_json"],
+                        run_state_json=run_state_to_json(run_state),
+                        approval_item_json=approval_payload,
+                        model=resolved_model,
+                    )
+                    final_text = (
+                        f"Action approval required: {action.server_name}.{action.tool_name} "
+                        f"({action.id}). Review it in the Action Inbox."
+                    )
+                    await MessageRepo(session).append_no_commit(
+                        conversation_id=conv_id,
+                        role=MessageRole.ASSISTANT,
+                        content=final_text,
+                    )
 
             await self._audit.emit(
                 AuditEvent(
