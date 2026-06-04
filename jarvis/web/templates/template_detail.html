@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ template.name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+    <div>
+        <h1>{{ template.name }}</h1>
+        <p class="muted">{{ template.category }}</p>
+        {% if template.built_in %}
+            <span class="badge badge-ok">built-in</span>
+        {% endif %}
+    </div>
+    <div class="actions">
+        <a href="/schedules?template_id={{ template.id }}">Create schedule</a>
+        <form method="post" action="/templates/{{ template.id }}/clone" class="inline-form">
+            <button type="submit">Clone</button>
+        </form>
+        {% if not template.built_in %}
+            <form method="post" action="/templates/{{ template.id }}/disable" class="inline-form">
+                <button type="submit" class="btn-danger">Disable</button>
+            </form>
+        {% endif %}
+    </div>
+</section>
+
+<section class="section-block">
+<h2>Edit Template</h2>
+<form method="post" action="/templates/{{ template.id }}" class="stack-form">
+    <input name="name" placeholder="Name" value="{{ template.name }}" required>
+    <input name="description" placeholder="Description" value="{{ template.description }}">
+    <input name="category" placeholder="Category" value="{{ template.category }}" required>
+    <input name="default_cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" value="{{ template.default_cron_expr }}" required>
+    <input name="default_timezone" placeholder="Timezone" value="{{ template.default_timezone }}" required>
+    <select name="default_output_mode">
+        <option value="discord" {% if template.default_output_mode == "discord" %}selected{% endif %}>Discord</option>
+        <option value="dashboard_only" {% if template.default_output_mode == "dashboard_only" %}selected{% endif %}>Dashboard only</option>
+        <option value="discord_if_noteworthy" {% if template.default_output_mode == "discord_if_noteworthy" %}selected{% endif %}>Discord if noteworthy</option>
+    </select>
+    <input name="default_model" placeholder="Model (optional)" value="{{ template.default_model or '' }}">
+    <input name="default_discord_user_id" placeholder="Discord user ID (optional)" value="{{ template.default_discord_user_id or '' }}">
+    <textarea name="prompt" placeholder="Template prompt" rows="8" required>{{ template.prompt }}</textarea>
+    <button type="submit">Save</button>
+</form>
+</section>
+{% endblock %}
