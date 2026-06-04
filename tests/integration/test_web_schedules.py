@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
@@ -12,14 +14,10 @@ async def client_and_factory(tmp_path):
         await conn.run_sync(Base.metadata.create_all)
     factory = session_factory(engine)
 
-    from unittest.mock import MagicMock
-
     ctx = MagicMock()
     ctx.session_factory = factory
     ctx.scheduler = MagicMock()
-    ctx.scheduler.fire_now = MagicMock(return_value=None)  # not async in mock
-
-    from unittest.mock import AsyncMock
+    ctx.scheduler.fire_now = AsyncMock(return_value=None)
 
     from jarvis.agents.model_catalog import Catalog
 
@@ -119,3 +117,35 @@ def test_create_schedule_default_model_is_null(client_and_factory):
         follow_redirects=False,
     )
     assert resp.status_code in (302, 303)
+
+
+def test_run_schedule_now_calls_scheduler(client_and_factory):
+    client, factory = client_and_factory
+    client.post(
+        "/schedules",
+        data={
+            "name": "runme",
+            "description": "",
+            "cron_expr": "0 8 * * *",
+            "timezone": "UTC",
+            "prompt": "do it",
+            "output_mode": "dashboard_only",
+            "model": "",
+        },
+        follow_redirects=False,
+    )
+
+    async def _schedule_id():
+        from jarvis.persistence.repositories import ScheduleRepo
+
+        async with factory() as session:
+            schedules = await ScheduleRepo(session).list_all()
+            return schedules[0].id
+
+    import anyio
+
+    schedule_id = anyio.run(_schedule_id)
+    resp = client.post(f"/schedules/{schedule_id}/run", follow_redirects=False)
+
+    assert resp.status_code in (302, 303)
+    client.app.state.ctx.scheduler.fire_now.assert_awaited_once_with(schedule_id)

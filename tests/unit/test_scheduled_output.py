@@ -112,3 +112,16 @@ async def test_no_discord_adapter_silently_skips():
         output_mode="discord",
         discord_user_id="111",
     )
+
+
+async def test_discord_mode_without_user_id_skips():
+    adapter = _RecordingAdapter()
+    router = ScheduledOutputRouter(discord_adapter=adapter)
+
+    await router.route(
+        result=_result(),
+        output_mode="discord",
+        discord_user_id="",
+    )
+
+    assert adapter.sent == []

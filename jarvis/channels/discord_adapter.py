@@ -169,6 +169,9 @@ class DiscordAdapter:
         self._client = None
         self._task = None
 
+    def is_ready(self) -> bool:
+        return self._ready.is_set()
+
     async def send(self, msg: OutboundMessage) -> None:
         if self._client is None:
             raise RuntimeError("DiscordAdapter not started")

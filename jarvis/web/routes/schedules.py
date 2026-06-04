@@ -40,8 +40,10 @@ async def schedule_create(
     prompt: str = Form(...),
     output_mode: str = Form("discord"),
     model: str = Form(""),
+    discord_user_id: str = Form(""),
 ):
     ctx = request.app.state.ctx
+    target_user = discord_user_id.strip() or _default_discord_user_id(ctx)
     async with ctx.session_factory() as session:
         await ScheduleRepo(session).create(
             name=name,
@@ -53,6 +55,7 @@ async def schedule_create(
             notify_on_error=True,
             enabled=True,
             model=model.strip() or None,
+            discord_user_id=target_user,
         )
     return RedirectResponse(url="/schedules", status_code=303)
 
@@ -68,9 +71,25 @@ async def schedule_toggle(request: Request, schedule_id: UUID):
     return RedirectResponse(url="/schedules", status_code=303)
 
 
+@router.post("/schedules/{schedule_id}/run")
+async def schedule_run_now(request: Request, schedule_id: UUID):
+    ctx = request.app.state.ctx
+    await ctx.scheduler.fire_now(schedule_id)
+    return RedirectResponse(url="/schedules", status_code=303)
+
+
 @router.post("/schedules/{schedule_id}/delete")
 async def schedule_delete(request: Request, schedule_id: UUID):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
         await ScheduleRepo(session).delete(schedule_id)
     return RedirectResponse(url="/schedules", status_code=303)
+
+
+def _default_discord_user_id(ctx) -> str | None:
+    discord = getattr(ctx.config.channels, "discord", None)
+    if discord is None or not discord.enabled:
+        return None
+    if len(discord.allowed_user_ids) == 1:
+        return discord.allowed_user_ids[0]
+    return None

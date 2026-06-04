@@ -212,3 +212,34 @@ async def test_schedule_create_persists_model(tmp_path):
         assert b.model is None
 
     await engine.dispose()
+
+
+async def test_schedule_create_persists_discord_user_id(session):
+    repo = ScheduleRepo(session)
+    with_user = await repo.create(
+        name="discord",
+        description="",
+        cron_expr="0 8 * * *",
+        timezone="UTC",
+        prompt="send it",
+        output_mode="discord",
+        notify_on_error=True,
+        enabled=True,
+        discord_user_id="111",
+    )
+    without_user = await repo.create(
+        name="dashboard",
+        description="",
+        cron_expr="0 9 * * *",
+        timezone="UTC",
+        prompt="keep it",
+        output_mode="dashboard_only",
+        notify_on_error=True,
+        enabled=True,
+    )
+
+    found_with = await repo.get(with_user.id)
+    found_without = await repo.get(without_user.id)
+
+    assert found_with.discord_user_id == "111"
+    assert found_without.discord_user_id is None

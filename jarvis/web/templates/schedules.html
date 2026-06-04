@@ -1,10 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Schedules{% endblock %}
 {% block content %}
-<h1>Schedules</h1>
+<section class="page-head">
+    <div>
+        <h1>Schedules</h1>
+        <p class="muted">Cron jobs, delivery targets, model pins, and immediate runs.</p>
+    </div>
+</section>
 
+<section class="section-block">
 <h2>Create Schedule</h2>
-<form method="post" action="/schedules">
+<form method="post" action="/schedules" class="stack-form">
     <input name="name" placeholder="Name" required>
     <input name="description" placeholder="Description">
     <input name="cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" required>
@@ -15,6 +21,7 @@
         <option value="dashboard_only">Dashboard only</option>
         <option value="discord_if_noteworthy">Discord if noteworthy</option>
     </select>
+    <input name="discord_user_id" placeholder="Discord user ID (optional)">
     <select name="model">
         <option value="">Use default model</option>
         {% for m in available_models %}
@@ -23,11 +30,13 @@
     </select>
     <button type="submit">Create</button>
 </form>
+</section>
 
+<section class="section-block">
 <h2>Existing Schedules</h2>
-<table>
+<table class="ops-table">
     <thead>
-        <tr><th>Name</th><th>Cron</th><th>Output</th><th>Model</th><th>Enabled</th><th>Last Run</th><th>Actions</th></tr>
+        <tr><th>Name</th><th>Cron</th><th>Output</th><th>Discord</th><th>Model</th><th>Enabled</th><th>Last Run</th><th>Actions</th></tr>
     </thead>
     <tbody>
     {% for s in schedules %}
@@ -35,6 +44,7 @@
             <td>{{ s.name }}</td>
             <td><code>{{ s.cron_expr }}</code></td>
             <td>{{ s.output_mode }}</td>
+            <td>{{ s.discord_user_id or "—" }}</td>
             <td>
                 {% if s.model %}
                     {{ s.model }}
@@ -58,11 +68,14 @@
                     never
                 {% endif %}
             </td>
-            <td>
-                <form method="post" action="/schedules/{{ s.id }}/toggle" style="display:inline">
+            <td class="actions">
+                <form method="post" action="/schedules/{{ s.id }}/run" class="inline-form">
+                    <button>Run now</button>
+                </form>
+                <form method="post" action="/schedules/{{ s.id }}/toggle" class="inline-form">
                     <button>{{ "Disable" if s.enabled else "Enable" }}</button>
                 </form>
-                <form method="post" action="/schedules/{{ s.id }}/delete" style="display:inline">
+                <form method="post" action="/schedules/{{ s.id }}/delete" class="inline-form">
                     <button class="btn-danger">Delete</button>
                 </form>
             </td>
@@ -73,4 +86,5 @@
 {% if not schedules %}
 <p class="muted">No schedules yet.</p>
 {% endif %}
+</section>
 {% endblock %}

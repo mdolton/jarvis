@@ -1,4 +1,4 @@
-"""Alembic migration 0004: schedules.model column exists after upgrade, gone after downgrade."""
+"""Alembic migration 0005: schedules.discord_user_id column."""
 
 import os
 import sqlite3
@@ -27,16 +27,16 @@ def _cols(db_path: Path) -> set[str]:
         conn.close()
 
 
-def test_upgrade_adds_model_column(tmp_path):
+def test_upgrade_adds_discord_user_id_column(tmp_path):
     db_path = tmp_path / "t.db"
     up = _run_alembic(db_path, "upgrade head")
     assert up.returncode == 0, up.stderr
-    assert "model" in _cols(db_path)
+    assert "discord_user_id" in _cols(db_path)
 
 
-def test_downgrade_removes_model_column(tmp_path):
+def test_downgrade_removes_discord_user_id_column(tmp_path):
     db_path = tmp_path / "t.db"
-    assert _run_alembic(db_path, "upgrade 0004").returncode == 0
-    down = _run_alembic(db_path, "downgrade 0003")
+    assert _run_alembic(db_path, "upgrade head").returncode == 0
+    down = _run_alembic(db_path, "downgrade -1")
     assert down.returncode == 0, down.stderr
-    assert "model" not in _cols(db_path)
+    assert "discord_user_id" not in _cols(db_path)

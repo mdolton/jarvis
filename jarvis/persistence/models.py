@@ -83,6 +83,7 @@ class ScheduleRow(Base):
     prompt: Mapped[str] = mapped_column(Text)
     output_mode: Mapped[str] = mapped_column(String(32))
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    discord_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     notify_on_error: Mapped[bool] = mapped_column(default=True)
     enabled: Mapped[bool] = mapped_column(default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(TZDateTime())
