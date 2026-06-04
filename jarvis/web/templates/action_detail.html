@@ -20,6 +20,17 @@
     <tr><th>Tool call</th><td>{{ action.tool_call_id or "n/a" }}</td></tr>
     <tr><th>Model</th><td>{{ action.model }}</td></tr>
     <tr><th>Source</th><td>{{ action.channel_kind }} / {{ action.channel_ref }}</td></tr>
+    <tr>
+        <th>Conversation</th>
+        <td>
+            {% if action.conversation_id %}
+                <a href="/conversations/{{ action.conversation_id }}"><code>{{ action.conversation_id }}</code></a>
+            {% else %}
+                n/a
+            {% endif %}
+        </td>
+    </tr>
+    <tr><th>Trigger</th><td>{% if action.trigger_id %}<code>{{ action.trigger_id }}</code>{% else %}n/a{% endif %}</td></tr>
     <tr><th>Created</th><td>{{ action.created_at.strftime('%Y-%m-%d %H:%M') }}</td></tr>
 </table>
 </section>

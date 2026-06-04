@@ -18,8 +18,12 @@ async def actions_page(request: Request):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
     async with ctx.session_factory() as session:
-        actions = await ActionRepo(session).list_recent(limit=100)
-    return templates.TemplateResponse(request, "actions.html", {"actions": actions})
+        actions = await ActionRepo(session).list_for_inbox(limit=100)
+    items = [
+        {"action": action, "arguments_preview": _arguments_preview(action.arguments_json)}
+        for action in actions
+    ]
+    return templates.TemplateResponse(request, "actions.html", {"actions": items})
 
 
 @router.get("/actions/{action_id}", response_class=HTMLResponse)
@@ -51,3 +55,12 @@ async def approve_action(request: Request, action_id: UUID):
 async def reject_action(request: Request, action_id: UUID, reason: str = Form("")):
     await request.app.state.ctx.action_service.reject(action_id, reason=reason.strip() or None)
     return RedirectResponse(url=f"/actions/{action_id}", status_code=303)
+
+
+def _arguments_preview(arguments: dict, *, max_length: int = 120) -> str:
+    if not arguments:
+        return "n/a"
+    preview = json.dumps(arguments, sort_keys=True, separators=(", ", ": "))
+    if len(preview) <= max_length:
+        return preview
+    return f"{preview[: max_length - 3]}..."

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
@@ -514,6 +514,17 @@ class ActionRepo:
     async def list_recent(self, *, limit: int = 100) -> list[ActionRow]:
         result = await self._session.execute(
             select(ActionRow).order_by(ActionRow.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
+    async def list_for_inbox(self, *, limit: int = 100) -> list[ActionRow]:
+        result = await self._session.execute(
+            select(ActionRow)
+            .order_by(
+                case((ActionRow.status == "pending", 0), else_=1),
+                ActionRow.created_at.desc(),
+            )
+            .limit(limit)
         )
         return list(result.scalars())
 

@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
+from jarvis.core.types import ChannelKind, TriggerKind
 from jarvis.persistence.db import Base, create_engine, session_factory
-from jarvis.persistence.repositories import ActionRepo
+from jarvis.persistence.repositories import ActionRepo, ConversationRepo, TriggerRepo
 from jarvis.web.app import create_app
 
 
@@ -16,10 +18,16 @@ async def client(tmp_path):
         await conn.run_sync(Base.metadata.create_all)
     factory = session_factory(engine)
     async with factory() as s:
+        conversation = await ConversationRepo(s).find_or_create_open(
+            channel_kind=ChannelKind.DASHBOARD,
+            channel_ref="dashboard",
+            idle_timeout_sec=900,
+        )
+        trigger = await TriggerRepo(s).record(kind=TriggerKind.MANUAL.value, source_ref="dashboard")
         repo = ActionRepo(s)
         pending = await repo.create_pending(
-            conversation_id=None,
-            trigger_id=None,
+            conversation_id=conversation.id,
+            trigger_id=trigger.id,
             channel_kind="dashboard",
             channel_ref="dashboard",
             server_name="gmail",
@@ -51,24 +59,26 @@ async def client(tmp_path):
         action_service=SimpleNamespace(approve=AsyncMock(), reject=AsyncMock()),
     )
     app = create_app(app_context=ctx)
-    yield TestClient(app), pending.id, failed.id, ctx
+    yield TestClient(app), pending.id, failed.id, conversation.id, trigger.id, ctx
     await engine.dispose()
 
 
-def test_actions_page_lists_recent_actions_newest_first(client):
-    c, pending_id, failed_id, _ = client
+def test_actions_page_lists_pending_first_then_newest(client):
+    c, pending_id, failed_id, _, _, _ = client
     resp = c.get("/actions")
 
     assert resp.status_code == 200
     assert "create_event" in resp.text
     assert "send_email" in resp.text
+    assert "me@example.com" in resp.text
+    assert "Status" in resp.text
     assert str(failed_id) in resp.text
     assert str(pending_id) in resp.text
-    assert resp.text.index("create_event") < resp.text.index("send_email")
+    assert resp.text.index("send_email") < resp.text.index("create_event")
 
 
 def test_action_detail_renders_pending_action_and_controls(client):
-    c, action_id, _, _ = client
+    c, action_id, _, conversation_id, trigger_id, _ = client
     resp = c.get(f"/actions/{action_id}")
 
     assert resp.status_code == 200
@@ -76,12 +86,15 @@ def test_action_detail_renders_pending_action_and_controls(client):
     assert "dashboard / dashboard" in resp.text
     assert "me@example.com" in resp.text
     assert "test-model" in resp.text
+    assert f'href="/conversations/{conversation_id}"' in resp.text
+    assert str(conversation_id) in resp.text
+    assert str(trigger_id) in resp.text
     assert f'action="/actions/{action_id}/approve"' in resp.text
     assert f'action="/actions/{action_id}/reject"' in resp.text
 
 
 def test_approve_posts_to_service(client):
-    c, action_id, _, ctx = client
+    c, action_id, _, _, _, ctx = client
     resp = c.post(f"/actions/{action_id}/approve", follow_redirects=False)
 
     assert resp.status_code in (302, 303)
@@ -90,7 +103,7 @@ def test_approve_posts_to_service(client):
 
 
 def test_reject_posts_to_service(client):
-    c, action_id, _, ctx = client
+    c, action_id, _, _, _, ctx = client
     resp = c.post(
         f"/actions/{action_id}/reject",
         data={"reason": "No"},
@@ -103,13 +116,21 @@ def test_reject_posts_to_service(client):
 
 
 def test_non_pending_action_detail_hides_controls_and_shows_error(client):
-    c, _, action_id, _ = client
+    c, _, action_id, _, _, _ = client
     resp = c.get(f"/actions/{action_id}")
 
     assert resp.status_code == 200
     assert "calendar.create_event" in resp.text
+    assert "n/a" in resp.text
     assert "rejected" in resp.text
     assert "No" in resp.text
     assert "resume failed" in resp.text
     assert f'action="/actions/{action_id}/approve"' not in resp.text
     assert f'action="/actions/{action_id}/reject"' not in resp.text
+
+
+def test_action_detail_returns_404_for_missing_action(client):
+    c, _, _, _, _, _ = client
+    resp = c.get(f"/actions/{uuid4()}")
+
+    assert resp.status_code == 404

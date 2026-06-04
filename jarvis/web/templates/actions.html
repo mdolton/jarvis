@@ -11,10 +11,11 @@
 <section class="section-block">
 <table class="ops-table">
     <thead>
-        <tr><th>Status</th><th>Source</th><th>Tool</th><th>Created</th><th>Decision</th><th></th></tr>
+        <tr><th>Status</th><th>Source</th><th>Tool</th><th>Arguments</th><th>Created</th><th>Decision</th><th></th></tr>
     </thead>
     <tbody>
-    {% for action in actions %}
+    {% for item in actions %}
+        {% set action = item.action %}
         <tr>
             <td>
                 <span class="badge {% if action.status == 'completed' %}badge-ok{% elif action.status in ['pending', 'running'] %}badge-warn{% else %}badge-err{% endif %}">
@@ -23,6 +24,7 @@
             </td>
             <td>{{ action.channel_kind }} / {{ action.channel_ref }}</td>
             <td><code>{{ action.server_name }}.{{ action.tool_name }}</code></td>
+            <td class="muted">{{ item.arguments_preview }}</td>
             <td class="muted">{{ action.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
             <td>{{ action.decision or "n/a" }}</td>
             <td><a href="/actions/{{ action.id }}">View</a></td>
