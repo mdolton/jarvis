@@ -1,6 +1,7 @@
 """Scheduler integration tests. Use fire_now to trigger immediately."""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest_asyncio
 from agents import set_trace_processors
@@ -74,6 +75,12 @@ class _RecordingDiscordAdapter:
         self.sent.append(msg)
 
 
+def _far_future_cron_expr() -> str:
+    """Keep fire_now tests from racing with APScheduler's real cron trigger."""
+    future = datetime.now(UTC) + timedelta(days=180)
+    return f"{future.minute} {future.hour} {future.day} {future.month} *"
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def infra(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
@@ -109,7 +116,7 @@ async def test_scheduler_fires_and_records_run(infra):
         sched = await ScheduleRepo(s).create(
             name="test-sched",
             description="test",
-            cron_expr="0 0 * * *",
+            cron_expr=_far_future_cron_expr(),
             timezone="UTC",
             prompt="give me a summary",
             output_mode="dashboard_only",
@@ -211,7 +218,7 @@ async def test_scheduler_routes_discord_output_to_schedule_recipient(infra):
         sched = await ScheduleRepo(s).create(
             name="discord",
             description="",
-            cron_expr="* * * * *",
+            cron_expr=_far_future_cron_expr(),
             timezone="UTC",
             prompt="x",
             output_mode="discord",
@@ -247,7 +254,7 @@ async def test_scheduler_notifies_discord_recipient_on_failure_when_enabled(infr
         sched = await ScheduleRepo(s).create(
             name="breaks",
             description="",
-            cron_expr="* * * * *",
+            cron_expr=_far_future_cron_expr(),
             timezone="UTC",
             prompt="x",
             output_mode="discord",
