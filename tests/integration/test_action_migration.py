@@ -45,7 +45,7 @@ def _index_names(db_path: Path, table_name: str) -> set[str]:
 
 def _assert_actions_schema(db_path: Path) -> None:
     assert _table_exists(db_path, "actions")
-    assert {
+    assert _column_names(db_path, "actions") == {
         "id",
         "status",
         "decision",
@@ -65,8 +65,10 @@ def _assert_actions_schema(db_path: Path) -> None:
         "completed_at",
         "decision_reason",
         "error",
-    }.issubset(_column_names(db_path, "actions"))
+    }
     assert {
+        "ix_actions_status",
+        "ix_actions_created_at",
         "ix_actions_status_created_at",
         "ix_actions_conversation_id",
         "ix_actions_trigger_id",
