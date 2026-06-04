@@ -115,6 +115,36 @@ def test_reject_posts_to_service(client):
     ctx.action_service.reject.assert_awaited_once_with(action_id, reason="No")
 
 
+def test_direct_approve_post_for_non_pending_action_returns_conflict(client):
+    c, _, action_id, _, _, ctx = client
+    ctx.action_service.approve.side_effect = ValueError("not pending")
+    safe_client = TestClient(c.app, raise_server_exceptions=False)
+
+    resp = safe_client.post(f"/actions/{action_id}/approve", follow_redirects=False)
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "action is not pending"}
+    assert "location" not in resp.headers
+    ctx.action_service.approve.assert_awaited_once_with(action_id)
+
+
+def test_direct_reject_post_for_non_pending_action_returns_conflict(client):
+    c, _, action_id, _, _, ctx = client
+    ctx.action_service.reject.side_effect = ValueError("not pending")
+    safe_client = TestClient(c.app, raise_server_exceptions=False)
+
+    resp = safe_client.post(
+        f"/actions/{action_id}/reject",
+        data={"reason": "No"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "action is not pending"}
+    assert "location" not in resp.headers
+    ctx.action_service.reject.assert_awaited_once_with(action_id, reason="No")
+
+
 def test_non_pending_action_detail_hides_controls_and_shows_error(client):
     c, _, action_id, _, _, _ = client
     resp = c.get(f"/actions/{action_id}")
