@@ -15,8 +15,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check jarvis tests
+
+      - name: Test
+        timeout-minutes: 10
+        run: uv run pytest -vv --durations=20
+
+      - name: Config smoke
+        run: |
+          mkdir -p config
+          cp config/jarvis.yaml.example config/jarvis.yaml
+          uv run python -m jarvis check-config
+        env:
+          JARVIS_LLM_BASE_URL: http://localhost:1234/v1
+          JARVIS_LLM_API_KEY: dummy
+          JARVIS_LLM_MODEL: test-model
+          JARVIS_TIMEZONE: UTC
+          JARVIS_SECRETS_KEY: 6OlPq8cM1w8Nxj5tJ7Mc19uZrbeGieG2Lz9HnKnmrJA=
+
   build:
     runs-on: ubuntu-latest
+    needs: quality
     permissions:
       contents: read
       packages: write

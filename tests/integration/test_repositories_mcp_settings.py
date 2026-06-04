@@ -172,3 +172,22 @@ async def test_mcp_tool_replace_drops_policy_when_tool_disappears(session):
     rows = await trepo.list_for_server(server.id)
     assert {r.name for r in rows} == {"new_tool"}
     assert rows[0].policy_override is None
+
+
+async def test_mcp_tool_repo_sets_and_clears_policy_override(session):
+    srepo = MCPServerRepo(session)
+    trepo = MCPToolRepo(session)
+    server = await srepo.upsert(name="gcal", transport="stdio")
+    await trepo.replace_for_server(
+        server.id,
+        tools=[MCPToolDescriptor(name="create_event", input_schema={})],
+    )
+    tool = (await trepo.list_for_server(server.id))[0]
+
+    await trepo.set_policy_override(tool.id, "confirm")
+    updated = (await trepo.list_for_server(server.id))[0]
+    assert updated.policy_override == "confirm"
+
+    await trepo.set_policy_override(tool.id, None)
+    cleared = (await trepo.list_for_server(server.id))[0]
+    assert cleared.policy_override is None

@@ -1,12 +1,85 @@
 {% extends "base.html" %}
 {% block title %}Jarvis — Home{% endblock %}
 {% block content %}
-<h1>Jarvis Status</h1>
-<table>
+<section class="page-head">
+    <div>
+        <h1>Operations</h1>
+        <p class="muted">Runtime status, diagnostics, and manual execution.</p>
+    </div>
+    <span class="badge badge-{{ 'ok' if diagnostics.status == 'ok' else 'warn' }}">{{ diagnostics.status }}</span>
+</section>
+
+<section class="section-block">
+<h2>Status</h2>
+<table class="status-table">
     <tr><th>LLM endpoint</th><td>{{ llm_url }}</td></tr>
     <tr><th>LLM model</th><td>{{ llm_model }}</td></tr>
     <tr><th>MCP servers connected</th><td>{{ mcp_count }}</td></tr>
     <tr><th>Active schedules</th><td>{{ schedule_count }}</td></tr>
     <tr><th>Channel adapters</th><td>{{ adapters | join(", ") or "none" }}</td></tr>
 </table>
+</section>
+
+<section class="section-block">
+<h2>Diagnostics</h2>
+<table class="ops-table">
+    <thead>
+        <tr><th>Component</th><th>Status</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+        {% set c = diagnostics.components %}
+        <tr>
+            <td>Database</td>
+            <td><span class="badge badge-{{ 'ok' if c.db.status == 'ok' else 'err' }}">{{ c.db.status }}</span></td>
+            <td>SQLite connection</td>
+        </tr>
+        <tr>
+            <td>MCP</td>
+            <td><span class="badge badge-{{ 'ok' if c.mcp.status == 'ok' else 'err' }}">{{ c.mcp.status }}</span></td>
+            <td>{{ c.mcp.connected }} connected server{{ "" if c.mcp.connected == 1 else "s" }}</td>
+        </tr>
+        <tr>
+            <td>Models</td>
+            <td><span class="badge badge-{{ 'ok' if c.models.status == 'ok' else 'warn' }}">{{ c.models.status }}</span></td>
+            <td>{{ c.models.count }} available</td>
+        </tr>
+        <tr>
+            <td>Scheduler</td>
+            <td><span class="badge badge-{{ 'ok' if c.scheduler.status == 'ok' else 'err' }}">{{ c.scheduler.status }}</span></td>
+            <td>{{ c.scheduler.active_jobs }} active job{{ "" if c.scheduler.active_jobs == 1 else "s" }}</td>
+        </tr>
+        <tr>
+            <td>Discord</td>
+            <td><span class="badge badge-{{ 'ok' if c.discord.status == 'ok' else 'warn' }}">{{ c.discord.status }}</span></td>
+            <td>{{ "ready" if c.discord.ready else "not ready" }}</td>
+        </tr>
+        <tr>
+            <td>OAuth</td>
+            <td><span class="badge badge-{{ 'ok' if c.oauth.status == 'ok' else 'warn' }}">{{ c.oauth.status }}</span></td>
+            <td>{{ c.oauth.connected }} connected, {{ c.oauth.needs_reauth }} need re-auth</td>
+        </tr>
+        <tr>
+            <td>Audit</td>
+            <td><span class="badge badge-{{ 'ok' if c.audit.status == 'ok' else 'warn' }}">{{ c.audit.status }}</span></td>
+            <td>{{ c.audit.recent_errors }} recent error{{ "" if c.audit.recent_errors == 1 else "s" }}</td>
+        </tr>
+    </tbody>
+</table>
+</section>
+
+<section class="section-block">
+<h2>Manual Run</h2>
+<form method="post" action="/manual-runs" class="stack-form">
+    <textarea name="prompt" placeholder="Ask Jarvis to run something now" rows="4" required>{{ manual_prompt or "" }}</textarea>
+    <button type="submit">Run</button>
+</form>
+{% if manual_result %}
+<h3>Result</h3>
+<pre>{{ manual_result }}</pre>
+{% endif %}
+{% if manual_error %}
+<h3>Error</h3>
+<pre>{{ manual_error }}</pre>
+{% endif %}
+</section>
 {% endblock %}

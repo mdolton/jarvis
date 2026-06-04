@@ -1,7 +1,9 @@
 """GET /mcp — MCP server list + tools, plus OAuth Providers section."""
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from uuid import UUID
+
+from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.oauth.catalog import OAUTH_CATALOG
 from jarvis.oauth.store import OAuthCredentialsRepo
@@ -47,3 +49,18 @@ async def mcp_page(request: Request):
         "mcp.html",
         {"servers": servers, "server_tools": server_tools, "oauth_cards": oauth_cards},
     )
+
+
+@router.post("/mcp/tools/{tool_id}/policy")
+async def set_tool_policy(
+    request: Request,
+    tool_id: UUID,
+    policy_override: str = Form(""),
+):
+    ctx = request.app.state.ctx
+    policy = policy_override.strip() or None
+    if policy not in {None, "allow", "deny", "confirm"}:
+        raise HTTPException(status_code=400, detail="invalid policy override")
+    async with ctx.session_factory() as session:
+        await MCPToolRepo(session).set_policy_override(tool_id, policy)
+    return RedirectResponse(url="/mcp", status_code=303)

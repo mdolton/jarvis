@@ -220,6 +220,7 @@ class ScheduleRepo:
         notify_on_error: bool,
         enabled: bool,
         model: str | None = None,
+        discord_user_id: str | None = None,
     ) -> ScheduleRow:
         now = _utcnow()
         row = ScheduleRow(
@@ -230,6 +231,7 @@ class ScheduleRepo:
             prompt=prompt,
             output_mode=output_mode,
             model=model,
+            discord_user_id=discord_user_id,
             notify_on_error=notify_on_error,
             enabled=enabled,
             created_at=now,
@@ -374,6 +376,14 @@ class MCPToolRepo:
             select(MCPToolRow).where(MCPToolRow.server_id == server_id)
         )
         return list(result.scalars())
+
+    async def set_policy_override(self, tool_id: UUID, policy_override: str | None) -> None:
+        await self._session.execute(
+            update(MCPToolRow)
+            .where(MCPToolRow.id == tool_id)
+            .values(policy_override=policy_override)
+        )
+        await self._session.commit()
 
 
 class SettingsRepo:

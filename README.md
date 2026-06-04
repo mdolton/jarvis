@@ -161,6 +161,8 @@ Create schedules via the dashboard at `/schedules`. Each schedule has:
 - A cron expression (e.g., `0 8 * * *` for 8am daily)
 - A prompt (what to tell the agent)
 - An output mode: `discord` (DM you), `dashboard_only` (silent), or `discord_if_noteworthy` (agent decides)
+- An optional Discord user ID for scheduled output and error notifications
+- A **Run now** action for manually firing a schedule from the dashboard
 
 ### Model selection
 
@@ -190,10 +192,10 @@ Jarvis discovers available models from your LLM endpoint's `/v1/models`.
 
 Available at `http://localhost:8080` when running:
 
-- **Home** — service status overview
+- **Home** — service status overview, component diagnostics, and manual prompt runs
 - **Conversations** — browse past agent interactions
-- **Schedules** — create, enable/disable, delete schedules
-- **MCP** — connected servers and discovered tools
+- **Schedules** — create, run, enable/disable, delete schedules
+- **MCP** — OAuth providers, connected servers, discovered tools, and per-tool policy overrides
 - **Audit** — full event log with live SSE tailing
 - **Settings** — read-only config view
 

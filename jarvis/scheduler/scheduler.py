@@ -156,6 +156,9 @@ class Scheduler:
             prompt = row.prompt
             output_mode = row.output_mode
             model = row.model
+            schedule_name = row.name
+            notify_on_error = row.notify_on_error
+            discord_user_id = row.discord_user_id
 
         if model is not None and self._model_catalog is not None:
             catalog = await self._model_catalog.list_models()
@@ -182,11 +185,10 @@ class Scheduler:
         try:
             result = await self._dispatcher.dispatch_scheduled(trigger)
 
-            discord_user_id = ""
             await self._output_router.route(
                 result=result,
                 output_mode=output_mode,
-                discord_user_id=discord_user_id,
+                discord_user_id=discord_user_id or "",
             )
 
             async with self._session_factory() as session:
@@ -198,4 +200,9 @@ class Scheduler:
             async with self._session_factory() as session:
                 await ScheduleRepo(session).record_run(
                     schedule_id, at=datetime.now(UTC), status="error"
+                )
+            if notify_on_error and discord_user_id:
+                await self._output_router.send_error(
+                    text=f"Scheduled task `{schedule_name}` failed. Check the audit log for details.",
+                    discord_user_id=discord_user_id,
                 )

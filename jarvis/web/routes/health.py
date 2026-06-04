@@ -1,11 +1,8 @@
 """GET /healthz — JSON health check."""
 
-import logging
-
 from fastapi import APIRouter, Request
-from sqlalchemy import text
 
-_log = logging.getLogger(__name__)
+from jarvis.web.diagnostics import collect_diagnostics
 
 router = APIRouter()
 
@@ -16,21 +13,11 @@ async def healthz(request: Request):
     if ctx is None:
         return {"status": "ok", "detail": "no app context (startup)"}
 
-    # Check DB writability.
-    db_status = "ok"
-    try:
-        async with ctx.session_factory() as session:
-            await session.execute(text("SELECT 1"))
-    except Exception:
-        _log.exception("healthz: DB check failed")
-        db_status = "error"
-
-    # Check MCP servers.
-    mcp_count = len(ctx.mcp_manager.agent_mcp_servers())
-
-    status = "ok" if db_status == "ok" else "degraded"
+    diagnostics = await collect_diagnostics(ctx)
+    components = diagnostics["components"]
     return {
-        "status": status,
-        "db": db_status,
-        "mcp_servers": mcp_count,
+        "status": diagnostics["status"],
+        "db": components["db"]["status"],
+        "mcp_servers": components["mcp"]["connected"],
+        "components": components,
     }

@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
@@ -41,6 +42,23 @@ def test_mcp_page_renders_server_and_tools(client):
     assert "gcal" in resp.text
     assert "list_events" in resp.text
     assert "connected" in resp.text.lower()
+
+
+def test_mcp_tool_policy_can_be_set_and_cleared(client):
+    resp = client.get("/mcp")
+    assert resp.status_code == 200
+
+    match = re.search(r'<form(?=[^>]+data-policy-tool="list_events")(?=[^>]+action="([^"]+)")', resp.text)
+    assert match is not None
+    action = match.group(1)
+
+    set_resp = client.post(action, data={"policy_override": "confirm"}, follow_redirects=False)
+    assert set_resp.status_code in (302, 303)
+    assert "confirm" in client.get("/mcp").text
+
+    clear_resp = client.post(action, data={"policy_override": ""}, follow_redirects=False)
+    assert clear_resp.status_code in (302, 303)
+    assert "auto-detect" in client.get("/mcp").text
 
 
 @pytest_asyncio.fixture(loop_scope="function")

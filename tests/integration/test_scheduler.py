@@ -49,6 +49,31 @@ class _FakeModel(Model):
             yield None
 
 
+class _FailingModel(Model):
+    async def get_response(self, *a, **kw):
+        raise RuntimeError("model unavailable")
+
+    async def stream_response(self, *a, **kw):
+        if False:
+            yield None
+
+
+class _RecordingDiscordAdapter:
+    kind = "discord"
+
+    def __init__(self) -> None:
+        self.sent = []
+
+    async def start(self, dispatcher) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    async def send(self, msg) -> None:
+        self.sent.append(msg)
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def infra(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
@@ -168,3 +193,79 @@ async def test_scheduler_empty_db_starts_cleanly(infra):
         assert scheduler.active_job_count() == 0
     finally:
         await scheduler.stop()
+
+
+async def test_scheduler_routes_discord_output_to_schedule_recipient(infra):
+    _, factory, audit = infra
+    discord = _RecordingDiscordAdapter()
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=discord,
+    )
+
+    async with factory() as s:
+        sched = await ScheduleRepo(s).create(
+            name="discord",
+            description="",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            prompt="x",
+            output_mode="discord",
+            notify_on_error=True,
+            enabled=True,
+            discord_user_id="111",
+        )
+
+    await scheduler.start()
+    try:
+        await scheduler.fire_now(sched.id)
+    finally:
+        await scheduler.stop()
+
+    assert len(discord.sent) == 1
+    assert discord.sent[0].channel_ref == "111"
+    assert discord.sent[0].text == "scheduled-reply-1"
+
+
+async def test_scheduler_notifies_discord_recipient_on_failure_when_enabled(infra):
+    _, factory, audit = infra
+    discord = _RecordingDiscordAdapter()
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FailingModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=discord,
+    )
+
+    async with factory() as s:
+        sched = await ScheduleRepo(s).create(
+            name="breaks",
+            description="",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            prompt="x",
+            output_mode="discord",
+            notify_on_error=True,
+            enabled=True,
+            discord_user_id="111",
+        )
+
+    await scheduler.start()
+    try:
+        await scheduler.fire_now(sched.id)
+    finally:
+        await scheduler.stop()
+
+    async with factory() as s:
+        refreshed = await ScheduleRepo(s).get(sched.id)
+        assert refreshed.last_run_status == "error"
+
+    assert len(discord.sent) == 1
+    assert discord.sent[0].channel_ref == "111"
+    assert "Scheduled task `breaks` failed" in discord.sent[0].text

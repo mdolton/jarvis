@@ -49,7 +49,13 @@ class ScheduledOutputRouter:
 
         _log.warning("unknown output_mode %r; treating as dashboard_only", output_mode)
 
+    async def send_error(self, *, text: str, discord_user_id: str) -> None:
+        await self._send_discord(text, discord_user_id)
+
     async def _send_discord(self, text: str, user_id: str) -> None:
+        if not user_id:
+            _log.warning("scheduled run wants to send to Discord but no user id is configured")
+            return
         if self._discord is None:
             _log.warning("scheduled run wants to send to Discord but no adapter is running")
             return
