@@ -109,11 +109,87 @@ async def test_action_repo_rejects_non_pending_decision(session):
         approval_item_json={},
         model="test-model",
     )
+    await repo.mark_running(action.id, decision="approved", decision_reason=None)
     await repo.mark_completed(action.id)
+    action_id = action.id
 
-    try:
-        await repo.mark_running(action.id, decision="approved", decision_reason=None)
-    except ValueError as exc:
-        assert "pending" in str(exc)
-    else:
-        raise AssertionError("expected non-pending action to be rejected")
+    with pytest.raises(ValueError, match="pending"):
+        await repo.mark_running(action_id, decision="approved", decision_reason=None)
+
+
+async def test_action_repo_rejects_stale_running_decision(session):
+    repo = ActionRepo(session)
+    action = await repo.create_pending(
+        conversation_id=None,
+        trigger_id=None,
+        channel_kind="dashboard",
+        channel_ref="dashboard",
+        server_name="gmail",
+        tool_name="send_email",
+        tool_call_id=None,
+        arguments_json={},
+        run_state_json={},
+        approval_item_json={},
+        model="test-model",
+    )
+    await repo.mark_running(action.id, decision="approved", decision_reason=None)
+    action_id = action.id
+
+    with pytest.raises(ValueError, match="pending"):
+        await repo.mark_running(action_id, decision="rejected", decision_reason="too late")
+
+    got = await repo.get(action_id)
+    assert got.status == "running"
+    assert got.decision == "approved"
+    assert got.decision_reason is None
+
+
+async def test_action_repo_rejects_pending_completion(session):
+    repo = ActionRepo(session)
+    action = await repo.create_pending(
+        conversation_id=None,
+        trigger_id=None,
+        channel_kind="dashboard",
+        channel_ref="dashboard",
+        server_name="gmail",
+        tool_name="send_email",
+        tool_call_id=None,
+        arguments_json={},
+        run_state_json={},
+        approval_item_json={},
+        model="test-model",
+    )
+    action_id = action.id
+
+    with pytest.raises(ValueError, match="running"):
+        await repo.mark_completed(action_id)
+
+    got = await repo.get(action_id)
+    assert got.status == "pending"
+    assert got.completed_at is None
+
+
+async def test_action_repo_rejects_pending_failure(session):
+    repo = ActionRepo(session)
+    action = await repo.create_pending(
+        conversation_id=None,
+        trigger_id=None,
+        channel_kind="dashboard",
+        channel_ref="dashboard",
+        server_name="gmail",
+        tool_name="send_email",
+        tool_call_id=None,
+        arguments_json={},
+        run_state_json={},
+        approval_item_json={},
+        model="test-model",
+    )
+    action_id = action.id
+
+    with pytest.raises(ValueError, match="running"):
+        await repo.mark_failed(action_id, "boom")
+
+    got = await repo.get(action_id)
+    assert got.status == "pending"
+    assert got.completed_at is None
+    assert got.error is None

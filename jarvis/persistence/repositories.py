@@ -475,29 +475,39 @@ class ActionRepo:
         decision: str,
         decision_reason: str | None,
     ) -> None:
-        row = await self.get(action_id)
-        if row is None:
-            raise ValueError(f"action {action_id} not found")
-        if row.status != "pending":
-            raise ValueError(f"action {action_id} is not pending")
-        row.status = "running"
-        row.decision = decision
-        row.decision_reason = decision_reason
-        row.decided_at = _utcnow()
+        result = await self._session.execute(
+            update(ActionRow)
+            .where(ActionRow.id == action_id, ActionRow.status == "pending")
+            .values(
+                status="running",
+                decision=decision,
+                decision_reason=decision_reason,
+                decided_at=_utcnow(),
+            )
+        )
+        if result.rowcount != 1:
+            await self._session.rollback()
+            raise ValueError(f"action {action_id} not found or not pending")
         await self._session.commit()
 
     async def mark_completed(self, action_id: UUID) -> None:
-        await self._session.execute(
+        result = await self._session.execute(
             update(ActionRow)
-            .where(ActionRow.id == action_id)
+            .where(ActionRow.id == action_id, ActionRow.status == "running")
             .values(status="completed", completed_at=_utcnow(), error=None)
         )
+        if result.rowcount != 1:
+            await self._session.rollback()
+            raise ValueError(f"action {action_id} not found or not running")
         await self._session.commit()
 
     async def mark_failed(self, action_id: UUID, error: str) -> None:
-        await self._session.execute(
+        result = await self._session.execute(
             update(ActionRow)
-            .where(ActionRow.id == action_id)
+            .where(ActionRow.id == action_id, ActionRow.status == "running")
             .values(status="failed", completed_at=_utcnow(), error=error)
         )
+        if result.rowcount != 1:
+            await self._session.rollback()
+            raise ValueError(f"action {action_id} not found or not running")
         await self._session.commit()
