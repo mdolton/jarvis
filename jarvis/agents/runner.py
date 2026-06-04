@@ -14,9 +14,12 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from agents import Agent, RunConfig, Runner
+from agents import RunConfig, Runner
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from jarvis.actions.serialization import approval_item_to_json, run_state_to_json
+from jarvis.agents.factory import build_agent
+from jarvis.agents.factory import resolve_model as resolve_model
 from jarvis.audit.logger import AuditLogger
 from jarvis.config.schema import LLMConfig
 from jarvis.core.types import (
@@ -30,6 +33,7 @@ from jarvis.core.types import (
     ScheduledTrigger,
 )
 from jarvis.persistence.repositories import (
+    ActionRepo,
     ConversationRepo,
     MessageRepo,
     TriggerRepo,
@@ -107,26 +111,73 @@ class AgentRunner:
             )
         )
 
-        # Build the SDK agent. Resolve mcp_servers fresh per run so OAuth
-        # servers connected after bootstrap are visible to new agent invocations.
-        agent_kwargs: dict[str, Any] = {
-            "name": "jarvis",
-            "instructions": _system_prompt(),
-            "mcp_servers": self._mcp_servers_provider(),
-        }
-        agent_kwargs["model"] = resolve_model(
-            request.trigger,
-            explicit=self._model,
+        agent, resolved_model = build_agent(
+            llm_config=self._llm_config,
+            mcp_servers_provider=self._mcp_servers_provider,
+            trigger=request.trigger,
+            explicit_model=self._model,
             model_provider=self._model_provider,
-            config_default=self._llm_config.model,
         )
-        agent = Agent(**agent_kwargs)
 
         sdk_result = await Runner.run(
             agent,
             prompt,
             run_config=RunConfig(workflow_name="jarvis-invoke"),
         )
+
+        interruptions = list(getattr(sdk_result, "interruptions", []) or [])
+        if interruptions:
+            approval_payload = approval_item_to_json(interruptions[0])
+            run_state = getattr(sdk_result, "state", None) or getattr(
+                sdk_result, "_run_state", None
+            )
+            if run_state is None:
+                raise RuntimeError("approval interruption did not include a serializable run state")
+
+            async with self._session_factory() as session:
+                action = await ActionRepo(session).create_pending(
+                    conversation_id=conv_id,
+                    trigger_id=trigger_id,
+                    channel_kind=channel_kind.value,
+                    channel_ref=channel_ref,
+                    server_name=approval_payload["server_name"],
+                    tool_name=approval_payload["tool_name"],
+                    tool_call_id=approval_payload["tool_call_id"],
+                    arguments_json=approval_payload["arguments_json"],
+                    run_state_json=run_state_to_json(run_state),
+                    approval_item_json=approval_payload,
+                    model=resolved_model,
+                )
+                final_text = (
+                    f"Action approval required: {action.server_name}.{action.tool_name} "
+                    f"({action.id}). Review it in the Action Inbox."
+                )
+                await MessageRepo(session).append(
+                    conversation_id=conv_id,
+                    role=MessageRole.ASSISTANT,
+                    content=final_text,
+                )
+
+            await self._audit.emit(
+                AuditEvent(
+                    type=AuditEventType.ACTION_CREATED,
+                    conversation_id=conv_id,
+                    trigger_id=trigger_id,
+                    payload={
+                        "action_id": str(action.id),
+                        "server_name": action.server_name,
+                        "tool_name": action.tool_name,
+                    },
+                )
+            )
+
+            return AgentRunResult(
+                final_output=final_text,
+                conversation_id=conv_id,
+                trigger_id=trigger_id,
+                channel_kind=channel_kind,
+                channel_ref=channel_ref,
+            )
 
         final_text = _extract_text(sdk_result)
 
@@ -176,28 +227,8 @@ def _idle_for_kind(kind: ChannelKind, default_sec: int) -> int:
     return default_sec
 
 
-def _system_prompt() -> str:
-    return (
-        "You are Jarvis, a helpful personal assistant. "
-        "Use the available MCP tools when they help answer the user. "
-        "Be concise."
-    )
-
-
 def _extract_text(sdk_result) -> str:
     """Best-effort extraction of the final assistant text from SDK RunResult."""
     if hasattr(sdk_result, "final_output") and sdk_result.final_output is not None:
         return str(sdk_result.final_output)
     return ""
-
-
-def resolve_model(trigger, *, explicit, model_provider, config_default):
-    """Pick the model for a run. Precedence: explicit (test override) >
-    a scheduled trigger's pinned model > model_provider() > config default."""
-    if explicit is not None:
-        return explicit
-    if isinstance(trigger, ScheduledTrigger) and trigger.model:
-        return trigger.model
-    if model_provider is not None:
-        return model_provider()
-    return config_default
