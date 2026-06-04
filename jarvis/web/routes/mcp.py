@@ -62,8 +62,7 @@ async def set_tool_policy(
         raise HTTPException(status_code=400, detail="invalid policy override")
     async with ctx.session_factory() as session:
         await MCPToolRepo(session).set_policy_override(tool_id, policy)
-    ctx_attrs = vars(ctx) if hasattr(ctx, "__dict__") else {}
-    mcp_manager = ctx_attrs.get("mcp_manager")
+    mcp_manager = getattr(ctx, "mcp_manager", None)
     clear_policy_cache = getattr(mcp_manager, "clear_policy_cache", None)
     if callable(clear_policy_cache):
         clear_policy_cache()

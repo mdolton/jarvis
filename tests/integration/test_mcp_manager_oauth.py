@@ -73,9 +73,14 @@ async def test_replace_oauth_server_swaps_sdk_object(factory, monkeypatch):
         first = FakeSDKServer()
         second = FakeSDKServer()
         builds = iter([first, second])
+
+        def fake_build(url, headers, *, name, approval_policy=None):
+            assert approval_policy is not None
+            return next(builds)
+
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name: next(builds),
+            fake_build,
         )
 
         await mgr.replace_oauth_server(
@@ -109,7 +114,7 @@ async def test_replace_oauth_server_aborts_on_list_tools_failure(factory, monkey
         builds = iter([first, broken])
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name: next(builds),
+            lambda url, headers, *, name, approval_policy=None: next(builds),
         )
         await mgr.replace_oauth_server("fastmail", url="x", headers={"Authorization": "Bearer A1"})
         with pytest.raises(RuntimeError, match="bad token"):
@@ -129,7 +134,7 @@ async def test_remove_oauth_server_closes_and_drops(factory, monkeypatch):
         sdk = FakeSDKServer()
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name: sdk,
+            lambda url, headers, *, name, approval_policy=None: sdk,
         )
         await mgr.replace_oauth_server("fastmail", url="x", headers={"Authorization": "Bearer A"})
         await mgr.remove_oauth_server("fastmail")
@@ -155,7 +160,10 @@ async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeyp
         )
 
     sdk = FakeSDKServer()
-    monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", lambda url, headers, *, name: sdk)
+    monkeypatch.setattr(
+        "jarvis.mcp.manager._build_streamable_http",
+        lambda url, headers, *, name, approval_policy=None: sdk,
+    )
 
     cfg = MCPServersConfig(servers=[])
     mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=key)
@@ -185,8 +193,9 @@ async def test_start_attaches_connected_manual_provider(factory, monkeypatch):
     captured = {}
     sdk = FakeSDKServer()
 
-    def fake_build(url, headers, *, name):
+    def fake_build(url, headers, *, name, approval_policy=None):
         captured["url"] = url
+        captured["approval_policy"] = approval_policy
         return sdk
 
     monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", fake_build)
@@ -198,6 +207,7 @@ async def test_start_attaches_connected_manual_provider(factory, monkeypatch):
         assert sdk.entered
         assert mgr.agent_mcp_servers() == [sdk]
         assert captured["url"] == "https://gmailmcp.googleapis.com/mcp/v1"
+        assert captured["approval_policy"] is not None
     finally:
         await mgr.stop()
 
@@ -221,7 +231,7 @@ async def test_hung_replace_times_out_and_does_not_block_remove(factory, monkeyp
     try:
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name: HangingSDKServer(),
+            lambda url, headers, *, name, approval_policy=None: HangingSDKServer(),
         )
         with pytest.raises(TimeoutError):
             await mgr.replace_oauth_server(
@@ -240,7 +250,7 @@ async def test_start_skips_oauth_provider_without_credentials(factory, monkeypat
     builds = []
     monkeypatch.setattr(
         "jarvis.mcp.manager._build_streamable_http",
-        lambda url, headers, *, name: builds.append(1),
+        lambda url, headers, *, name, approval_policy=None: builds.append(1),
     )
     await mgr.start()
     try:

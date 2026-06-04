@@ -311,6 +311,33 @@ async def test_mcp_util_get_function_tools_uses_two_arg_filter_without_dropping_
     assert policy.calls == [("filter_tool", "stdio-server", "search_docs")]
 
 
+@pytest.mark.parametrize("approval_result", [False, True])
+async def test_mcp_util_get_function_tools_uses_public_approval_callback(approval_result):
+    policy = _RecordingApprovalPolicy(approval_result=approval_result)
+    sdk_server = _build_sdk_server(
+        MCPServerConfig(name="stdio-server", transport="stdio", command=[sys.executable]),
+        approval_policy=policy,
+    )
+    tool = Tool(name="send_email", inputSchema={})
+
+    async def list_tools(self, run_context, agent):
+        return [tool]
+
+    sdk_server.list_tools = MethodType(list_tools, sdk_server)
+
+    function_tools = await MCPUtil.get_function_tools(
+        sdk_server,
+        convert_schemas_to_strict=False,
+        run_context=object(),
+        agent=object(),
+    )
+
+    assert len(function_tools) == 1
+    assert callable(function_tools[0].needs_approval)
+    assert await function_tools[0].needs_approval(object(), {}, "call_1") is approval_result
+    assert policy.calls == [("needs_approval", "stdio-server", "send_email")]
+
+
 async def test_streamable_http_builder_wires_approval_policy():
     policy = _RecordingApprovalPolicy()
     sdk_server = _build_streamable_http(
@@ -355,14 +382,15 @@ async def test_runtime_policy_guard_delegates_allowed_tool_call():
 
 
 class _RecordingApprovalPolicy:
-    def __init__(self, *, filter_result=False, denied_names=None):
+    def __init__(self, *, filter_result=False, approval_result=True, denied_names=None):
         self.calls = []
         self._filter_result = filter_result
+        self._approval_result = approval_result
         self._denied_names = set(denied_names or [])
 
     async def needs_approval(self, server_name, tool):
         self.calls.append(("needs_approval", server_name, tool.name))
-        return True
+        return self._approval_result
 
     async def filter_tool(self, server_name, tool):
         self.calls.append(("filter_tool", server_name, tool.name))
