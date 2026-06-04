@@ -34,7 +34,8 @@ jobs:
         run: uv run ruff check jarvis tests
 
       - name: Test
-        run: uv run pytest -q
+        timeout-minutes: 10
+        run: uv run pytest -vv --durations=20
 
       - name: Config smoke
         run: |
