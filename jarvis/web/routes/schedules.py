@@ -2,21 +2,33 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from jarvis.persistence.repositories import ScheduleRepo
+from jarvis.persistence.repositories import DigestTemplateRepo, ScheduleRepo
 
 router = APIRouter()
 
 
 @router.get("/schedules", response_class=HTMLResponse)
-async def schedule_list(request: Request):
+async def schedule_list(
+    request: Request, template_id: UUID | None = Query(default=None)
+):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
     catalog = await ctx.model_catalog.list_models()
+    template_warning = None
+    selected_template = None
     async with ctx.session_factory() as session:
-        schedules = await ScheduleRepo(session).list_all()
+        schedule_repo = ScheduleRepo(session)
+        template_repo = DigestTemplateRepo(session)
+        schedules = await schedule_repo.list_all()
+        digest_templates = await template_repo.list_enabled()
+        if template_id is not None:
+            selected_template = await template_repo.get(template_id)
+            if selected_template is None or not selected_template.enabled:
+                selected_template = None
+                template_warning = "Template not found or disabled."
     available = set(catalog.models) if catalog.ok else None
     return templates.TemplateResponse(
         request,
@@ -26,6 +38,9 @@ async def schedule_list(request: Request):
             "available_models": catalog.models,
             "catalog_ok": catalog.ok,
             "available_set": available,
+            "digest_templates": digest_templates,
+            "selected_template": selected_template,
+            "template_warning": template_warning,
         },
     )
 
