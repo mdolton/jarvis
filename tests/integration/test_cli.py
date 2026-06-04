@@ -100,14 +100,21 @@ def test_serve_starts_and_stops_cleanly(config_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(da_mod.DiscordAdapter, "start", _fake_start)
     monkeypatch.setattr(da_mod.DiscordAdapter, "stop", _fake_stop)
 
+    import asyncio
+
+    import uvicorn
+
+    async def _fake_uvicorn_serve(self):
+        return None
+
+    monkeypatch.setattr(uvicorn.Server, "serve", _fake_uvicorn_serve)
+
     # Add a discord channel config so an adapter actually gets created.
     (config_dir / "channels.yaml").write_text(
         'discord:\n  token: tok\n  allowed_user_ids: ["111"]\n'
     )
 
     db_path = tmp_path / "jarvis.db"
-
-    import asyncio
 
     async def _drive() -> None:
         stop_event = asyncio.Event()
