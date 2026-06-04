@@ -385,3 +385,58 @@ def test_template_model_is_not_marked_unavailable_when_catalog_fails(
         "catalog-fallback-model</option>"
     ) in page.text
     assert "catalog-fallback-model (not available)" not in page.text
+
+
+def test_schedules_page_warns_for_malformed_template_id(client_and_factory):
+    client, _ = client_and_factory
+
+    resp = client.get("/schedules?template_id=not-a-uuid")
+
+    assert resp.status_code == 200
+    assert "Create Schedule" in resp.text
+    assert "Template not found or disabled." in resp.text
+
+
+def test_schedules_page_warns_for_missing_template_id(client_and_factory):
+    client, _ = client_and_factory
+
+    from uuid import uuid4
+
+    resp = client.get(f"/schedules?template_id={uuid4()}")
+
+    assert resp.status_code == 200
+    assert "Create Schedule" in resp.text
+    assert "Template not found or disabled." in resp.text
+
+
+def test_schedules_page_warns_for_disabled_template_id(client_and_factory):
+    client, factory = client_and_factory
+
+    async def _create_template():
+        from jarvis.persistence.repositories import DigestTemplateRepo
+
+        async with factory() as session:
+            row = await DigestTemplateRepo(session).create(
+                key=None,
+                name="Disabled Source",
+                description="Source template",
+                category="brief",
+                prompt="Disabled template prompt.",
+                default_cron_expr="0 9 * * *",
+                default_timezone="UTC",
+                default_output_mode="discord",
+                default_model="alpha",
+                default_discord_user_id=None,
+                built_in=False,
+                enabled=False,
+            )
+            return row.id
+
+    import anyio
+
+    template_id = anyio.run(_create_template)
+    resp = client.get(f"/schedules?template_id={template_id}")
+
+    assert resp.status_code == 200
+    assert "Template not found or disabled." in resp.text
+    assert "Disabled template prompt." not in resp.text

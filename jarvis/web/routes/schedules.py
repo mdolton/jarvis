@@ -12,20 +12,26 @@ router = APIRouter()
 
 @router.get("/schedules", response_class=HTMLResponse)
 async def schedule_list(
-    request: Request, template_id: UUID | None = Query(default=None)
+    request: Request, template_id: str | None = Query(default=None)
 ):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
     catalog = await ctx.model_catalog.list_models()
     template_warning = None
     selected_template = None
+    parsed_template_id = None
+    if template_id is not None:
+        try:
+            parsed_template_id = UUID(template_id)
+        except ValueError:
+            template_warning = "Template not found or disabled."
     async with ctx.session_factory() as session:
         schedule_repo = ScheduleRepo(session)
         template_repo = DigestTemplateRepo(session)
         schedules = await schedule_repo.list_all()
         digest_templates = await template_repo.list_enabled()
-        if template_id is not None:
-            selected_template = await template_repo.get(template_id)
+        if parsed_template_id is not None:
+            selected_template = await template_repo.get(parsed_template_id)
             if selected_template is None or not selected_template.enabled:
                 selected_template = None
                 template_warning = "Template not found or disabled."
