@@ -157,6 +157,10 @@ servers:
     url: http://localhost:3000/mcp
 ```
 
+MCP tools can be marked `allow`, `confirm`, or `deny` from the dashboard.
+Read-like tools auto-run by default; side-effecting tools pause in the Action
+Inbox until approved.
+
 ## Scheduled Tasks
 
 Create schedules via the dashboard at `/schedules`. Each schedule has:
@@ -198,6 +202,7 @@ Available at `http://localhost:8080` when running:
 - **Conversations** — browse past agent interactions
 - **Schedules** — create, run, enable/disable, delete schedules
 - **MCP** — OAuth providers, connected servers, discovered tools, and per-tool policy overrides
+- **Actions** — approve or reject MCP tool calls that require confirmation before execution
 - **Audit** — full event log with live SSE tailing
 - **Settings** — read-only config view
 

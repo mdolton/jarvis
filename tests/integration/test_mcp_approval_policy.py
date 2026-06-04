@@ -72,6 +72,22 @@ async def test_deny_override_is_filtered_out(factory):
     assert await policy.is_denied("calendar", "delete_event") is True
 
 
+async def test_allow_override_skips_approval_and_remains_visible(factory):
+    async with factory() as session:
+        server = await MCPServerRepo(session).upsert(name="gmail", transport="http")
+        await MCPToolRepo(session).replace_for_server(
+            server.id,
+            tools=[MCPToolDescriptor(name="send_email", input_schema={})],
+        )
+        tool = (await MCPToolRepo(session).list_for_server(server.id))[0]
+        await MCPToolRepo(session).set_policy_override(tool.id, "allow")
+
+    policy = MCPApprovalPolicy(session_factory=factory)
+
+    assert await policy.needs_approval("gmail", _tool("send_email")) is False
+    assert await policy.filter_tool("gmail", _tool("send_email")) is True
+
+
 async def test_policy_cache_reuses_server_lookup_and_can_be_invalidated(engine_and_factory):
     engine, factory = engine_and_factory
     async with factory() as session:
