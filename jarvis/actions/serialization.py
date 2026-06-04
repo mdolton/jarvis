@@ -82,6 +82,16 @@ def approval_item_to_json(approval_item: ToolApprovalItem | Any) -> dict[str, An
     return payload
 
 
+def approval_item_from_json(agent, payload: dict[str, Any]) -> ToolApprovalItem:
+    """Best-effort compatibility helper for older tests and tooling.
+
+    Production resume semantics should use approval items returned by a
+    deserialized RunState's get_interruptions(), not this display/audit JSON.
+    """
+    raw = payload.get("raw_item", payload)
+    return ToolApprovalItem(agent=agent, raw_item=raw)
+
+
 def _get_attr(obj: Any, name: str) -> Any:
     try:
         return getattr(obj, name, None)

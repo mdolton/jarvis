@@ -45,8 +45,8 @@ _log = logging.getLogger(__name__)
 @dataclass(slots=True)
 class AgentRunResult:
     final_output: str
-    conversation_id: UUID
-    trigger_id: UUID
+    conversation_id: UUID | None
+    trigger_id: UUID | None
     channel_kind: ChannelKind
     channel_ref: str
 
