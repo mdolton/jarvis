@@ -19,6 +19,7 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack
 
+from agents.exceptions import UserError
 from agents.mcp import MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -201,6 +202,7 @@ class MCPManager:
                 trepo = MCPToolRepo(session)
                 await srepo.set_status(server_id, status="connected", last_error=None)
                 await trepo.replace_for_server(server_id, tools=tools)
+            self.clear_policy_cache(cfg.name)
         except Exception as e:  # one bad server mustn't kill the rest
             _log.exception("failed to connect MCP server %r", cfg.name)
             await self._record_failure(cfg, e)
@@ -248,6 +250,7 @@ class MCPManager:
             row = await srepo.upsert(name=provider_key, transport="http")
             await srepo.set_status(row.id, status="connected", last_error=None)
             await trepo.replace_for_server(row.id, tools=tools)
+        self.clear_policy_cache(provider_key)
 
         # Close the old connection LAST, on THIS (owner) task — the same task it
         # was opened on. _aclose_silently swallows any stray teardown error.
@@ -257,6 +260,7 @@ class MCPManager:
     async def _do_remove_oauth(self, provider_key: str) -> None:
         self._sdk_servers.pop(provider_key, None)
         stack = self._stacks.pop(provider_key, None)
+        self.clear_policy_cache(provider_key)
         if stack is not None:
             await _aclose_silently(stack)
 
@@ -289,7 +293,7 @@ def _build_streamable_http(
         )
         kwargs["tool_filter"] = lambda filter_context, tool: approval_policy.filter_tool(name, tool)
 
-    return MCPServerStreamableHttp(
+    sdk_server = MCPServerStreamableHttp(
         name=name,
         params={"url": url, "headers": headers, "timeout": 30},
         cache_tools_list=True,
@@ -298,6 +302,9 @@ def _build_streamable_http(
         retry_backoff_seconds_base=1.0,
         **kwargs,
     )
+    if approval_policy is not None:
+        _apply_runtime_policy_guard(sdk_server, name, approval_policy)
+    return sdk_server
 
 
 async def _aclose_silently(stack: AsyncExitStack) -> None:
@@ -334,27 +341,51 @@ def _build_sdk_server(
         }
         if cfg.env is not None:
             params["env"] = cfg.env
-        return MCPServerStdio(
+        sdk_server = MCPServerStdio(
             name=cfg.name,
             params=params,
             cache_tools_list=True,
             **kwargs,
         )
+        if approval_policy is not None:
+            _apply_runtime_policy_guard(sdk_server, cfg.name, approval_policy)
+        return sdk_server
     if cfg.transport == "http":
-        return MCPServerStreamableHttp(
+        sdk_server = MCPServerStreamableHttp(
             name=cfg.name,
             params={"url": cfg.url, "headers": cfg.headers or {}},
             cache_tools_list=True,
             **kwargs,
         )
+        if approval_policy is not None:
+            _apply_runtime_policy_guard(sdk_server, cfg.name, approval_policy)
+        return sdk_server
     if cfg.transport == "sse":
-        return MCPServerSse(
+        sdk_server = MCPServerSse(
             name=cfg.name,
             params={"url": cfg.url, "headers": cfg.headers or {}},
             cache_tools_list=True,
             **kwargs,
         )
+        if approval_policy is not None:
+            _apply_runtime_policy_guard(sdk_server, cfg.name, approval_policy)
+        return sdk_server
     raise ValueError(f"unsupported transport: {cfg.transport}")
+
+
+def _apply_runtime_policy_guard(
+    sdk_server: object,
+    name: str,
+    approval_policy: MCPApprovalPolicy,
+) -> None:
+    original_call_tool = sdk_server.call_tool  # type: ignore[attr-defined]
+
+    async def guarded_call_tool(tool_name: str, arguments: dict | None, meta: dict | None = None):
+        if await approval_policy.is_denied(name, tool_name):
+            raise UserError(f"MCP tool '{tool_name}' on server '{name}' is denied by policy.")
+        return await original_call_tool(tool_name, arguments, meta=meta)
+
+    sdk_server.call_tool = guarded_call_tool  # type: ignore[attr-defined]
 
 
 async def _list_tools(sdk_server: object) -> list[MCPToolDescriptor]:

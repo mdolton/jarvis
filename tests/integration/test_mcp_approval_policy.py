@@ -67,7 +67,9 @@ async def test_deny_override_is_filtered_out(factory):
     policy = MCPApprovalPolicy(session_factory=factory)
 
     assert await policy.filter_tool("calendar", _tool("delete_event")) is False
-    assert await policy.needs_approval("calendar", _tool("delete_event")) is True
+    assert await policy.needs_approval("calendar", _tool("delete_event")) is False
+    assert await policy.is_denied("calendar", _tool("delete_event")) is True
+    assert await policy.is_denied("calendar", "delete_event") is True
 
 
 async def test_policy_cache_reuses_server_lookup_and_can_be_invalidated(engine_and_factory):

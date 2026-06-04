@@ -1,14 +1,21 @@
 """MCPManager integration tests using a real in-process stdio MCP server."""
 
+import re
 import sys
 from types import MethodType
 
 import pytest
+from agents.exceptions import UserError
 from agents.mcp import MCPUtil
 from mcp.types import Tool
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
-from jarvis.mcp.manager import MCPManager, _build_sdk_server, _build_streamable_http
+from jarvis.mcp.manager import (
+    MCPManager,
+    _apply_runtime_policy_guard,
+    _build_sdk_server,
+    _build_streamable_http,
+)
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
 
@@ -202,6 +209,43 @@ async def test_mcp_manager_clear_policy_cache_delegates(engine_and_factory):
     assert manager._approval_policy.calls == [("clear_cache", None), ("clear_server", "calendar")]
 
 
+async def test_mcp_manager_clears_policy_cache_after_connect_tool_refresh(
+    engine_and_factory, monkeypatch
+):
+    _, factory = engine_and_factory
+    manager = MCPManager(config=MCPServersConfig(servers=[]), session_factory=factory)
+    manager._approval_policy = _RecordingCachePolicy()
+    monkeypatch.setattr(
+        "jarvis.mcp.manager._build_sdk_server",
+        lambda cfg, approval_policy: _FakeSdkServer([Tool(name="list_events", inputSchema={})]),
+    )
+
+    await manager._do_connect_one(
+        MCPServerConfig(name="calendar", transport="stdio", command=[sys.executable])
+    )
+
+    assert ("clear_server", "calendar") in manager._approval_policy.calls
+
+
+async def test_mcp_manager_clears_policy_cache_after_oauth_replace_and_remove(
+    engine_and_factory, monkeypatch
+):
+    _, factory = engine_and_factory
+    manager = MCPManager(config=MCPServersConfig(servers=[]), session_factory=factory)
+    manager._approval_policy = _RecordingCachePolicy()
+    monkeypatch.setattr(
+        "jarvis.mcp.manager._build_streamable_http",
+        lambda url, headers, *, name, approval_policy: _FakeSdkServer(
+            [Tool(name="search_mail", inputSchema={})]
+        ),
+    )
+
+    await manager._do_replace_oauth(provider_key="fastmail", url="http://localhost", headers={})
+    await manager._do_remove_oauth("fastmail")
+
+    assert manager._approval_policy.calls.count(("clear_server", "fastmail")) == 2
+
+
 @pytest.mark.parametrize(
     "cfg",
     [
@@ -285,10 +329,36 @@ async def test_streamable_http_builder_wires_approval_policy():
     ]
 
 
+async def test_runtime_policy_guard_blocks_denied_stale_tool_call():
+    policy = _RecordingApprovalPolicy(denied_names={"delete_event"})
+    sdk_server = _CallableSdkServer()
+    _apply_runtime_policy_guard(sdk_server, "calendar", policy)
+
+    with pytest.raises(
+        UserError,
+        match=re.escape("MCP tool 'delete_event' on server 'calendar' is denied by policy."),
+    ):
+        await sdk_server.call_tool("delete_event", {"id": "1"})
+
+    assert sdk_server.calls == []
+
+
+async def test_runtime_policy_guard_delegates_allowed_tool_call():
+    policy = _RecordingApprovalPolicy()
+    sdk_server = _CallableSdkServer()
+    _apply_runtime_policy_guard(sdk_server, "calendar", policy)
+
+    result = await sdk_server.call_tool("list_events", {"calendar": "primary"}, meta={"trace": "1"})
+
+    assert result == "called"
+    assert sdk_server.calls == [("list_events", {"calendar": "primary"}, {"trace": "1"})]
+
+
 class _RecordingApprovalPolicy:
-    def __init__(self, *, filter_result=False):
+    def __init__(self, *, filter_result=False, denied_names=None):
         self.calls = []
         self._filter_result = filter_result
+        self._denied_names = set(denied_names or [])
 
     async def needs_approval(self, server_name, tool):
         self.calls.append(("needs_approval", server_name, tool.name))
@@ -297,6 +367,11 @@ class _RecordingApprovalPolicy:
     async def filter_tool(self, server_name, tool):
         self.calls.append(("filter_tool", server_name, tool.name))
         return self._filter_result
+
+    async def is_denied(self, server_name, tool_or_name):
+        tool_name = tool_or_name if isinstance(tool_or_name, str) else tool_or_name.name
+        self.calls.append(("is_denied", server_name, tool_name))
+        return tool_name in self._denied_names
 
 
 class _RecordingCachePolicy:
@@ -315,6 +390,30 @@ class _FilterContext:
         self.run_context = run_context
         self.agent = agent
         self.server_name = server_name
+
+
+class _FakeSdkServer:
+    def __init__(self, tools):
+        self._tools = tools
+        self.tool_filter = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def list_tools(self):
+        return self._tools
+
+
+class _CallableSdkServer:
+    def __init__(self):
+        self.calls = []
+
+    async def call_tool(self, tool_name, arguments, meta=None):
+        self.calls.append((tool_name, arguments, meta))
+        return "called"
 
 
 class _SdkTool:

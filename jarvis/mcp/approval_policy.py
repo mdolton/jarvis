@@ -17,14 +17,16 @@ class MCPApprovalPolicy:
 
     async def needs_approval(self, server_name: str, tool: Any) -> bool:
         descriptor, override = await self._lookup(server_name, tool)
-        return runtime_decision(descriptor, override=override) in {
-            RuntimeToolDecision.CONFIRM,
-            RuntimeToolDecision.DENY,
-        }
+        return runtime_decision(descriptor, override=override) == RuntimeToolDecision.CONFIRM
 
     async def filter_tool(self, server_name: str, tool: Any) -> bool:
         descriptor, override = await self._lookup(server_name, tool)
         return runtime_decision(descriptor, override=override) != RuntimeToolDecision.DENY
+
+    async def is_denied(self, server_name: str, tool_or_name: Any) -> bool:
+        tool = _tool_from_name(tool_or_name) if isinstance(tool_or_name, str) else tool_or_name
+        descriptor, override = await self._lookup(server_name, tool)
+        return runtime_decision(descriptor, override=override) == RuntimeToolDecision.DENY
 
     def clear_cache(self) -> None:
         self._cache.clear()
@@ -81,3 +83,18 @@ def _descriptor_from_sdk_tool(tool: Any) -> MCPToolDescriptor:
         read_only_hint=getattr(annotations, "readOnlyHint", None) if annotations else None,
         destructive_hint=getattr(annotations, "destructiveHint", None) if annotations else None,
     )
+
+
+class _ToolName:
+    name: str
+    inputSchema: dict
+    description: str = ""
+    annotations = None
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.inputSchema = {}
+
+
+def _tool_from_name(name: str) -> _ToolName:
+    return _ToolName(name)
