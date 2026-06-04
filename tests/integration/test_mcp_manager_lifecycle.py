@@ -86,7 +86,7 @@ async def test_replace_closes_old_server_on_same_task_that_opened_it(factory, mo
         builds = iter([first, second])
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name: next(builds),
+            lambda url, headers, *, name, approval_policy: next(builds),
         )
 
         await mgr.replace_oauth_server("gmail", url="x", headers={"Authorization": "Bearer A1"})
@@ -115,7 +115,7 @@ async def test_stop_closes_server_opened_by_a_short_lived_task(factory, monkeypa
     sdk = TaskTrackingServer()
     monkeypatch.setattr(
         "jarvis.mcp.manager._build_streamable_http",
-        lambda url, headers, *, name: sdk,
+        lambda url, headers, *, name, approval_policy: sdk,
     )
     # Simulate the scheduler job: open the connection inside a task that then
     # completes, exactly like oauth_token_refresh -> replace_oauth_server.
@@ -149,7 +149,7 @@ async def test_replace_survives_cancelled_error_from_old_connection_close(factor
         builds = iter([old, new1, new2])
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name: next(builds),
+            lambda url, headers, *, name, approval_policy: next(builds),
         )
 
         await mgr.replace_oauth_server("gmail", url="x", headers={"Authorization": "Bearer A"})
