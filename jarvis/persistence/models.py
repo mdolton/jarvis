@@ -124,6 +124,35 @@ class ScheduleRow(Base):
     last_run_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
+class DigestTemplateRow(Base):
+    __tablename__ = "digest_templates"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(64))
+    prompt: Mapped[str] = mapped_column(Text)
+    default_cron_expr: Mapped[str] = mapped_column(String(64))
+    default_timezone: Mapped[str] = mapped_column(String(64))
+    default_output_mode: Mapped[str] = mapped_column(String(32))
+    default_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    default_discord_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    built_in: Mapped[bool] = mapped_column(default=False)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+    __table_args__ = (
+        Index(
+            "ix_digest_templates_enabled_category_name",
+            "enabled",
+            "category",
+            "name",
+        ),
+    )
+
+
 class MCPServerRow(Base):
     __tablename__ = "mcp_servers"
 

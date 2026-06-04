@@ -7,6 +7,7 @@ from sqlalchemy import select
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.models import (
     ActionRow,
+    DigestTemplateRow,
     MCPServerRow,
     MCPToolRow,
     ScheduleRow,
@@ -112,3 +113,32 @@ async def test_action_row_roundtrip(session):
     assert got.decision is None
     assert got.arguments_json == {"to": "me@example.com"}
     assert got.model == "test-model"
+
+
+async def test_digest_template_row_roundtrip(session):
+    row = DigestTemplateRow(
+        key="daily-brief",
+        name="Daily Brief",
+        description="Morning summary",
+        category="brief",
+        prompt="Summarize today.",
+        default_cron_expr="0 8 * * *",
+        default_timezone="UTC",
+        default_output_mode="discord",
+        default_model=None,
+        default_discord_user_id=None,
+        built_in=True,
+        enabled=True,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    session.add(row)
+    await session.commit()
+
+    result = await session.execute(select(DigestTemplateRow))
+    got = result.scalar_one()
+    assert got.key == "daily-brief"
+    assert got.name == "Daily Brief"
+    assert got.default_cron_expr == "0 8 * * *"
+    assert got.built_in is True
+    assert got.enabled is True
