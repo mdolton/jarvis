@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import UUID
 
@@ -48,7 +49,7 @@ async def action_detail(request: Request, action_id: UUID):
 @router.post("/actions/{action_id}/approve")
 async def approve_action(request: Request, action_id: UUID):
     try:
-        await request.app.state.ctx.action_service.approve(action_id)
+        await asyncio.shield(request.app.state.ctx.action_service.approve(action_id))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="action is not pending") from exc
     return RedirectResponse(url=f"/actions/{action_id}", status_code=303)
@@ -57,7 +58,9 @@ async def approve_action(request: Request, action_id: UUID):
 @router.post("/actions/{action_id}/reject")
 async def reject_action(request: Request, action_id: UUID, reason: str = Form("")):
     try:
-        await request.app.state.ctx.action_service.reject(action_id, reason=reason.strip() or None)
+        await asyncio.shield(
+            request.app.state.ctx.action_service.reject(action_id, reason=reason.strip() or None)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="action is not pending") from exc
     return RedirectResponse(url=f"/actions/{action_id}", status_code=303)

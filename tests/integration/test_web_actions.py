@@ -9,6 +9,7 @@ from jarvis.core.types import ChannelKind, TriggerKind
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import ActionRepo, ConversationRepo, TriggerRepo
 from jarvis.web.app import create_app
+from jarvis.web.routes import actions as actions_routes
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -100,6 +101,36 @@ def test_approve_posts_to_service(client):
     assert resp.status_code in (302, 303)
     assert resp.headers["location"] == f"/actions/{action_id}"
     ctx.action_service.approve.assert_awaited_once_with(action_id)
+
+
+def test_approve_post_shields_service_resume(client, monkeypatch):
+    c, action_id, _, _, _, ctx = client
+    shielded = []
+    real_shield = actions_routes.asyncio.shield
+
+    def fake_shield(awaitable):
+        shielded.append(awaitable)
+        return real_shield(awaitable)
+
+    monkeypatch.setattr(actions_routes.asyncio, "shield", fake_shield)
+
+    resp = c.post(f"/actions/{action_id}/approve", follow_redirects=False)
+
+    assert resp.status_code in (302, 303)
+    assert len(shielded) == 1
+    ctx.action_service.approve.assert_awaited_once_with(action_id)
+
+
+def test_cross_origin_approve_post_is_blocked_before_service(client):
+    c, action_id, _, _, _, ctx = client
+    resp = c.post(
+        f"/actions/{action_id}/approve",
+        headers={"Origin": "https://attacker.example"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 403
+    ctx.action_service.approve.assert_not_awaited()
 
 
 def test_reject_posts_to_service(client):

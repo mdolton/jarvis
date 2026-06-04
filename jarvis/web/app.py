@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from jarvis.web.security import SameOriginUnsafeMethodMiddleware
+
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
@@ -16,6 +18,7 @@ def create_app(*, app_context=None) -> FastAPI:
     None is tolerated for healthz-only testing.
     """
     app = FastAPI(title="Jarvis Dashboard", docs_url=None, redoc_url=None)
+    app.add_middleware(SameOriginUnsafeMethodMiddleware)
 
     # Attach context so route handlers can access repos, config, etc.
     app.state.ctx = app_context
