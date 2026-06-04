@@ -30,7 +30,9 @@ class _FakeResult:
                 )
             )
         ]
-        self.state = _FakeRunState()
+
+    def to_state(self):
+        return _FakeRunState()
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -71,6 +73,7 @@ async def test_runner_creates_pending_action_on_tool_approval(monkeypatch, infra
         assert actions[0].server_name == "gmail"
         assert actions[0].tool_name == "send_email"
         assert actions[0].arguments_json == {"to": "me@example.com"}
+        assert actions[0].run_state_json == {"state": "serialized"}
         msgs = await MessageRepo(s).history(actions[0].conversation_id)
         assert msgs[-1].content == result.final_output
 

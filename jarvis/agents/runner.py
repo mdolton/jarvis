@@ -128,9 +128,12 @@ class AgentRunner:
         interruptions = list(getattr(sdk_result, "interruptions", []) or [])
         if interruptions:
             approval_payload = approval_item_to_json(interruptions[0])
-            run_state = getattr(sdk_result, "state", None) or getattr(
-                sdk_result, "_run_state", None
-            )
+            to_state = getattr(sdk_result, "to_state", None)
+            run_state = to_state() if callable(to_state) else None
+            if run_state is None:
+                run_state = getattr(sdk_result, "state", None) or getattr(
+                    sdk_result, "_run_state", None
+                )
             if run_state is None:
                 raise RuntimeError("approval interruption did not include a serializable run state")
 

@@ -12,7 +12,7 @@ def run_state_to_json(state: RunState) -> dict[str, Any]:
 
 
 async def run_state_from_json(agent, payload: dict[str, Any]) -> RunState:
-    return RunState.from_json(agent, payload)
+    return await RunState.from_json(agent, payload)
 
 
 def approval_item_to_json(approval_item: ToolApprovalItem | Any) -> dict[str, Any]:
