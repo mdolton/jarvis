@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.models import (
+    ActionRow,
     MCPServerRow,
     MCPToolRow,
     ScheduleRow,
@@ -83,3 +84,31 @@ async def test_setting_key_value(session):
 
     result = await session.execute(select(SettingRow))
     assert result.scalar_one().value == 1800
+
+
+async def test_action_row_roundtrip(session):
+    row = ActionRow(
+        status="pending",
+        decision=None,
+        conversation_id=None,
+        trigger_id=None,
+        channel_kind="dashboard",
+        channel_ref="dashboard",
+        server_name="gmail",
+        tool_name="send_email",
+        tool_call_id="call-1",
+        arguments_json={"to": "me@example.com"},
+        run_state_json={"state": "serialized"},
+        approval_item_json={"tool": "send_email"},
+        model="test-model",
+        created_at=datetime.now(UTC),
+    )
+    session.add(row)
+    await session.commit()
+
+    result = await session.execute(select(ActionRow))
+    got = result.scalar_one()
+    assert got.status == "pending"
+    assert got.decision is None
+    assert got.arguments_json == {"to": "me@example.com"}
+    assert got.model == "test-model"

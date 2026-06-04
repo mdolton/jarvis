@@ -55,6 +55,11 @@ class AuditEventType(StrEnum):
     OAUTH_REFRESH_TRANSIENT_FAILURE = "oauth.refresh_transient_failure"
     OAUTH_REFRESH_PERMANENTLY_FAILED = "oauth.refresh_permanently_failed"
     OAUTH_REVOKED = "oauth.revoked"
+    ACTION_CREATED = "action.created"
+    ACTION_APPROVED = "action.approved"
+    ACTION_REJECTED = "action.rejected"
+    ACTION_COMPLETED = "action.completed"
+    ACTION_FAILED = "action.failed"
 
 
 class MessageRole(StrEnum):

@@ -22,10 +22,7 @@ async def mcp_page(request: Request):
         server_tools = {}
         for srv in servers:
             server_tools[srv.id] = await MCPToolRepo(session).list_for_server(srv.id)
-        creds_by_key = {
-            r.provider_key: r
-            for r in await OAuthCredentialsRepo(session).list_all()
-        }
+        creds_by_key = {r.provider_key: r for r in await OAuthCredentialsRepo(session).list_all()}
 
     oauth_cards = []
     for key, entry in OAUTH_CATALOG.items():
@@ -36,13 +33,15 @@ async def mcp_page(request: Request):
             state = "needs_reauth"
         else:
             state = "connected"
-        oauth_cards.append({
-            "key": key,
-            "display_name": entry.display_name,
-            "state": state,
-            "last_error": cred.last_error if cred else None,
-            "updated_at": cred.updated_at if cred else None,
-        })
+        oauth_cards.append(
+            {
+                "key": key,
+                "display_name": entry.display_name,
+                "state": state,
+                "last_error": cred.last_error if cred else None,
+                "updated_at": cred.updated_at if cred else None,
+            }
+        )
 
     return templates.TemplateResponse(
         request,
@@ -63,4 +62,8 @@ async def set_tool_policy(
         raise HTTPException(status_code=400, detail="invalid policy override")
     async with ctx.session_factory() as session:
         await MCPToolRepo(session).set_policy_override(tool_id, policy)
+    mcp_manager = getattr(ctx, "mcp_manager", None)
+    clear_policy_cache = getattr(mcp_manager, "clear_policy_cache", None)
+    if callable(clear_policy_cache):
+        clear_policy_cache()
     return RedirectResponse(url="/mcp", status_code=303)

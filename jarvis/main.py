@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from jarvis.actions.service import ActionService
 from jarvis.agents.llm_client import build_llm_client, install_as_default
 from jarvis.agents.model_catalog import ModelCatalog
 from jarvis.agents.model_store import ModelStore
@@ -30,6 +31,7 @@ from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.mcp.manager import MCPManager
 from jarvis.oauth.flow import OAuthFlow
 from jarvis.persistence.db import Base, create_engine, session_factory
+from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 from jarvis.scheduler.scheduler import Scheduler
 from jarvis.web.app import create_app as _create_web_app
 
@@ -44,6 +46,7 @@ class AppContext:
     audit: AuditLogger
     mcp_manager: MCPManager
     agent_runner: AgentRunner
+    action_service: ActionService
     dispatcher: TriggerDispatcher
     channel_adapters: list[ChannelAdapter]
     output_router: OutputRouter
@@ -174,6 +177,16 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         None,
     )
 
+    # Action service resumes paused SDK runs after dashboard decisions.
+    action_service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=output_router,
+        llm_config=cfg.jarvis.llm,
+        mcp_servers_provider=mcp_manager.agent_mcp_servers,
+        scheduled_output_router=ScheduledOutputRouter(discord_adapter=discord_adapter),
+    )
+
     # Scheduler.
     scheduler = Scheduler(
         session_factory=factory,
@@ -200,6 +213,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         audit=audit,
         mcp_manager=mcp_manager,
         agent_runner=agent_runner,
+        action_service=action_service,
         dispatcher=dispatcher,
         channel_adapters=channel_adapters,
         output_router=output_router,

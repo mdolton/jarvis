@@ -22,13 +22,21 @@ class ToolPolicy(StrEnum):
     CONFIRM = "confirm"
 
 
+class RuntimeToolDecision(StrEnum):
+    ALLOW = "allow"
+    CONFIRM = "confirm"
+    DENY = "deny"
+
+
 def classify(
     tool: MCPToolDescriptor,
     *,
     override: str | None = None,
 ) -> ToolPolicy:
     """Decide whether `tool` auto-executes or requires confirmation."""
-    if override in ("auto", "confirm"):
+    if override in ("auto", "allow", "confirm"):
+        if override == "allow":
+            return ToolPolicy.AUTO
         return ToolPolicy(override)
 
     if tool.destructive_hint is True:
@@ -40,3 +48,18 @@ def classify(
     if any(name_lower.startswith(p) for p in _READ_PREFIXES):
         return ToolPolicy.AUTO
     return ToolPolicy.CONFIRM
+
+
+def runtime_decision(
+    tool: MCPToolDescriptor,
+    *,
+    override: str | None = None,
+) -> RuntimeToolDecision:
+    """Decide whether `tool` is allowed, requires approval, or is hidden."""
+    if override in ("allow", "confirm", "deny"):
+        return RuntimeToolDecision(override)
+
+    policy = classify(tool, override=override)
+    if policy == ToolPolicy.AUTO:
+        return RuntimeToolDecision.ALLOW
+    return RuntimeToolDecision.CONFIRM

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Action {{ action.id }}{% endblock %}
+{% block content %}
+<section class="page-head">
+    <div>
+        <h1>{{ action.server_name }}.{{ action.tool_name }}</h1>
+        <p class="muted">{{ action.channel_kind }} / {{ action.channel_ref }}</p>
+    </div>
+    <span class="badge {% if action.status == 'completed' %}badge-ok{% elif action.status in ['pending', 'running'] %}badge-warn{% else %}badge-err{% endif %}">
+        {{ action.status }}
+    </span>
+</section>
+
+<section class="section-block">
+<h2>Action</h2>
+<table class="status-table">
+    <tr><th>ID</th><td><code>{{ action.id }}</code></td></tr>
+    <tr><th>Server</th><td>{{ action.server_name }}</td></tr>
+    <tr><th>Tool</th><td>{{ action.tool_name }}</td></tr>
+    <tr><th>Tool call</th><td>{{ action.tool_call_id or "n/a" }}</td></tr>
+    <tr><th>Model</th><td>{{ action.model }}</td></tr>
+    <tr><th>Source</th><td>{{ action.channel_kind }} / {{ action.channel_ref }}</td></tr>
+    <tr>
+        <th>Conversation</th>
+        <td>
+            {% if action.conversation_id %}
+                <a href="/conversations/{{ action.conversation_id }}"><code>{{ action.conversation_id }}</code></a>
+            {% else %}
+                n/a
+            {% endif %}
+        </td>
+    </tr>
+    <tr><th>Trigger</th><td>{% if action.trigger_id %}<code>{{ action.trigger_id }}</code>{% else %}n/a{% endif %}</td></tr>
+    <tr><th>Created</th><td>{{ action.created_at.strftime('%Y-%m-%d %H:%M') }}</td></tr>
+</table>
+</section>
+
+<section class="section-block">
+<h2>Arguments</h2>
+<pre>{{ arguments_pretty }}</pre>
+</section>
+
+<section class="section-block">
+<h2>Decision</h2>
+<table class="status-table">
+    <tr><th>Decision</th><td>{{ action.decision or "n/a" }}</td></tr>
+    <tr><th>Reason</th><td>{{ action.decision_reason or "n/a" }}</td></tr>
+    <tr><th>Decided</th><td>{% if action.decided_at %}{{ action.decided_at.strftime('%Y-%m-%d %H:%M') }}{% else %}n/a{% endif %}</td></tr>
+    <tr><th>Completed</th><td>{% if action.completed_at %}{{ action.completed_at.strftime('%Y-%m-%d %H:%M') }}{% else %}n/a{% endif %}</td></tr>
+    <tr><th>Error</th><td>{{ action.error or "n/a" }}</td></tr>
+</table>
+
+{% if action.status == "pending" %}
+<form method="post" action="/actions/{{ action.id }}/approve" class="inline-form">
+    <button type="submit">Approve</button>
+</form>
+<form method="post" action="/actions/{{ action.id }}/reject" class="stack-form">
+    <textarea name="reason" rows="3" placeholder="Reason for rejection"></textarea>
+    <button type="submit" class="btn-danger">Reject</button>
+</form>
+{% endif %}
+</section>
+{% endblock %}

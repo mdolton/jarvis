@@ -36,7 +36,10 @@ def test_upgrade_adds_discord_user_id_column(tmp_path):
 
 def test_downgrade_removes_discord_user_id_column(tmp_path):
     db_path = tmp_path / "t.db"
-    assert _run_alembic(db_path, "upgrade head").returncode == 0
-    down = _run_alembic(db_path, "downgrade -1")
+    up = _run_alembic(db_path, "upgrade 0005")
+    assert up.returncode == 0, up.stderr
+    assert "discord_user_id" in _cols(db_path)
+
+    down = _run_alembic(db_path, "downgrade 0004")
     assert down.returncode == 0, down.stderr
     assert "discord_user_id" not in _cols(db_path)

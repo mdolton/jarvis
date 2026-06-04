@@ -100,7 +100,9 @@ ownership, so this only bites on a real Linux host.)
 
 The dashboard listens on port 8080. For `https://jarvis.moltonlava.online`
 (required for the Google OAuth redirect URI to work), terminate TLS at your
-reverse proxy and forward to the container's port 8080.
+reverse proxy and forward to the container's port 8080. If the dashboard is
+reachable outside a trusted network, enforce authentication at the reverse proxy;
+Jarvis blocks cross-origin unsafe requests but does not provide user login.
 
 ### 3. Ship an update
 
@@ -155,6 +157,10 @@ servers:
     url: http://localhost:3000/mcp
 ```
 
+MCP tools can be marked `allow`, `confirm`, or `deny` from the dashboard.
+Read-like tools auto-run by default; side-effecting tools pause in the Action
+Inbox until approved.
+
 ## Scheduled Tasks
 
 Create schedules via the dashboard at `/schedules`. Each schedule has:
@@ -196,6 +202,7 @@ Available at `http://localhost:8080` when running:
 - **Conversations** — browse past agent interactions
 - **Schedules** — create, run, enable/disable, delete schedules
 - **MCP** — OAuth providers, connected servers, discovered tools, and per-tool policy overrides
+- **Actions** — approve or reject MCP tool calls that require confirmation before execution
 - **Audit** — full event log with live SSE tailing
 - **Settings** — read-only config view
 

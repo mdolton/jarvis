@@ -1,5 +1,5 @@
 from jarvis.mcp.descriptor import MCPToolDescriptor
-from jarvis.mcp.tool_policy import ToolPolicy, classify
+from jarvis.mcp.tool_policy import RuntimeToolDecision, ToolPolicy, classify, runtime_decision
 
 
 def _desc(**kwargs) -> MCPToolDescriptor:
@@ -46,3 +46,15 @@ def test_heuristic_case_insensitive():
 def test_override_accepts_none():
     """override=None falls through to annotation/heuristic."""
     assert classify(_desc(name="get_x"), override=None) == ToolPolicy.AUTO
+
+
+def test_runtime_override_allow_confirm_deny():
+    t = _desc(name="delete_event", destructive_hint=True)
+    assert runtime_decision(t, override="allow") == RuntimeToolDecision.ALLOW
+    assert runtime_decision(t, override="confirm") == RuntimeToolDecision.CONFIRM
+    assert runtime_decision(t, override="deny") == RuntimeToolDecision.DENY
+
+
+def test_runtime_auto_detect_maps_classifier():
+    assert runtime_decision(_desc(name="list_events"), override=None) == RuntimeToolDecision.ALLOW
+    assert runtime_decision(_desc(name="send_email"), override=None) == RuntimeToolDecision.CONFIRM
