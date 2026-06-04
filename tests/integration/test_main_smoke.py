@@ -42,6 +42,7 @@ async def test_bootstrap_exposes_runner_and_dispatcher(tmp_path, config_dir):
     )
     try:
         assert ctx.agent_runner is not None
+        assert ctx.action_service is not None
         assert ctx.dispatcher is not None
         assert ctx.mcp_manager is not None
     finally:

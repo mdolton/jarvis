@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID
@@ -7,7 +8,11 @@ from uuid import UUID
 from agents import RunConfig, Runner
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from jarvis.actions.serialization import run_state_from_json
+from jarvis.actions.serialization import (
+    approval_item_to_json,
+    run_state_from_json,
+    run_state_to_json,
+)
 from jarvis.agents.factory import build_agent
 from jarvis.agents.runner import AgentRunResult
 from jarvis.audit.logger import AuditLogger
@@ -16,6 +21,8 @@ from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
 from jarvis.persistence.models import ActionRow
 from jarvis.persistence.repositories import ActionRepo, MessageRepo
+
+_log = logging.getLogger(__name__)
 
 
 class ActionService:
@@ -82,11 +89,7 @@ class ActionService:
                     type=event_type,
                     conversation_id=action.conversation_id,
                     trigger_id=action.trigger_id,
-                    payload={
-                        "action_id": str(action.id),
-                        "server_name": action.server_name,
-                        "tool_name": action.tool_name,
-                    },
+                    payload=_action_payload(action),
                 )
             )
 
@@ -95,6 +98,10 @@ class ActionService:
                 run_state,
                 run_config=RunConfig(workflow_name="jarvis-action-resume"),
             )
+            interruptions = list(getattr(sdk_result, "interruptions", []) or [])
+            if interruptions:
+                return await self._create_followup_action(action, sdk_result, interruptions[0])
+
             final_text = _extract_text(sdk_result)
             result = AgentRunResult(
                 final_output=final_text,
@@ -123,7 +130,7 @@ class ActionService:
                     type=AuditEventType.ACTION_COMPLETED,
                     conversation_id=action.conversation_id,
                     trigger_id=action.trigger_id,
-                    payload={"action_id": str(action.id)},
+                    payload=_action_payload(action),
                 )
             )
 
@@ -141,9 +148,92 @@ class ActionService:
                 type=AuditEventType.ACTION_FAILED,
                 conversation_id=action.conversation_id,
                 trigger_id=action.trigger_id,
-                payload={"action_id": str(action.id), "error": str(exc)},
+                payload=_action_payload(action, error=str(exc)),
             )
         )
+        if self._output_router is not None:
+            result = AgentRunResult(
+                final_output=_failure_notice(action, exc),
+                conversation_id=action.conversation_id,
+                trigger_id=action.trigger_id,
+                channel_kind=ChannelKind(action.channel_kind),
+                channel_ref=action.channel_ref,
+            )
+            try:
+                await self._output_router.route(result)
+            except Exception:
+                _log.exception("failed to route action failure notice")
+
+    async def _create_followup_action(
+        self,
+        action: ActionRow,
+        sdk_result: Any,
+        approval_item: Any,
+    ) -> AgentRunResult:
+        to_state = getattr(sdk_result, "to_state", None)
+        run_state = to_state() if callable(to_state) else None
+        if run_state is None:
+            run_state = getattr(sdk_result, "state", None) or getattr(
+                sdk_result, "_run_state", None
+            )
+        if run_state is None:
+            raise RuntimeError("approval interruption did not include a serializable run state")
+
+        approval_payload = approval_item_to_json(approval_item)
+        async with self._session_factory() as session:
+            async with session.begin():
+                next_action = await ActionRepo(session).create_pending_no_commit(
+                    conversation_id=action.conversation_id,
+                    trigger_id=action.trigger_id,
+                    channel_kind=action.channel_kind,
+                    channel_ref=action.channel_ref,
+                    server_name=approval_payload["server_name"],
+                    tool_name=approval_payload["tool_name"],
+                    tool_call_id=approval_payload["tool_call_id"],
+                    arguments_json=approval_payload["arguments_json"],
+                    run_state_json=run_state_to_json(run_state),
+                    approval_item_json=approval_payload,
+                    model=action.model,
+                )
+                notice = _approval_required_notice(next_action)
+                if action.conversation_id is not None:
+                    await MessageRepo(session).append_no_commit(
+                        conversation_id=action.conversation_id,
+                        role=MessageRole.ASSISTANT,
+                        content=notice,
+                    )
+
+        await self._audit.emit(
+            AuditEvent(
+                type=AuditEventType.ACTION_CREATED,
+                conversation_id=next_action.conversation_id,
+                trigger_id=next_action.trigger_id,
+                payload=_action_payload(next_action),
+            )
+        )
+
+        result = AgentRunResult(
+            final_output=notice,
+            conversation_id=action.conversation_id,
+            trigger_id=action.trigger_id,
+            channel_kind=ChannelKind(action.channel_kind),
+            channel_ref=action.channel_ref,
+        )
+        if self._output_router is not None:
+            await self._output_router.route(result)
+
+        async with self._session_factory() as session:
+            await ActionRepo(session).mark_completed(action.id)
+
+        await self._audit.emit(
+            AuditEvent(
+                type=AuditEventType.ACTION_COMPLETED,
+                conversation_id=action.conversation_id,
+                trigger_id=action.trigger_id,
+                payload=_action_payload(action),
+            )
+        )
+        return result
 
 
 def _approval_interruption_for_action(run_state: Any, action: ActionRow) -> Any:
@@ -181,3 +271,30 @@ def _extract_text(sdk_result: Any) -> str:
     if hasattr(sdk_result, "final_output") and sdk_result.final_output is not None:
         return str(sdk_result.final_output)
     return ""
+
+
+def _approval_required_notice(action: ActionRow) -> str:
+    return (
+        f"Action approval required: {action.server_name}.{action.tool_name} "
+        f"({action.id}). Review it in the Action Inbox."
+    )
+
+
+def _failure_notice(action: ActionRow, exc: Exception) -> str:
+    return f"Action failed: {action.server_name}.{action.tool_name} ({action.id}). {exc}"
+
+
+def _action_payload(action: ActionRow, **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "action_id": str(action.id),
+        "server_name": action.server_name,
+        "tool_name": action.tool_name,
+    }
+    if action.conversation_id is not None:
+        payload["conversation_id"] = str(action.conversation_id)
+    if action.trigger_id is not None:
+        payload["trigger_id"] = str(action.trigger_id)
+    if action.tool_call_id is not None:
+        payload["tool_call_id"] = action.tool_call_id
+    payload.update(extra)
+    return payload
