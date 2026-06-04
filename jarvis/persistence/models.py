@@ -72,6 +72,38 @@ class AuditEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
 
 
+class ActionRow(Base):
+    __tablename__ = "actions"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    trigger_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("triggers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    channel_kind: Mapped[str] = mapped_column(String(32))
+    channel_ref: Mapped[str] = mapped_column(String(128))
+    server_name: Mapped[str] = mapped_column(String(128))
+    tool_name: Mapped[str] = mapped_column(String(128))
+    tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    arguments_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    run_state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    approval_item_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    model: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+    decided_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_actions_status_created_at", "status", "created_at"),
+    )
+
+
 class ScheduleRow(Base):
     __tablename__ = "schedules"
 

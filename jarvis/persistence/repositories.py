@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
 from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.persistence.models import (
+    ActionRow,
     AuditEventRow,
     ConversationRow,
     MCPServerRow,
@@ -407,3 +408,96 @@ class SettingsRepo:
         if row is not None:
             await self._session.delete(row)
             await self._session.commit()
+
+
+class ActionRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_pending(
+        self,
+        *,
+        conversation_id: UUID | None,
+        trigger_id: UUID | None,
+        channel_kind: str,
+        channel_ref: str,
+        server_name: str,
+        tool_name: str,
+        tool_call_id: str | None,
+        arguments_json: dict,
+        run_state_json: dict,
+        approval_item_json: dict,
+        model: str,
+    ) -> ActionRow:
+        row = ActionRow(
+            status="pending",
+            decision=None,
+            conversation_id=conversation_id,
+            trigger_id=trigger_id,
+            channel_kind=channel_kind,
+            channel_ref=channel_ref,
+            server_name=server_name,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            arguments_json=arguments_json,
+            run_state_json=run_state_json,
+            approval_item_json=approval_item_json,
+            model=model,
+            created_at=_utcnow(),
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def get(self, action_id: UUID) -> ActionRow | None:
+        return await self._session.get(ActionRow, action_id)
+
+    async def list_pending(self, *, limit: int = 100) -> list[ActionRow]:
+        result = await self._session.execute(
+            select(ActionRow)
+            .where(ActionRow.status == "pending")
+            .order_by(ActionRow.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    async def list_recent(self, *, limit: int = 100) -> list[ActionRow]:
+        result = await self._session.execute(
+            select(ActionRow).order_by(ActionRow.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
+    async def mark_running(
+        self,
+        action_id: UUID,
+        *,
+        decision: str,
+        decision_reason: str | None,
+    ) -> None:
+        row = await self.get(action_id)
+        if row is None:
+            raise ValueError(f"action {action_id} not found")
+        if row.status != "pending":
+            raise ValueError(f"action {action_id} is not pending")
+        row.status = "running"
+        row.decision = decision
+        row.decision_reason = decision_reason
+        row.decided_at = _utcnow()
+        await self._session.commit()
+
+    async def mark_completed(self, action_id: UUID) -> None:
+        await self._session.execute(
+            update(ActionRow)
+            .where(ActionRow.id == action_id)
+            .values(status="completed", completed_at=_utcnow(), error=None)
+        )
+        await self._session.commit()
+
+    async def mark_failed(self, action_id: UUID, error: str) -> None:
+        await self._session.execute(
+            update(ActionRow)
+            .where(ActionRow.id == action_id)
+            .values(status="failed", completed_at=_utcnow(), error=error)
+        )
+        await self._session.commit()
