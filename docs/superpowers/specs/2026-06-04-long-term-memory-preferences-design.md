@@ -44,9 +44,12 @@ operator-controlled pattern because they alter future behavior.
 4. **Use vector recall in v1.** Jarvis will store summary embeddings in SQLite
    using `sqlite-vec` rather than starting with keyword-only search or adding an
    external vector database.
-5. **Index summaries first, with evidence snippets.** Jarvis does not embed
-   every raw message in v1. It embeds compact memory summaries and attaches
-   selected exact evidence snippets for precision.
+5. **Index summaries first, with raw transcript fallback.** Jarvis embeds
+   compact memory summaries and selected evidence snippets for the automatic
+   vector recall path. It keeps raw conversation messages in the existing
+   transcript store and can use them as an exact fallback when a user asks for
+   precise prior wording, quotes, commands, or error text. It does not embed
+   every raw message in v1.
 6. **Cross-channel recall is the default.** Discord, dashboard, and scheduled
    memories are all eligible for recall. Channel metadata is stored so future
    filtering remains possible.
@@ -86,6 +89,11 @@ These memories help Jarvis continue extended work and answer questions about
 earlier conversations. They are injected only when retrieval says they are
 relevant to the current prompt.
 
+When the user asks for exact prior wording, Jarvis should use the retrieved
+summary as a pointer back to the source conversation and then inspect the raw
+messages for precise quotes, commands, or error text. The raw transcript is a
+fallback evidence source, not the primary automatic recall index.
+
 ### Evidence Snippets
 
 Each recall memory can include a small number of exact snippets. Examples:
@@ -98,7 +106,9 @@ Each recall memory can include a small number of exact snippets. Examples:
 - short decision quote
 - identifier such as a branch, model, account, or service name
 
-Evidence snippets improve exact recall without indexing every raw message.
+Evidence snippets improve exact recall without indexing every raw message. They
+also help Jarvis decide which source conversation to inspect when the user asks
+for precise prior wording.
 
 ## Data Model
 
@@ -304,6 +314,8 @@ not disappear into logs only.
 - Active preferences appear in the `Standing preferences` section.
 - Retrieved memories appear in the `Relevant prior context` section.
 - Evidence snippets are included only with their memory entry.
+- Exact-recall prompts can use a retrieved memory entry to inspect the source
+  conversation transcript.
 - Current prompt remains last.
 - Empty preferences/memories do not produce noisy empty sections.
 - Conflicting retrieved context is labeled as context, not instruction.
@@ -336,7 +348,8 @@ Expected local verification:
 ## Non-Goals
 
 - No external vector database in v1.
-- No embedding of every raw message in v1.
+- No embedding of every raw message in v1; raw messages remain available as
+  source transcripts for explicit exact-recall requests.
 - No full memory curation workbench in v1.
 - No multi-user memory isolation beyond current single-user Jarvis assumptions.
 - No automatic activation of behavioral preferences.
