@@ -84,6 +84,31 @@ async def test_memory_entry_repo_lifecycle(session):
     assert await repo.list_active_by_ids([entry.id]) == []
 
 
+async def test_memory_entry_repo_create_returns_entry_with_loaded_evidence(session):
+    repo = MemoryEntryRepo(session)
+
+    entry = await repo.create(
+        conversation_id=None,
+        source_channel_kind="dashboard",
+        source_channel_ref="manual",
+        summary="User prefers concrete verification.",
+        topics=[],
+        entities=[],
+        evidence=[
+            {
+                "kind": "message",
+                "label": "User instruction",
+                "content": "Use live checks.",
+            }
+        ],
+    )
+
+    assert len(entry.evidence) == 1
+    assert entry.evidence[0].kind == "message"
+    assert entry.evidence[0].label == "User instruction"
+    assert entry.evidence[0].content == "Use live checks."
+
+
 async def test_memory_entry_repo_list_active_by_ids_preserves_input_order(session):
     repo = MemoryEntryRepo(session)
     first = await repo.create(
@@ -161,3 +186,76 @@ async def test_memory_recall_repo_record_many_and_list_for_conversation(session)
     assert events[0].memory_entry_id == entry.id
     assert events[0].score == 0.82
     assert events[0].rank == 1
+
+
+async def test_memory_recall_repo_lists_newest_batch_first_then_rank(session):
+    entry_repo = MemoryEntryRepo(session)
+    recall_repo = MemoryRecallRepo(session)
+    conversation_id = uuid4()
+    trigger_id = uuid4()
+    session.add(
+        ConversationRow(
+            id=conversation_id,
+            channel_kind="discord",
+            channel_ref="123",
+            started_at=datetime.now(UTC),
+            last_activity_at=datetime.now(UTC),
+            status="open",
+        )
+    )
+    session.add(
+        TriggerRow(
+            id=trigger_id,
+            kind="discord",
+            source_ref="123",
+            created_at=datetime.now(UTC),
+        )
+    )
+    await session.commit()
+    first = await entry_repo.create(
+        conversation_id=conversation_id,
+        source_channel_kind="discord",
+        source_channel_ref="123",
+        summary="First memory",
+        topics=[],
+        entities=[],
+        evidence=[],
+    )
+    second = await entry_repo.create(
+        conversation_id=conversation_id,
+        source_channel_kind="discord",
+        source_channel_ref="123",
+        summary="Second memory",
+        topics=[],
+        entities=[],
+        evidence=[],
+    )
+    third = await entry_repo.create(
+        conversation_id=conversation_id,
+        source_channel_kind="discord",
+        source_channel_ref="123",
+        summary="Third memory",
+        topics=[],
+        entities=[],
+        evidence=[],
+    )
+
+    await recall_repo.record_many(
+        conversation_id=conversation_id,
+        trigger_id=trigger_id,
+        recalled=[
+            {"memory_entry_id": first.id, "score": 0.9, "rank": 1},
+        ],
+    )
+    await recall_repo.record_many(
+        conversation_id=conversation_id,
+        trigger_id=trigger_id,
+        recalled=[
+            {"memory_entry_id": second.id, "score": 0.8, "rank": 2},
+            {"memory_entry_id": third.id, "score": 0.95, "rank": 1},
+        ],
+    )
+
+    events = await recall_repo.list_for_conversation(conversation_id)
+
+    assert [event.memory_entry_id for event in events] == [third.id, second.id, first.id]

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
 from jarvis.mcp.descriptor import MCPToolDescriptor
@@ -330,8 +331,12 @@ class MemoryEntryRepo:
         )
         self._session.add(row)
         await self._session.commit()
-        await self._session.refresh(row)
-        return row
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.id == row.id)
+            .options(selectinload(MemoryEntryRow.evidence))
+        )
+        return result.scalar_one()
 
     async def list_recent(self, *, limit: int = 100) -> list[MemoryEntryRow]:
         result = await self._session.execute(
@@ -342,7 +347,9 @@ class MemoryEntryRepo:
     async def list_active_by_ids(self, ids: list[UUID]) -> list[MemoryEntryRow]:
         if not ids:
             return []
-        ordering = case({memory_id: index for index, memory_id in enumerate(ids)}, value=MemoryEntryRow.id)
+        ordering = case(
+            {memory_id: index for index, memory_id in enumerate(ids)}, value=MemoryEntryRow.id
+        )
         result = await self._session.execute(
             select(MemoryEntryRow)
             .where(MemoryEntryRow.id.in_(ids), MemoryEntryRow.status == "active")
@@ -407,7 +414,7 @@ class MemoryRecallRepo:
         result = await self._session.execute(
             select(MemoryRecallEventRow)
             .where(MemoryRecallEventRow.conversation_id == conversation_id)
-            .order_by(MemoryRecallEventRow.rank.asc(), MemoryRecallEventRow.created_at.desc())
+            .order_by(MemoryRecallEventRow.created_at.desc(), MemoryRecallEventRow.rank.asc())
         )
         return list(result.scalars())
 

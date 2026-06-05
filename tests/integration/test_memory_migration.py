@@ -83,3 +83,5 @@ def test_memory_migration_roundtrip(tmp_path):
         }
     assert "memory_preferences" not in tables_after_down
     assert "memory_entries" not in tables_after_down
+    assert "memory_evidence" not in tables_after_down
+    assert "memory_recall_events" not in tables_after_down
