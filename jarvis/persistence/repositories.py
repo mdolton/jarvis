@@ -1,10 +1,13 @@
 """Repositories — the only way core modules touch the database."""
 
+import re
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import case, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
 from jarvis.mcp.descriptor import MCPToolDescriptor
@@ -15,6 +18,10 @@ from jarvis.persistence.models import (
     DigestTemplateRow,
     MCPServerRow,
     MCPToolRow,
+    MemoryEntryRow,
+    MemoryEvidenceRow,
+    MemoryPreferenceRow,
+    MemoryRecallEventRow,
     MessageRow,
     ScheduleRow,
     SettingRow,
@@ -222,6 +229,410 @@ class AuditRepo:
             )
             for r in rows
         ]
+
+
+class MemoryPreferenceRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_pending(self, *, content: str, source: str) -> MemoryPreferenceRow:
+        now = _utcnow()
+        content_normalized = _normalize_preference_content(content)
+        row = MemoryPreferenceRow(
+            content=content,
+            content_normalized=content_normalized,
+            status="pending",
+            source=source,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(row)
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            existing = await self.get_by_normalized_content(content_normalized)
+            if existing is None:
+                raise
+            return existing
+        await self._session.refresh(row)
+        return row
+
+    async def create_pending_many(
+        self,
+        *,
+        contents: list[str],
+        source: str,
+    ) -> list[MemoryPreferenceRow]:
+        now = _utcnow()
+        rows = [
+            MemoryPreferenceRow(
+                content=content,
+                content_normalized=_normalize_preference_content(content),
+                status="pending",
+                source=source,
+                created_at=now,
+                updated_at=now,
+            )
+            for content in contents
+        ]
+        if not rows:
+            return []
+        try:
+            self._session.add_all(rows)
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            return await self._create_missing_pending(
+                contents=contents,
+                source=source,
+            )
+        except Exception:
+            await self._session.rollback()
+            raise
+        for row in rows:
+            await self._session.refresh(row)
+        return rows
+
+    async def _create_missing_pending(
+        self,
+        *,
+        contents: list[str],
+        source: str,
+    ) -> list[MemoryPreferenceRow]:
+        existing = await self.existing_normalized_contents()
+        missing = [
+            content
+            for content in contents
+            if _normalize_preference_content(content) not in existing
+        ]
+        if not missing:
+            return []
+        now = _utcnow()
+        rows = [
+            MemoryPreferenceRow(
+                content=content,
+                content_normalized=_normalize_preference_content(content),
+                status="pending",
+                source=source,
+                created_at=now,
+                updated_at=now,
+            )
+            for content in missing
+        ]
+        try:
+            self._session.add_all(rows)
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            return []
+        except Exception:
+            await self._session.rollback()
+            raise
+        for row in rows:
+            await self._session.refresh(row)
+        return rows
+
+    async def existing_normalized_contents(self) -> set[str]:
+        result = await self._session.execute(select(MemoryPreferenceRow.content))
+        return {_normalize_preference_content(content) for content in result.scalars()}
+
+    async def get_by_normalized_content(
+        self,
+        content_normalized: str,
+    ) -> MemoryPreferenceRow | None:
+        result = await self._session.execute(
+            select(MemoryPreferenceRow).where(
+                MemoryPreferenceRow.content_normalized == content_normalized
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_active(self) -> list[MemoryPreferenceRow]:
+        result = await self._session.execute(
+            select(MemoryPreferenceRow)
+            .where(MemoryPreferenceRow.status == "active")
+            .order_by(MemoryPreferenceRow.updated_at.desc())
+        )
+        return list(result.scalars())
+
+    async def list_for_dashboard(self, *, limit: int = 100) -> list[MemoryPreferenceRow]:
+        result = await self._session.execute(
+            select(MemoryPreferenceRow)
+            .order_by(
+                case((MemoryPreferenceRow.status == "pending", 0), else_=1),
+                MemoryPreferenceRow.updated_at.desc(),
+            )
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    async def approve(self, preference_id: UUID) -> None:
+        row = await self._session.get(MemoryPreferenceRow, preference_id)
+        if row is None:
+            raise LookupError("memory preference not found")
+        if row.status != "pending":
+            raise ValueError("invalid preference transition")
+        now = _utcnow()
+        row.status = "active"
+        row.approved_at = now
+        row.updated_at = now
+        await self._session.commit()
+
+    async def reject(self, preference_id: UUID) -> None:
+        row = await self._session.get(MemoryPreferenceRow, preference_id)
+        if row is None:
+            raise LookupError("memory preference not found")
+        if row.status != "pending":
+            raise ValueError("invalid preference transition")
+        row.status = "rejected"
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def archive(self, preference_id: UUID) -> None:
+        row = await self._session.get(MemoryPreferenceRow, preference_id)
+        if row is None:
+            raise LookupError("memory preference not found")
+        if row.status == "archived":
+            raise ValueError("invalid preference transition")
+        now = _utcnow()
+        row.status = "archived"
+        row.archived_at = now
+        row.updated_at = now
+        await self._session.commit()
+
+
+class MemoryEntryRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_or_get_by_source_hash(
+        self,
+        *,
+        source_hash: str,
+        conversation_id: UUID | None,
+        source_channel_kind: str,
+        source_channel_ref: str,
+        summary: str,
+        topics: list,
+        entities: list,
+        evidence: list[dict],
+        status: str,
+    ) -> tuple[MemoryEntryRow, bool]:
+        now = _utcnow()
+        row = MemoryEntryRow(
+            conversation_id=conversation_id,
+            source_channel_kind=source_channel_kind,
+            source_channel_ref=source_channel_ref,
+            source_hash=source_hash,
+            summary=summary,
+            topics=topics,
+            entities=entities,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            evidence=[
+                MemoryEvidenceRow(
+                    kind=item["kind"],
+                    label=item["label"],
+                    content=item["content"],
+                    created_at=now,
+                )
+                for item in evidence
+            ],
+        )
+        self._session.add(row)
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            existing = await self.get_by_source_hash(source_hash)
+            if existing is None:
+                raise
+            return existing, False
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.id == row.id)
+            .options(selectinload(MemoryEntryRow.evidence))
+        )
+        return result.scalar_one(), True
+
+    async def create(
+        self,
+        *,
+        conversation_id: UUID | None,
+        source_channel_kind: str,
+        source_channel_ref: str,
+        summary: str,
+        topics: list,
+        entities: list,
+        evidence: list[dict],
+        source_hash: str | None = None,
+        status: str = "active",
+    ) -> MemoryEntryRow:
+        now = _utcnow()
+        row = MemoryEntryRow(
+            conversation_id=conversation_id,
+            source_channel_kind=source_channel_kind,
+            source_channel_ref=source_channel_ref,
+            source_hash=source_hash,
+            summary=summary,
+            topics=topics,
+            entities=entities,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            evidence=[
+                MemoryEvidenceRow(
+                    kind=item["kind"],
+                    label=item["label"],
+                    content=item["content"],
+                    created_at=now,
+                )
+                for item in evidence
+            ],
+        )
+        self._session.add(row)
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            if source_hash is None:
+                raise
+            existing = await self.get_by_source_hash(source_hash)
+            if existing is None:
+                raise
+            return existing
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.id == row.id)
+            .options(selectinload(MemoryEntryRow.evidence))
+        )
+        return result.scalar_one()
+
+    async def get_by_source_hash(self, source_hash: str) -> MemoryEntryRow | None:
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.source_hash == source_hash)
+            .options(selectinload(MemoryEntryRow.evidence))
+        )
+        return result.scalar_one_or_none()
+
+    async def list_recent(self, *, limit: int = 100) -> list[MemoryEntryRow]:
+        result = await self._session.execute(
+            select(MemoryEntryRow).order_by(MemoryEntryRow.updated_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
+    async def list_by_ids(self, ids: list[UUID]) -> list[MemoryEntryRow]:
+        if not ids:
+            return []
+        ordering = case(
+            {memory_id: index for index, memory_id in enumerate(ids)}, value=MemoryEntryRow.id
+        )
+        result = await self._session.execute(
+            select(MemoryEntryRow).where(MemoryEntryRow.id.in_(ids)).order_by(ordering)
+        )
+        return list(result.scalars())
+
+    async def list_active_by_ids(self, ids: list[UUID]) -> list[MemoryEntryRow]:
+        if not ids:
+            return []
+        ordering = case(
+            {memory_id: index for index, memory_id in enumerate(ids)}, value=MemoryEntryRow.id
+        )
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.id.in_(ids), MemoryEntryRow.status == "active")
+            .order_by(ordering)
+        )
+        return list(result.scalars())
+
+    async def list_evidence(self, memory_entry_id: UUID) -> list[MemoryEvidenceRow]:
+        result = await self._session.execute(
+            select(MemoryEvidenceRow)
+            .where(MemoryEvidenceRow.memory_entry_id == memory_entry_id)
+            .order_by(MemoryEvidenceRow.created_at.asc())
+        )
+        return list(result.scalars())
+
+    async def list_evidence_for_entries(
+        self, ids: list[UUID]
+    ) -> dict[UUID, list[MemoryEvidenceRow]]:
+        evidence_by_entry = {memory_id: [] for memory_id in ids}
+        if not ids:
+            return evidence_by_entry
+        ordering = case(
+            {memory_id: index for index, memory_id in enumerate(ids)},
+            value=MemoryEvidenceRow.memory_entry_id,
+        )
+        result = await self._session.execute(
+            select(MemoryEvidenceRow)
+            .where(MemoryEvidenceRow.memory_entry_id.in_(ids))
+            .order_by(ordering, MemoryEvidenceRow.created_at.asc())
+        )
+        for evidence in result.scalars():
+            evidence_by_entry[evidence.memory_entry_id].append(evidence)
+        return evidence_by_entry
+
+    async def archive(self, memory_entry_id: UUID) -> None:
+        row = await self._session.get(MemoryEntryRow, memory_entry_id)
+        if row is None:
+            raise LookupError("memory entry not found")
+        if row.status == "archived":
+            raise ValueError("invalid memory entry transition")
+        row.status = "archived"
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def mark_recalled(self, ids: list[UUID]) -> None:
+        if not ids:
+            return
+        await self._session.execute(
+            update(MemoryEntryRow)
+            .where(MemoryEntryRow.id.in_(ids))
+            .values(last_recalled_at=_utcnow())
+        )
+        await self._session.commit()
+
+
+class MemoryRecallRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record_many(
+        self,
+        *,
+        conversation_id: UUID | None,
+        trigger_id: UUID | None,
+        recalled: list[dict],
+    ) -> None:
+        now = _utcnow()
+        rows = [
+            MemoryRecallEventRow(
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                memory_entry_id=item["memory_entry_id"],
+                score=item["score"],
+                rank=item["rank"],
+                created_at=now,
+            )
+            for item in recalled
+        ]
+        self._session.add_all(rows)
+        await self._session.commit()
+
+    async def list_for_conversation(self, conversation_id: UUID) -> list[MemoryRecallEventRow]:
+        result = await self._session.execute(
+            select(MemoryRecallEventRow)
+            .where(MemoryRecallEventRow.conversation_id == conversation_id)
+            .order_by(MemoryRecallEventRow.created_at.desc(), MemoryRecallEventRow.rank.asc())
+        )
+        return list(result.scalars())
+
+
+def _normalize_preference_content(content: str) -> str:
+    return re.sub(r"\s+", " ", content).strip().casefold()
 
 
 class ScheduleRepo:

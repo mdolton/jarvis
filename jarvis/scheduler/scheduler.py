@@ -49,6 +49,7 @@ class Scheduler:
         max_concurrent: int = 3,
         oauth_flow=None,
         mcp_manager=None,
+        memory_service: Any = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -71,6 +72,7 @@ class Scheduler:
             llm_config=llm_config,
             model=model_override,
             idle_timeout_sec=idle_timeout_sec,
+            memory_service=memory_service,
         )
         self._dispatcher = TriggerDispatcher(
             runner=self._runner,
@@ -118,6 +120,7 @@ class Scheduler:
             await self._aps.__aexit__(None, None, None)
             self._aps = None
         self._jobs.clear()
+        await self._runner.drain_memory_tasks()
 
     def active_job_count(self) -> int:
         return len(self._jobs)

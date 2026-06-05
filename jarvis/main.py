@@ -12,6 +12,7 @@ import httpx
 from agents import set_trace_processors
 from fastapi import FastAPI
 from openai import AsyncOpenAI
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from jarvis.actions.service import ActionService
@@ -30,6 +31,10 @@ from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.digests.seeds import seed_built_in_digest_templates
 from jarvis.mcp.manager import MCPManager
+from jarvis.memory.embeddings import OpenAIEmbeddingProvider
+from jarvis.memory.service import MemoryService
+from jarvis.memory.summarizer import MemorySummarizer
+from jarvis.memory.vector_store import MemoryVectorStore
 from jarvis.oauth.flow import OAuthFlow
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
@@ -58,6 +63,7 @@ class AppContext:
     llm_client: AsyncOpenAI
     model_catalog: ModelCatalog
     model_store: ModelStore
+    memory_service: MemoryService | None
 
     async def shutdown(self) -> None:
         await self.scheduler.stop()
@@ -67,6 +73,8 @@ class AppContext:
                 await adapter.stop()
             except Exception:
                 _log.exception("error stopping channel adapter")
+        await self.action_service.drain_memory_tasks()
+        await self.agent_runner.drain_memory_tasks()
         await self.mcp_manager.stop()
         await self.oauth_http.aclose()
         await self.llm_client.close()
@@ -99,6 +107,13 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     model_catalog = ModelCatalog(llm_client)
     model_store = ModelStore(session_factory=factory, default_model=cfg.jarvis.llm.model)
     await model_store.load()
+    memory_service = await _build_memory_service(
+        cfg=cfg,
+        db_url=db_url,
+        session_factory=factory,
+        llm_client=llm_client,
+        audit=audit,
+    )
 
     # OAuth.
     oauth_http = httpx.AsyncClient(timeout=30.0)
@@ -126,6 +141,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         llm_config=cfg.jarvis.llm,
         model_provider=model_store.current,
         idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
+        memory_service=memory_service,
     )
 
     # Discord /model command dependencies (interactive model selection).
@@ -188,6 +204,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         llm_config=cfg.jarvis.llm,
         mcp_servers_provider=mcp_manager.agent_mcp_servers,
         scheduled_output_router=ScheduledOutputRouter(discord_adapter=discord_adapter),
+        memory_service=memory_service,
     )
 
     # Scheduler.
@@ -202,6 +219,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         max_concurrent=cfg.jarvis.max_concurrent_agents,
         oauth_flow=oauth_flow,
         mcp_manager=mcp_manager,
+        memory_service=memory_service,
     )
     await scheduler.start()
 
@@ -227,7 +245,64 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         llm_client=llm_client,
         model_catalog=model_catalog,
         model_store=model_store,
+        memory_service=memory_service,
     )
     # Wire the full context into the web app now that it exists.
     web_app.state.ctx = ctx
     return ctx
+
+
+async def _build_memory_service(
+    *,
+    cfg: LoadedConfig,
+    db_url: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    llm_client: AsyncOpenAI,
+    audit: AuditLogger,
+) -> MemoryService | None:
+    if not cfg.jarvis.memory.enabled:
+        return None
+
+    db_path = _local_sqlite_db_path(db_url)
+    if db_path is None:
+        _log.warning("memory disabled: requires a local SQLite database URL")
+        return None
+
+    vector_store = MemoryVectorStore(
+        db_path=db_path,
+        dimensions=cfg.jarvis.memory.embedding_dimensions,
+    )
+    await vector_store.initialize()
+
+    embedding_model = cfg.jarvis.memory.embedding_model or cfg.jarvis.llm.model
+    embedding_provider = OpenAIEmbeddingProvider(
+        client=llm_client,
+        model=embedding_model,
+        dimensions=cfg.jarvis.memory.embedding_dimensions,
+    )
+    summarizer = MemorySummarizer(
+        client=llm_client,
+        model=cfg.jarvis.llm.model,
+    )
+    max_recalled_memories = (
+        cfg.jarvis.memory.max_recalled_memories if cfg.jarvis.memory.recall_enabled else 0
+    )
+
+    return MemoryService(
+        session_factory=session_factory,
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+        max_recalled_memories=max_recalled_memories,
+        min_relevance_score=cfg.jarvis.memory.min_relevance_score,
+        summarizer=summarizer,
+        audit=audit,
+    )
+
+
+def _local_sqlite_db_path(db_url: str) -> Path | None:
+    url = make_url(db_url)
+    if not url.drivername.startswith("sqlite"):
+        return None
+    if not url.database or url.database == ":memory:":
+        return None
+    return Path(url.database).expanduser()

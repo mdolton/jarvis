@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Memory{% endblock %}
+{% block content %}
+<section class="page-head">
+    <div>
+        <h1>Memory</h1>
+        <p class="muted">Review pending preferences, active preferences, and recent recalled summaries.</p>
+    </div>
+</section>
+
+<section class="section-block">
+    <h2>Preferences</h2>
+    <table class="ops-table">
+        <thead>
+            <tr><th>Status</th><th>Content</th><th>Source</th><th>Updated</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+        {% for preference in preferences %}
+            <tr>
+                <td>
+                    <span class="badge {% if preference.status == 'active' %}badge-ok{% elif preference.status == 'pending' %}badge-warn{% else %}badge-err{% endif %}">
+                        {{ preference.status }}
+                    </span>
+                </td>
+                <td>
+                    <div>{{ preference.content }}</div>
+                    <div class="muted">{{ preference.id }}</div>
+                </td>
+                <td>{{ preference.source }}</td>
+                <td class="muted">{{ preference.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td class="actions">
+                    {% if preference.status == 'pending' %}
+                    <form class="inline-form" method="post" action="/memory/preferences/{{ preference.id }}/approve">
+                        <button type="submit">Approve</button>
+                    </form>
+                    <form class="inline-form" method="post" action="/memory/preferences/{{ preference.id }}/reject">
+                        <button type="submit">Reject</button>
+                    </form>
+                    {% endif %}
+                    {% if preference.status != 'archived' %}
+                    <form class="inline-form" method="post" action="/memory/preferences/{{ preference.id }}/archive">
+                        <button type="submit">Archive</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% if not preferences %}
+    <p class="muted">No memory preferences yet.</p>
+    {% endif %}
+</section>
+
+<section class="section-block">
+    <h2>Recent entries</h2>
+    <table class="ops-table">
+        <thead>
+            <tr><th>Status</th><th>Summary</th><th>Topics</th><th>Entities</th><th>Evidence</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+        {% for item in entry_items %}
+            {% set entry = item.entry %}
+            <tr>
+                <td>
+                    <span class="badge {% if entry.status == 'active' %}badge-ok{% elif entry.status == 'archived' %}badge-err{% else %}badge-warn{% endif %}">
+                        {{ entry.status }}
+                    </span>
+                </td>
+                <td>
+                    <div>{{ entry.summary }}</div>
+                    <div class="muted">{{ entry.id }}</div>
+                </td>
+                <td>{{ entry.topics | join(", ") if entry.topics else "n/a" }}</td>
+                <td>{{ entry.entities | join(", ") if entry.entities else "n/a" }}</td>
+                <td>
+                    {% for evidence in item.evidence %}
+                    <div class="audit-row">
+                        <div><strong>{{ evidence.label }}</strong> <span class="muted">{{ evidence.kind }}</span></div>
+                        <div>{{ evidence.content }}</div>
+                    </div>
+                    {% endfor %}
+                    {% if not item.evidence %}
+                    <span class="muted">No evidence</span>
+                    {% endif %}
+                </td>
+                <td class="actions">
+                    {% if entry.status != 'archived' %}
+                    <form class="inline-form" method="post" action="/memory/entries/{{ entry.id }}/archive">
+                        <button type="submit">Archive</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% if not entry_items %}
+    <p class="muted">No memory entries yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

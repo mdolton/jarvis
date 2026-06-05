@@ -8,6 +8,7 @@ Responsibilities:
      intra-run LLM/tool events via the tracer bridge).
 """
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,6 +35,8 @@ from jarvis.core.types import (
     MessageRole,
     ScheduledTrigger,
 )
+from jarvis.memory.prompt import assemble_memory_prompt
+from jarvis.memory.types import MemoryContext
 from jarvis.persistence.repositories import (
     ActionRepo,
     ConversationRepo,
@@ -64,6 +67,7 @@ class AgentRunner:
         model: Any = None,  # Override for tests; None means "use config.model"
         model_provider: Callable[[], str] | None = None,
         idle_timeout_sec: int = 900,
+        memory_service: Any = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -72,10 +76,16 @@ class AgentRunner:
         self._model = model
         self._model_provider = model_provider
         self._idle_timeout_sec = idle_timeout_sec
+        self._memory_service = memory_service
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def run(self, request: InvocationRequest) -> AgentRunResult:
-        channel_kind, channel_ref, prompt = _extract_from_trigger(request)
+        channel_kind, channel_ref, user_prompt, trigger_context = _extract_from_trigger(request)
         trigger_kind = request.trigger.kind
+        stored_user_prompt = _assemble_trigger_prompt(
+            trigger_context=trigger_context,
+            user_prompt=user_prompt,
+        )
 
         async with self._session_factory() as session:
             # Record the trigger.
@@ -97,8 +107,15 @@ class AgentRunner:
             await MessageRepo(session).append(
                 conversation_id=conv_id,
                 role=MessageRole.USER,
-                content=prompt,
+                content=stored_user_prompt,
             )
+
+        prompt = await self._build_prompt_with_memory(
+            conversation_id=conv_id,
+            trigger_id=trigger_id,
+            trigger_context=trigger_context,
+            user_prompt=user_prompt,
+        )
 
         await self._audit.emit(
             AuditEvent(
@@ -163,7 +180,6 @@ class AgentRunner:
                         role=MessageRole.ASSISTANT,
                         content=final_text,
                     )
-
             await self._audit.emit(
                 AuditEvent(
                     type=AuditEventType.ACTION_CREATED,
@@ -195,6 +211,14 @@ class AgentRunner:
                 content=final_text,
             )
 
+        self._schedule_memory_summary(
+            conversation_id=conv_id,
+            channel_kind=channel_kind.value,
+            channel_ref=channel_ref,
+            user_prompt=user_prompt,
+            assistant_output=final_text,
+        )
+
         return AgentRunResult(
             final_output=final_text,
             conversation_id=conv_id,
@@ -203,15 +227,82 @@ class AgentRunner:
             channel_ref=channel_ref,
         )
 
+    async def _build_prompt_with_memory(
+        self,
+        *,
+        conversation_id: UUID,
+        trigger_id: UUID,
+        trigger_context: str,
+        user_prompt: str,
+    ) -> str:
+        if self._memory_service is None:
+            return assemble_memory_prompt(
+                memory_context=_empty_memory_context(),
+                trigger_context=trigger_context,
+                current_prompt=user_prompt,
+            )
+
+        try:
+            memory_context = await self._memory_service.build_context(
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                prompt=user_prompt,
+            )
+        except Exception:
+            _log.exception("memory recall failed")
+            memory_context = _empty_memory_context()
+
+        return assemble_memory_prompt(
+            memory_context=memory_context,
+            trigger_context=trigger_context,
+            current_prompt=user_prompt,
+        )
+
+    def _schedule_memory_summary(
+        self,
+        *,
+        conversation_id: UUID,
+        channel_kind: str,
+        channel_ref: str,
+        user_prompt: str,
+        assistant_output: str,
+    ) -> None:
+        if self._memory_service is None:
+            return
+
+        async def _run() -> None:
+            try:
+                await self._memory_service.summarize_run(
+                    conversation_id=conversation_id,
+                    channel_kind=channel_kind,
+                    channel_ref=channel_ref,
+                    user_prompt=user_prompt,
+                    assistant_output=assistant_output,
+                )
+            except Exception:
+                _log.exception("memory summarization failed")
+
+        task = asyncio.create_task(_run(), name="memory-summary")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def drain_memory_tasks(self) -> None:
+        while self._background_tasks:
+            pending = tuple(self._background_tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        await self.drain_memory_tasks()
+
 
 def _extract_from_trigger(request: InvocationRequest):
     t = request.trigger
     if isinstance(t, ChannelMessage):
-        return t.channel_kind, t.channel_ref, t.text
+        return t.channel_kind, t.channel_ref, t.text, ""
     if isinstance(t, ScheduledTrigger):
-        return ChannelKind.SCHEDULED, t.schedule_id, _scheduled_prompt(t)
+        return ChannelKind.SCHEDULED, t.schedule_id, t.prompt, _scheduled_context(t)
     if isinstance(t, ManualTrigger):
-        return ChannelKind.DASHBOARD, t.user, t.prompt
+        return ChannelKind.DASHBOARD, t.user, t.prompt, ""
     raise ValueError(f"unknown trigger: {t!r}")
 
 
@@ -233,27 +324,26 @@ def _idle_for_kind(kind: ChannelKind, default_sec: int) -> int:
     return default_sec
 
 
-def _scheduled_prompt(trigger: ScheduledTrigger) -> str:
+def _scheduled_context(trigger: ScheduledTrigger) -> str:
     if trigger.timezone is None or trigger.fired_at is None:
-        return trigger.prompt
+        return ""
 
     try:
         zone = ZoneInfo(trigger.timezone)
     except ZoneInfoNotFoundError:
-        return trigger.prompt
+        return ""
 
     fired_at_utc = trigger.fired_at
     if fired_at_utc.tzinfo is None:
         fired_at_utc = fired_at_utc.replace(tzinfo=UTC)
     local_time = fired_at_utc.astimezone(zone)
-    context = (
+    return (
         "Schedule context:\n"
         f"- Timezone: {trigger.timezone}\n"
         f"- Local date: {local_time:%Y-%m-%d}\n"
         f"- Local time: {local_time:%Y-%m-%d %H:%M %Z}\n"
-        "- Interpret relative dates like today, tomorrow, and yesterday in this timezone.\n\n"
+        "- Interpret relative dates like today, tomorrow, and yesterday in this timezone."
     )
-    return f"{context}{trigger.prompt}"
 
 
 def _extract_text(sdk_result) -> str:
@@ -261,3 +351,20 @@ def _extract_text(sdk_result) -> str:
     if hasattr(sdk_result, "final_output") and sdk_result.final_output is not None:
         return str(sdk_result.final_output)
     return ""
+
+
+def _assemble_trigger_prompt(*, trigger_context: str, user_prompt: str) -> str:
+    return assemble_memory_prompt(
+        memory_context=_empty_memory_context(),
+        trigger_context=trigger_context,
+        current_prompt=user_prompt,
+    )
+
+
+def _empty_memory_context() -> MemoryContext:
+    return MemoryContext(
+        preferences=[],
+        recalled=[],
+        recall_available=False,
+        error=None,
+    )

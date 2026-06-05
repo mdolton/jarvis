@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, ForeignKey, Index, LargeBinary, String, Text
+from sqlalchemy import JSON, Float, ForeignKey, Index, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from jarvis.persistence.db import Base, TZDateTime
@@ -102,6 +102,90 @@ class ActionRow(Base):
     __table_args__ = (
         Index("ix_actions_status_created_at", "status", "created_at"),
     )
+
+
+class MemoryPreferenceRow(Base):
+    __tablename__ = "memory_preferences"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    content: Mapped[str] = mapped_column(Text)
+    content_normalized: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+    approved_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+    __table_args__ = (
+        Index("ix_memory_preferences_status_updated_at", "status", "updated_at"),
+        Index(
+            "ix_memory_preferences_content_normalized_unique",
+            "content_normalized",
+            unique=True,
+        ),
+    )
+
+
+class MemoryEntryRow(Base):
+    __tablename__ = "memory_entries"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_channel_kind: Mapped[str] = mapped_column(String(32))
+    source_channel_ref: Mapped[str] = mapped_column(String(128))
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary: Mapped[str] = mapped_column(Text)
+    topics: Mapped[list] = mapped_column(JSON, default=list)
+    entities: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+    last_recalled_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+    evidence: Mapped[list["MemoryEvidenceRow"]] = relationship(
+        back_populates="memory_entry", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_memory_entries_status_updated_at", "status", "updated_at"),
+        Index("ix_memory_entries_source_hash_unique", "source_hash", unique=True),
+    )
+
+
+class MemoryEvidenceRow(Base):
+    __tablename__ = "memory_evidence"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    memory_entry_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_entries.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32))
+    label: Mapped[str] = mapped_column(String(128))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+
+    memory_entry: Mapped[MemoryEntryRow] = relationship(back_populates="evidence")
+
+
+class MemoryRecallEventRow(Base):
+    __tablename__ = "memory_recall_events"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    trigger_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("triggers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    memory_entry_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("memory_entries.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    score: Mapped[float] = mapped_column(Float)
+    rank: Mapped[int] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
 
 
 class ScheduleRow(Base):

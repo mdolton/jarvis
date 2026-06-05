@@ -199,12 +199,41 @@ Jarvis discovers available models from your LLM endpoint's `/v1/models`.
 > Portal (Installation → User Install). Guild-only installs expose `/model`
 > in servers only.
 
+### Long-term memory and preferences
+
+Jarvis has two separate memory lanes:
+
+- **Preferences** are approved standing instructions that shape future behavior.
+  Pending preference proposals appear on the Memory page and only active
+  preferences are injected into runs.
+- **Recall memories** are compact summaries of prior conversations. Jarvis
+  embeds summaries with `sqlite-vec`, searches them automatically across
+  Discord, dashboard, and scheduled runs, and injects relevant memories as
+  prior context. Raw transcripts remain available for exact recall requests,
+  but Jarvis does not embed every raw message in v1.
+
+Memory config lives in `jarvis.yaml`:
+
+```yaml
+memory:
+  enabled: true
+  recall_enabled: true
+  embedding_model:
+  embedding_dimensions: 1536
+  max_recalled_memories: 5
+  min_relevance_score: 0.25
+```
+
+If `sqlite-vec` cannot load, Jarvis continues running with preferences enabled
+and automatic vector recall disabled.
+
 ## Dashboard
 
 Available at `http://localhost:8080` when running:
 
 - **Home** — service status overview, component diagnostics, and manual prompt runs
 - **Conversations** — browse past agent interactions
+- **Memory** — approved preferences, recall summaries, evidence snippets, and recall debugging
 - **Schedules** — create, run, enable/disable, delete schedules
 - **Templates** — create, edit, clone, and apply reusable digest templates for schedules
 - **MCP** — OAuth providers, connected servers, discovered tools, and per-tool policy overrides

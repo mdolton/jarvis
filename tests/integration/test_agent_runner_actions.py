@@ -8,8 +8,27 @@ from jarvis.agents.runner import AgentRunner
 from jarvis.audit.logger import AuditLogger
 from jarvis.config.schema import LLMConfig
 from jarvis.core.types import AuditEventType, InvocationRequest, ManualTrigger
+from jarvis.memory.types import MemoryContext
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import ActionRepo, AuditRepo, MessageRepo
+
+
+class _RecordingMemoryService:
+    def __init__(self) -> None:
+        self.build_calls = []
+        self.summarize_calls = []
+
+    async def build_context(self, **kwargs):
+        self.build_calls.append(kwargs)
+        return MemoryContext(
+            preferences=[],
+            recalled=[],
+            recall_available=False,
+            error=None,
+        )
+
+    async def summarize_run(self, **kwargs):
+        self.summarize_calls.append(kwargs)
 
 
 class _FakeRunState:
@@ -52,6 +71,7 @@ async def test_runner_creates_pending_action_on_tool_approval(monkeypatch, infra
     factory, audit = infra
     run_mock = AsyncMock(return_value=_FakeResult())
     monkeypatch.setattr("jarvis.agents.runner.Runner.run", run_mock)
+    memory_service = _RecordingMemoryService()
 
     runner = AgentRunner(
         session_factory=factory,
@@ -59,6 +79,7 @@ async def test_runner_creates_pending_action_on_tool_approval(monkeypatch, infra
         mcp_servers_provider=lambda: [],
         llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
         model_provider=lambda: "m",
+        memory_service=memory_service,
     )
 
     result = await runner.run(
@@ -76,6 +97,9 @@ async def test_runner_creates_pending_action_on_tool_approval(monkeypatch, infra
         assert actions[0].run_state_json == {"state": "serialized"}
         msgs = await MessageRepo(s).history(actions[0].conversation_id)
         assert msgs[-1].content == result.final_output
+
+    assert memory_service.summarize_calls == []
+    assert len(memory_service.build_calls) == 1
 
     await audit.stop()
 

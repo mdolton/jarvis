@@ -13,3 +13,13 @@ idle_timeout_sec: 900
 max_concurrent_agents: 3
 log_level: INFO
 default_schedule_output_mode: discord
+
+memory:
+  enabled: true
+  recall_enabled: true
+  # Defaults to llm.model when omitted. Use an embedding-capable model if your
+  # OpenAI-compatible endpoint exposes embeddings separately.
+  embedding_model:
+  embedding_dimensions: 1536
+  max_recalled_memories: 5
+  min_relevance_score: 0.25

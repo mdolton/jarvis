@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
 from agents import RunConfig, Runner
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.actions.serialization import (
@@ -19,7 +21,7 @@ from jarvis.audit.logger import AuditLogger
 from jarvis.config.schema import LLMConfig
 from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
-from jarvis.persistence.models import ActionRow
+from jarvis.persistence.models import ActionRow, MessageRow, TriggerRow
 from jarvis.persistence.repositories import ActionRepo, MessageRepo, ScheduleRepo
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
@@ -36,6 +38,7 @@ class ActionService:
         llm_config: LLMConfig,
         mcp_servers_provider: Callable[[], list],
         scheduled_output_router: ScheduledOutputRouter | None = None,
+        memory_service: Any = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -43,6 +46,8 @@ class ActionService:
         self._scheduled_output_router = scheduled_output_router
         self._llm_config = llm_config
         self._mcp_servers_provider = mcp_servers_provider
+        self._memory_service = memory_service
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def approve(self, action_id: UUID) -> AgentRunResult:
         return await self._decide(action_id, decision="approved", reason=None)
@@ -124,6 +129,16 @@ class ActionService:
 
             async with self._session_factory() as session:
                 await ActionRepo(session).mark_completed(action_id)
+
+            user_prompt = await self._user_prompt_for_action(action)
+            if user_prompt is not None:
+                self._schedule_memory_summary(
+                    conversation_id=action.conversation_id,
+                    channel_kind=action.channel_kind,
+                    channel_ref=action.channel_ref,
+                    user_prompt=user_prompt,
+                    assistant_output=final_text,
+                )
 
             await self._audit.emit(
                 AuditEvent(
@@ -253,6 +268,101 @@ class ActionService:
             output_mode=row.output_mode,
             discord_user_id=row.discord_user_id or "",
         )
+
+    async def _user_prompt_for_action(self, action: ActionRow) -> str | None:
+        if action.conversation_id is None:
+            return None
+
+        async with self._session_factory() as session:
+            trigger_created_at = await self._trigger_created_at(session, action.trigger_id)
+            prompt = await self._first_user_message_in_window(
+                session=session,
+                conversation_id=action.conversation_id,
+                start_at=trigger_created_at,
+                end_at=action.created_at,
+            )
+            if prompt is not None:
+                return prompt
+
+            history = await MessageRepo(session).history(action.conversation_id)
+            for message in reversed(history):
+                if (
+                    message.role == MessageRole.USER.value
+                    and message.created_at <= action.created_at
+                ):
+                    return message.content
+        return None
+
+    async def _trigger_created_at(
+        self,
+        session: AsyncSession,
+        trigger_id: UUID | None,
+    ):
+        if trigger_id is None:
+            return None
+        result = await session.execute(
+            select(TriggerRow.created_at).where(TriggerRow.id == trigger_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def _first_user_message_in_window(
+        self,
+        *,
+        session: AsyncSession,
+        conversation_id: UUID,
+        start_at,
+        end_at,
+    ) -> str | None:
+        stmt = (
+            select(MessageRow.content)
+            .where(
+                MessageRow.conversation_id == conversation_id,
+                MessageRow.role == MessageRole.USER.value,
+                MessageRow.created_at <= end_at,
+            )
+            .order_by(MessageRow.created_at.asc())
+            .limit(1)
+        )
+        if start_at is not None:
+            stmt = stmt.where(MessageRow.created_at >= start_at)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    def _schedule_memory_summary(
+        self,
+        *,
+        conversation_id: UUID | None,
+        channel_kind: str,
+        channel_ref: str,
+        user_prompt: str,
+        assistant_output: str,
+    ) -> None:
+        if self._memory_service is None:
+            return
+
+        async def _run() -> None:
+            try:
+                await self._memory_service.summarize_run(
+                    conversation_id=conversation_id,
+                    channel_kind=channel_kind,
+                    channel_ref=channel_ref,
+                    user_prompt=user_prompt,
+                    assistant_output=assistant_output,
+                )
+            except Exception:
+                _log.exception("memory summarization failed during action resume")
+
+        task = asyncio.create_task(_run(), name="action-memory-summary")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def drain_memory_tasks(self) -> None:
+        while self._background_tasks:
+            pending = tuple(self._background_tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        await self.drain_memory_tasks()
 
 
 def _approval_interruption_for_action(run_state: Any, action: ActionRow) -> Any:

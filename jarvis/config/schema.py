@@ -23,8 +23,18 @@ class LLMConfig(_StrictModel):
     request_timeout_sec: float = 60.0
 
 
+class MemoryConfig(_StrictModel):
+    enabled: bool = True
+    recall_enabled: bool = True
+    embedding_model: str | None = None
+    embedding_dimensions: int = Field(default=1536, ge=1)
+    max_recalled_memories: int = Field(default=5, ge=0, le=20)
+    min_relevance_score: float = Field(default=0.25, ge=0.0)
+
+
 class JarvisConfig(_StrictModel):
     llm: LLMConfig
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     timezone: str = "UTC"
     idle_timeout_sec: int = 900
     max_concurrent_agents: int = 3
