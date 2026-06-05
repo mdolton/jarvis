@@ -10,22 +10,40 @@
 
 <section class="section-block">
 <h2>Create Schedule</h2>
-<form method="post" action="/schedules" class="stack-form">
-    <input name="name" placeholder="Name" required>
-    <input name="description" placeholder="Description">
-    <input name="cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" required>
-    <input name="timezone" placeholder="Timezone" value="UTC">
-    <textarea name="prompt" placeholder="Agent prompt" rows="3" required></textarea>
-    <select name="output_mode">
-        <option value="discord">Discord</option>
-        <option value="dashboard_only">Dashboard only</option>
-        <option value="discord_if_noteworthy">Discord if noteworthy</option>
+{% if digest_templates %}
+<form method="get" action="/schedules" class="stack-form">
+    <select name="template_id">
+        {% for template in digest_templates %}
+            <option value="{{ template.id }}" data-url="/schedules?template_id={{ template.id }}" {% if selected_template and selected_template.id == template.id %}selected{% endif %}>
+                {{ template.name }}
+            </option>
+        {% endfor %}
     </select>
-    <input name="discord_user_id" placeholder="Discord user ID (optional)">
+    <button type="submit">Load template</button>
+</form>
+{% endif %}
+{% if template_warning %}
+<p class="badge badge-warn">{{ template_warning }}</p>
+{% endif %}
+<form method="post" action="/schedules" class="stack-form">
+    <input name="name" placeholder="Name" value="{{ selected_template.name if selected_template else '' }}" required>
+    <input name="description" placeholder="Description" value="{{ selected_template.description if selected_template else '' }}">
+    <input name="cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" value="{{ selected_template.default_cron_expr if selected_template else '' }}" required>
+    <input name="timezone" placeholder="Timezone" value="{{ selected_template.default_timezone if selected_template and selected_template.default_timezone else 'UTC' }}">
+    <textarea name="prompt" placeholder="Agent prompt" rows="3" required>{{ selected_template.prompt if selected_template else '' }}</textarea>
+    <select name="output_mode">
+        <option value="discord" {% if not selected_template or selected_template.default_output_mode == "discord" %}selected{% endif %}>Discord</option>
+        <option value="dashboard_only" {% if selected_template and selected_template.default_output_mode == "dashboard_only" %}selected{% endif %}>Dashboard only</option>
+        <option value="discord_if_noteworthy" {% if selected_template and selected_template.default_output_mode == "discord_if_noteworthy" %}selected{% endif %}>Discord if noteworthy</option>
+    </select>
+    <input name="discord_user_id" placeholder="Discord user ID (optional)" value="{{ selected_template.default_discord_user_id if selected_template and selected_template.default_discord_user_id else '' }}">
     <select name="model">
-        <option value="">Use default model</option>
+        <option value="" {% if not selected_template or not selected_template.default_model %}selected{% endif %}>Use default model</option>
+        {% if selected_template and selected_template.default_model and (available_set is none or selected_template.default_model not in available_set) %}
+            <option value="{{ selected_template.default_model }}" selected>{{ selected_template.default_model }}{% if available_set is not none %} (not available){% endif %}</option>
+        {% endif %}
         {% for m in available_models %}
-            <option value="{{ m }}">{{ m }}</option>
+            <option value="{{ m }}"{% if selected_template and selected_template.default_model == m %} selected{% endif %}>{{ m }}</option>
         {% endfor %}
     </select>
     <button type="submit">Create</button>

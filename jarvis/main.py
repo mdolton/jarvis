@@ -28,6 +28,7 @@ from jarvis.config.loader import LoadedConfig, load_config
 from jarvis.core.dispatcher import TriggerDispatcher
 from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
+from jarvis.digests.seeds import seed_built_in_digest_templates
 from jarvis.mcp.manager import MCPManager
 from jarvis.oauth.flow import OAuthFlow
 from jarvis.persistence.db import Base, create_engine, session_factory
@@ -82,6 +83,8 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = session_factory(engine)
+    async with factory() as session:
+        await seed_built_in_digest_templates(session)
 
     # Audit.
     audit = AuditLogger(session_factory=factory)

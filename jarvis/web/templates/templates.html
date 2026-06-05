@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Templates{% endblock %}
+{% block content %}
+<section class="page-head">
+    <div>
+        <h1>Templates</h1>
+        <p class="muted">Reusable prompts and defaults for scheduled digests.</p>
+    </div>
+</section>
+
+<section class="section-block">
+<h2>Create Template</h2>
+<form method="post" action="/templates" class="stack-form">
+    <input name="name" placeholder="Name" required>
+    <input name="description" placeholder="Description">
+    <input name="category" placeholder="Category" required>
+    <input name="default_cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" required>
+    <input name="default_timezone" placeholder="Timezone" value="UTC" required>
+    <select name="default_output_mode">
+        <option value="discord">Discord</option>
+        <option value="dashboard_only">Dashboard only</option>
+        <option value="discord_if_noteworthy">Discord if noteworthy</option>
+    </select>
+    <input name="default_model" placeholder="Model (optional)">
+    <input name="default_discord_user_id" placeholder="Discord user ID (optional)">
+    <textarea name="prompt" placeholder="Template prompt" rows="4" required></textarea>
+    <button type="submit">Create</button>
+</form>
+</section>
+
+<section class="section-block">
+<h2>Existing Templates</h2>
+<table class="ops-table">
+    <thead>
+        <tr><th>Name</th><th>Category</th><th>Cron</th><th>Output</th><th>Model</th><th>Owner</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+    {% for t in templates %}
+        <tr>
+            <td><a href="/templates/{{ t.id }}">{{ t.name }}</a></td>
+            <td>{{ t.category }}</td>
+            <td><code>{{ t.default_cron_expr }}</code></td>
+            <td>{{ t.default_output_mode }}</td>
+            <td>
+                {% if t.default_model %}
+                    {{ t.default_model }}
+                {% else %}
+                    <span class="muted">default</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if t.built_in %}
+                    <span class="badge badge-ok">built-in</span>
+                {% else %}
+                    <span class="badge">user</span>
+                {% endif %}
+            </td>
+            <td class="actions">
+                <a href="/schedules?template_id={{ t.id }}">Create schedule</a>
+                <form method="post" action="/templates/{{ t.id }}/clone" class="inline-form">
+                    <button type="submit">Clone</button>
+                </form>
+                {% if not t.built_in %}
+                    <form method="post" action="/templates/{{ t.id }}/disable" class="inline-form">
+                        <button type="submit" class="btn-danger">Disable</button>
+                    </form>
+                {% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if not templates %}
+<p class="muted">No templates yet.</p>
+{% endif %}
+</section>
+{% endblock %}

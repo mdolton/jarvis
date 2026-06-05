@@ -12,6 +12,7 @@ from jarvis.persistence.models import (
     ActionRow,
     AuditEventRow,
     ConversationRow,
+    DigestTemplateRow,
     MCPServerRow,
     MCPToolRow,
     MessageRow,
@@ -309,6 +310,137 @@ class ScheduleRepo:
         if row is not None:
             await self._session.delete(row)
             await self._session.commit()
+
+
+class DigestTemplateRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        key: str | None,
+        name: str,
+        description: str,
+        category: str,
+        prompt: str,
+        default_cron_expr: str,
+        default_timezone: str,
+        default_output_mode: str,
+        default_model: str | None,
+        default_discord_user_id: str | None,
+        built_in: bool,
+        enabled: bool,
+    ) -> DigestTemplateRow:
+        now = _utcnow()
+        row = DigestTemplateRow(
+            key=key,
+            name=name,
+            description=description,
+            category=category,
+            prompt=prompt,
+            default_cron_expr=default_cron_expr,
+            default_timezone=default_timezone,
+            default_output_mode=default_output_mode,
+            default_model=default_model,
+            default_discord_user_id=default_discord_user_id,
+            built_in=built_in,
+            enabled=enabled,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def get(self, template_id: UUID) -> DigestTemplateRow | None:
+        return await self._session.get(DigestTemplateRow, template_id)
+
+    async def get_by_key(self, key: str) -> DigestTemplateRow | None:
+        result = await self._session.execute(
+            select(DigestTemplateRow).where(DigestTemplateRow.key == key)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_enabled(self) -> list[DigestTemplateRow]:
+        result = await self._session.execute(
+            select(DigestTemplateRow)
+            .where(DigestTemplateRow.enabled.is_(True))
+            .order_by(DigestTemplateRow.category.asc(), DigestTemplateRow.name.asc())
+        )
+        return list(result.scalars())
+
+    async def list_all(self) -> list[DigestTemplateRow]:
+        result = await self._session.execute(
+            select(DigestTemplateRow).order_by(
+                DigestTemplateRow.enabled.desc(),
+                DigestTemplateRow.category.asc(),
+                DigestTemplateRow.name.asc(),
+            )
+        )
+        return list(result.scalars())
+
+    async def update(
+        self,
+        template_id: UUID,
+        *,
+        name: str,
+        description: str,
+        category: str,
+        prompt: str,
+        default_cron_expr: str,
+        default_timezone: str,
+        default_output_mode: str,
+        default_model: str | None,
+        default_discord_user_id: str | None,
+    ) -> None:
+        await self._session.execute(
+            update(DigestTemplateRow)
+            .where(DigestTemplateRow.id == template_id)
+            .values(
+                name=name,
+                description=description,
+                category=category,
+                prompt=prompt,
+                default_cron_expr=default_cron_expr,
+                default_timezone=default_timezone,
+                default_output_mode=default_output_mode,
+                default_model=default_model,
+                default_discord_user_id=default_discord_user_id,
+                updated_at=_utcnow(),
+            )
+        )
+        await self._session.commit()
+
+    async def clone(self, template_id: UUID) -> DigestTemplateRow:
+        original = await self.get(template_id)
+        if original is None:
+            raise ValueError(f"digest template {template_id} not found")
+        return await self.create(
+            key=None,
+            name=f"{original.name} Copy",
+            description=original.description,
+            category=original.category,
+            prompt=original.prompt,
+            default_cron_expr=original.default_cron_expr,
+            default_timezone=original.default_timezone,
+            default_output_mode=original.default_output_mode,
+            default_model=original.default_model,
+            default_discord_user_id=original.default_discord_user_id,
+            built_in=False,
+            enabled=True,
+        )
+
+    async def disable(self, template_id: UUID) -> None:
+        row = await self.get(template_id)
+        if row is None:
+            raise ValueError(f"digest template {template_id} not found")
+        if row.built_in:
+            raise ValueError("built-in digest templates cannot be disabled")
+        row.enabled = False
+        row.updated_at = _utcnow()
+        await self._session.commit()
 
 
 class MCPServerRepo:

@@ -149,3 +149,294 @@ def test_run_schedule_now_calls_scheduler(client_and_factory):
 
     assert resp.status_code in (302, 303)
     client.app.state.ctx.scheduler.fire_now.assert_awaited_once_with(schedule_id)
+
+
+def test_schedules_page_can_prefill_from_template(client_and_factory):
+    client, factory = client_and_factory
+
+    async def _create_template():
+        from jarvis.persistence.repositories import DigestTemplateRepo
+
+        async with factory() as session:
+            row = await DigestTemplateRepo(session).create(
+                key=None,
+                name="Morning Ops",
+                description="Ops summary",
+                category="brief",
+                prompt="Summarize calendar and mail.",
+                default_cron_expr="15 8 * * *",
+                default_timezone="America/Los_Angeles",
+                default_output_mode="discord_if_noteworthy",
+                default_model="alpha",
+                default_discord_user_id="456",
+                built_in=False,
+                enabled=True,
+            )
+            return row.id
+
+    import anyio
+
+    template_id = anyio.run(_create_template)
+    resp = client.get(f"/schedules?template_id={template_id}")
+
+    assert resp.status_code == 200
+    assert "Morning Ops" in resp.text
+    assert "15 8 * * *" in resp.text
+    assert "America/Los_Angeles" in resp.text
+    assert "Summarize calendar and mail." in resp.text
+    assert "456" in resp.text
+    assert '<option value="alpha" selected>' in resp.text
+
+
+def test_schedules_page_lists_templates_in_selector(client_and_factory):
+    client, factory = client_and_factory
+
+    async def _create_template():
+        from jarvis.persistence.repositories import DigestTemplateRepo
+
+        async with factory() as session:
+            await DigestTemplateRepo(session).create(
+                key=None,
+                name="Template Choice",
+                description="Choice",
+                category="brief",
+                prompt="Use this template.",
+                default_cron_expr="0 10 * * *",
+                default_timezone="UTC",
+                default_output_mode="discord",
+                default_model=None,
+                default_discord_user_id=None,
+                built_in=False,
+                enabled=True,
+            )
+
+    import anyio
+
+    anyio.run(_create_template)
+    resp = client.get("/schedules")
+
+    assert resp.status_code == 200
+    assert "Template Choice" in resp.text
+    assert "/schedules?template_id=" in resp.text
+
+
+def test_create_schedule_from_template_snapshot_persists_normal_schedule(
+    client_and_factory,
+):
+    client, factory = client_and_factory
+
+    async def _create_template():
+        from jarvis.persistence.repositories import DigestTemplateRepo
+
+        async with factory() as session:
+            row = await DigestTemplateRepo(session).create(
+                key=None,
+                name="Snapshot Source",
+                description="Source template",
+                category="brief",
+                prompt="Original template prompt.",
+                default_cron_expr="0 8 * * *",
+                default_timezone="UTC",
+                default_output_mode="discord",
+                default_model="beta",
+                default_discord_user_id="789",
+                built_in=False,
+                enabled=True,
+            )
+            return row.id
+
+    import anyio
+
+    template_id = anyio.run(_create_template)
+    page = client.get(f"/schedules?template_id={template_id}")
+    assert "Original template prompt." in page.text
+
+    resp = client.post(
+        "/schedules",
+        data={
+            "name": "Snapshot Schedule",
+            "description": "Copied and edited",
+            "cron_expr": "30 8 * * *",
+            "timezone": "America/Los_Angeles",
+            "prompt": "Edited schedule prompt.",
+            "output_mode": "dashboard_only",
+            "model": "",
+            "discord_user_id": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+
+    async def _schedule():
+        from jarvis.persistence.repositories import ScheduleRepo
+
+        async with factory() as session:
+            rows = await ScheduleRepo(session).list_all()
+            return rows[0]
+
+    schedule = anyio.run(_schedule)
+    assert schedule.name == "Snapshot Schedule"
+    assert schedule.prompt == "Edited schedule prompt."
+    assert schedule.cron_expr == "30 8 * * *"
+    assert schedule.model is None
+
+
+def test_create_schedule_from_template_preserves_unavailable_model_snapshot(
+    client_and_factory,
+):
+    client, factory = client_and_factory
+
+    async def _create_template():
+        from jarvis.persistence.repositories import DigestTemplateRepo
+
+        async with factory() as session:
+            row = await DigestTemplateRepo(session).create(
+                key=None,
+                name="Stale Model Source",
+                description="Source template",
+                category="brief",
+                prompt="Prompt with unavailable model.",
+                default_cron_expr="0 7 * * *",
+                default_timezone="UTC",
+                default_output_mode="discord",
+                default_model="ghost-model",
+                default_discord_user_id=None,
+                built_in=False,
+                enabled=True,
+            )
+            return row.id
+
+    import anyio
+
+    template_id = anyio.run(_create_template)
+    page = client.get(f"/schedules?template_id={template_id}")
+
+    assert page.status_code == 200
+    assert '<option value="ghost-model" selected>' in page.text
+    assert "ghost-model (not available)" in page.text
+
+    resp = client.post(
+        "/schedules",
+        data={
+            "name": "Stale Model Snapshot",
+            "description": "Copied",
+            "cron_expr": "0 7 * * *",
+            "timezone": "UTC",
+            "prompt": "Prompt with unavailable model.",
+            "output_mode": "discord",
+            "model": "ghost-model",
+            "discord_user_id": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+
+    async def _schedule():
+        from jarvis.persistence.repositories import ScheduleRepo
+
+        async with factory() as session:
+            rows = await ScheduleRepo(session).list_all()
+            return rows[0]
+
+    schedule = anyio.run(_schedule)
+    assert schedule.name == "Stale Model Snapshot"
+    assert schedule.model == "ghost-model"
+
+
+def test_template_model_is_not_marked_unavailable_when_catalog_fails(
+    client_and_factory,
+):
+    client, factory = client_and_factory
+
+    from jarvis.agents.model_catalog import Catalog
+
+    client.app.state.ctx.model_catalog.list_models = AsyncMock(
+        return_value=Catalog(models=[], ok=False)
+    )
+
+    async def _create_template():
+        from jarvis.persistence.repositories import DigestTemplateRepo
+
+        async with factory() as session:
+            row = await DigestTemplateRepo(session).create(
+                key=None,
+                name="Unknown Catalog Source",
+                description="Source template",
+                category="brief",
+                prompt="Prompt when catalog fails.",
+                default_cron_expr="0 6 * * *",
+                default_timezone="UTC",
+                default_output_mode="discord",
+                default_model="catalog-fallback-model",
+                default_discord_user_id=None,
+                built_in=False,
+                enabled=True,
+            )
+            return row.id
+
+    import anyio
+
+    template_id = anyio.run(_create_template)
+    page = client.get(f"/schedules?template_id={template_id}")
+
+    assert page.status_code == 200
+    assert (
+        '<option value="catalog-fallback-model" selected>'
+        "catalog-fallback-model</option>"
+    ) in page.text
+    assert "catalog-fallback-model (not available)" not in page.text
+
+
+def test_schedules_page_warns_for_malformed_template_id(client_and_factory):
+    client, _ = client_and_factory
+
+    resp = client.get("/schedules?template_id=not-a-uuid")
+
+    assert resp.status_code == 200
+    assert "Create Schedule" in resp.text
+    assert "Template not found or disabled." in resp.text
+
+
+def test_schedules_page_warns_for_missing_template_id(client_and_factory):
+    client, _ = client_and_factory
+
+    from uuid import uuid4
+
+    resp = client.get(f"/schedules?template_id={uuid4()}")
+
+    assert resp.status_code == 200
+    assert "Create Schedule" in resp.text
+    assert "Template not found or disabled." in resp.text
+
+
+def test_schedules_page_warns_for_disabled_template_id(client_and_factory):
+    client, factory = client_and_factory
+
+    async def _create_template():
+        from jarvis.persistence.repositories import DigestTemplateRepo
+
+        async with factory() as session:
+            row = await DigestTemplateRepo(session).create(
+                key=None,
+                name="Disabled Source",
+                description="Source template",
+                category="brief",
+                prompt="Disabled template prompt.",
+                default_cron_expr="0 9 * * *",
+                default_timezone="UTC",
+                default_output_mode="discord",
+                default_model="alpha",
+                default_discord_user_id=None,
+                built_in=False,
+                enabled=False,
+            )
+            return row.id
+
+    import anyio
+
+    template_id = anyio.run(_create_template)
+    resp = client.get(f"/schedules?template_id={template_id}")
+
+    assert resp.status_code == 200
+    assert "Template not found or disabled." in resp.text
+    assert "Disabled template prompt." not in resp.text

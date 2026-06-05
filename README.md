@@ -170,6 +170,11 @@ Create schedules via the dashboard at `/schedules`. Each schedule has:
 - An optional Discord user ID for scheduled output and error notifications
 - A **Run now** action for manually firing a schedule from the dashboard
 
+Digest templates are available from the **Templates** page. Built-in templates
+include Daily Brief, Email Digest, Calendar Brief, and Action Inbox Review.
+Creating a schedule from a template copies the template fields into the
+schedule; future template edits do not change existing schedules.
+
 ### Model selection
 
 Jarvis discovers available models from your LLM endpoint's `/v1/models`.
@@ -201,6 +206,7 @@ Available at `http://localhost:8080` when running:
 - **Home** — service status overview, component diagnostics, and manual prompt runs
 - **Conversations** — browse past agent interactions
 - **Schedules** — create, run, enable/disable, delete schedules
+- **Templates** — create, edit, clone, and apply reusable digest templates for schedules
 - **MCP** — OAuth providers, connected servers, discovered tools, and per-tool policy overrides
 - **Actions** — approve or reject MCP tool calls that require confirmation before execution
 - **Audit** — full event log with live SSE tailing
