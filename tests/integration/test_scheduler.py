@@ -117,7 +117,7 @@ async def test_scheduler_fires_and_records_run(infra):
             name="test-sched",
             description="test",
             cron_expr=_far_future_cron_expr(),
-            timezone="UTC",
+            timezone="America/Los_Angeles",
             prompt="give me a summary",
             output_mode="dashboard_only",
             notify_on_error=True,
@@ -149,6 +149,8 @@ async def test_scheduler_fires_and_records_run(infra):
         msgs = await MessageRepo(s).history(convs[0].id)
         assert len(msgs) == 2
         assert msgs[0].role == MessageRole.USER.value
+        assert "Timezone: America/Los_Angeles" in msgs[0].content
+        assert msgs[0].content.endswith("give me a summary")
         assert msgs[1].role == MessageRole.ASSISTANT.value
 
 

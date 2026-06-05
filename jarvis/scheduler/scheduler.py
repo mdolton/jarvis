@@ -156,6 +156,7 @@ class Scheduler:
             prompt = row.prompt
             output_mode = row.output_mode
             model = row.model
+            timezone = row.timezone
             schedule_name = row.name
             notify_on_error = row.notify_on_error
             discord_user_id = row.discord_user_id
@@ -175,11 +176,14 @@ class Scheduler:
                 )
                 model = None  # None -> runner falls back to the config default
 
+        fired_at = datetime.now(UTC)
         trigger = ScheduledTrigger(
             schedule_id=str(schedule_id),
             prompt=prompt,
             output_mode=output_mode,
             model=model,
+            timezone=timezone,
+            fired_at=fired_at,
         )
 
         try:
@@ -193,7 +197,7 @@ class Scheduler:
 
             async with self._session_factory() as session:
                 await ScheduleRepo(session).record_run(
-                    schedule_id, at=datetime.now(UTC), status="success"
+                    schedule_id, at=fired_at, status="success"
                 )
         except Exception:
             _log.exception("scheduled run failed for %s", schedule_id)

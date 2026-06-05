@@ -3,6 +3,8 @@ event stream / DB effects, not on LLM output content.
 """
 
 import asyncio
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest_asyncio
 from agents import set_trace_processors
@@ -18,6 +20,7 @@ from jarvis.core.types import (
     InvocationRequest,
     ManualTrigger,
     MessageRole,
+    ScheduledTrigger,
 )
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import (
@@ -119,6 +122,43 @@ async def test_agent_runner_persists_user_and_assistant_messages(infra):
     # Routing fields are populated for the OutputRouter.
     assert result.channel_kind == ChannelKind.DASHBOARD
     assert result.channel_ref == "mark"
+
+
+async def test_scheduled_trigger_prompt_includes_local_date_context(infra, monkeypatch):
+    _, factory, audit = infra
+    captured = {}
+
+    async def fake_run(agent, prompt, run_config=None):
+        captured["prompt"] = prompt
+        return SimpleNamespace(final_output="ok")
+
+    monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
+
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers_provider=lambda: [],
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        model=_FakeModel(),
+    )
+    req = InvocationRequest(
+        trigger=ScheduledTrigger(
+            schedule_id="daily",
+            prompt="Prepare my daily brief for today.",
+            output_mode="dashboard_only",
+            timezone="America/Los_Angeles",
+            fired_at=datetime(2026, 6, 5, 1, 30, tzinfo=UTC),
+        )
+    )
+
+    await runner.run(req)
+
+    assert "Schedule context:" in captured["prompt"]
+    assert "Timezone: America/Los_Angeles" in captured["prompt"]
+    assert "Local date: 2026-06-04" in captured["prompt"]
+    assert "Local time: 2026-06-04 18:30 PDT" in captured["prompt"]
+    assert "Interpret relative dates like today" in captured["prompt"]
+    assert captured["prompt"].endswith("Prepare my daily brief for today.")
 
 
 async def test_agent_runner_writes_audit_events(infra):
