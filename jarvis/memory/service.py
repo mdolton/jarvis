@@ -61,7 +61,7 @@ class MemoryService:
             result for result in results if result.score >= self._min_relevance_score
         ][: self._max_recalled_memories]
         try:
-            recalled = await self._load_recalled_memories(
+            recalled, recall_error = await self._load_recalled_memories(
                 conversation_id=conversation_id,
                 trigger_id=trigger_id,
                 results=filtered_results,
@@ -78,7 +78,7 @@ class MemoryService:
             preferences=preferences,
             recalled=recalled,
             recall_available=True,
-            error=preference_error,
+            error=_combine_errors(preference_error, recall_error),
         )
 
     async def _load_preferences(self) -> tuple[list[str], str | None]:
@@ -95,9 +95,9 @@ class MemoryService:
         conversation_id: UUID | None,
         trigger_id: UUID | None,
         results: list[VectorSearchResult],
-    ) -> list[RecalledMemory]:
+    ) -> tuple[list[RecalledMemory], str | None]:
         if not results:
-            return []
+            return [], None
 
         result_by_id = {result.memory_entry_id: result for result in results}
         async with self._session_factory() as session:
@@ -126,21 +126,24 @@ class MemoryService:
                     )
                 )
 
-            await MemoryRecallRepo(session).record_many(
-                conversation_id=conversation_id,
-                trigger_id=trigger_id,
-                recalled=[
-                    {
-                        "memory_entry_id": memory.memory_entry_id,
-                        "score": memory.score,
-                        "rank": memory.rank,
-                    }
-                    for memory in recalled
-                ],
-            )
-            await entry_repo.mark_recalled([memory.memory_entry_id for memory in recalled])
+            try:
+                await MemoryRecallRepo(session).record_many(
+                    conversation_id=conversation_id,
+                    trigger_id=trigger_id,
+                    recalled=[
+                        {
+                            "memory_entry_id": memory.memory_entry_id,
+                            "score": memory.score,
+                            "rank": memory.rank,
+                        }
+                        for memory in recalled
+                    ],
+                )
+                await entry_repo.mark_recalled([memory.memory_entry_id for memory in recalled])
+            except Exception as exc:
+                return recalled, str(exc)
 
-        return recalled
+        return recalled, None
 
 
 def _combine_errors(*errors: str | None) -> str | None:

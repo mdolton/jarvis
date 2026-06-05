@@ -272,7 +272,9 @@ async def test_memory_service_hydration_failure_degrades_without_raising(factory
     assert "hydration failed" in ctx.error
 
 
-async def test_memory_service_recall_write_failure_degrades_without_raising(factory, monkeypatch):
+async def test_memory_service_recall_write_failure_preserves_recalled_context(
+    factory, monkeypatch
+):
     conv, trigger, entry = await _seed_memory(factory)
 
     async def fail_record_many(self, *, conversation_id, trigger_id, recalled):
@@ -294,10 +296,42 @@ async def test_memory_service_recall_write_failure_degrades_without_raising(fact
     )
 
     assert ctx.preferences == ["Prefer concise answers."]
-    assert ctx.recalled == []
-    assert ctx.recall_available is False
+    assert len(ctx.recalled) == 1
+    assert ctx.recalled[0].memory_entry_id == entry.id
+    assert ctx.recall_available is True
     assert ctx.error is not None
     assert "recall write failed" in ctx.error
+
+
+async def test_memory_service_mark_recalled_failure_preserves_recalled_context(
+    factory, monkeypatch
+):
+    conv, trigger, entry = await _seed_memory(factory)
+
+    async def fail_mark_recalled(self, ids):
+        raise RuntimeError("mark recalled failed")
+
+    monkeypatch.setattr(MemoryEntryRepo, "mark_recalled", fail_mark_recalled)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(entry.id),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=conv.id,
+        trigger_id=trigger.id,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == ["Prefer concise answers."]
+    assert len(ctx.recalled) == 1
+    assert ctx.recalled[0].memory_entry_id == entry.id
+    assert ctx.recall_available is True
+    assert ctx.error is not None
+    assert "mark recalled failed" in ctx.error
 
 
 async def test_memory_service_combines_preference_and_embedding_errors(factory, monkeypatch):
