@@ -163,6 +163,7 @@ async def test_bootstrap_wires_memory_service_for_local_sqlite(tmp_path, config_
         assert ctx.scheduler._runner._memory_service is ctx.memory_service
         assert ctx.memory_service._embedding_provider._client is ctx.llm_client
         assert ctx.memory_service._summarizer._client is ctx.llm_client
+        assert ctx.memory_service._audit is ctx.audit
     finally:
         await ctx.shutdown()
 

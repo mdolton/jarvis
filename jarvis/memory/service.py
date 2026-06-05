@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from jarvis.core.types import AuditEvent, AuditEventType
 from jarvis.memory.embeddings import EmbeddingProvider
 from jarvis.memory.types import (
     MemoryContext,
@@ -18,7 +19,7 @@ from jarvis.memory.types import (
     VectorSearchResult,
 )
 from jarvis.memory.vector_store import MemoryVectorStore
-from jarvis.persistence.models import MemoryEntryRow
+from jarvis.persistence.models import MemoryEntryRow, MemoryPreferenceRow
 from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRepo, MemoryRecallRepo
 
 _MAX_PREFERENCE_PROPOSALS_PER_SUMMARY = 5
@@ -42,11 +43,13 @@ class MemoryService:
         max_recalled_memories: int,
         min_relevance_score: float,
         summarizer=None,
+        audit=None,
     ) -> None:
         self._session_factory = session_factory
         self._embedding_provider = embedding_provider
         self._vector_store = vector_store
         self._summarizer = summarizer
+        self._audit = audit
         self._max_recalled_memories = max_recalled_memories
         self._min_relevance_score = min_relevance_score
 
@@ -71,6 +74,11 @@ class MemoryService:
                 assistant_output=assistant_output,
             )
         except Exception as exc:
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                payload={"stage": "summarize", "error": str(exc)},
+            )
             return MemorySummarizeOutcome(status="failed", error=str(exc))
 
         if not summary.summary:
@@ -121,18 +129,40 @@ class MemoryService:
                             memory_entry_id=entry_id,
                             source_hash=source_hash,
                         )
-                preferences_created = await _create_preference_proposals(
+                created_preferences = await _create_preference_proposals(
                     session,
                     summary.preference_candidates,
                 )
+                preferences_created = len(created_preferences)
             except Exception as exc:
                 if entry_id is not None:
                     await _mark_unindexed_best_effort(self._session_factory, entry_id)
+                await self._emit(
+                    AuditEventType.MEMORY_FAILED,
+                    conversation_id=conversation_id,
+                    payload={"stage": "summarize", "error": str(exc)},
+                )
                 return MemorySummarizeOutcome(
                     status="failed",
                     memory_entry_id=entry_id,
                     error=str(exc),
                 )
+
+        if entry_created and entry_id is not None:
+            await self._emit(
+                AuditEventType.MEMORY_ENTRY_CREATED,
+                conversation_id=conversation_id,
+                payload={"memory_entry_id": str(entry_id)},
+            )
+        for preference in created_preferences:
+            await self._emit(
+                AuditEventType.MEMORY_PREFERENCE_PROPOSED,
+                conversation_id=conversation_id,
+                payload={
+                    "preference_id": str(preference.id),
+                    "content": preference.content,
+                },
+            )
 
         if entry_status == "active":
             return MemorySummarizeOutcome(
@@ -150,6 +180,14 @@ class MemoryService:
         if not self._vector_store.available:
             if entry_id is not None:
                 await _mark_unindexed_best_effort(self._session_factory, entry_id)
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                payload={
+                    "stage": "index",
+                    "error": self._vector_store.last_error or "vector store unavailable",
+                },
+            )
             return MemorySummarizeOutcome(
                 status="unindexed",
                 memory_entry_id=entry_id,
@@ -163,6 +201,11 @@ class MemoryService:
         except Exception as exc:
             if entry_id is not None:
                 await _mark_unindexed_best_effort(self._session_factory, entry_id)
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                payload={"stage": "index", "error": str(exc)},
+            )
             return MemorySummarizeOutcome(
                 status="unindexed",
                 memory_entry_id=entry_id,
@@ -174,6 +217,11 @@ class MemoryService:
             async with self._session_factory() as session:
                 await _set_memory_entry_status(session, entry_id, "active")
         except Exception as exc:
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                payload={"stage": "index", "error": str(exc)},
+            )
             return MemorySummarizeOutcome(
                 status="failed",
                 memory_entry_id=entry_id,
@@ -195,6 +243,13 @@ class MemoryService:
         prompt: str,
     ) -> MemoryContext:
         preferences, preference_error = await self._load_preferences()
+        if preference_error is not None:
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                payload={"stage": "preferences", "error": preference_error},
+            )
 
         if self._max_recalled_memories <= 0:
             return MemoryContext(
@@ -219,6 +274,12 @@ class MemoryService:
                 limit=self._max_recalled_memories,
             )
         except Exception as exc:
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                payload={"stage": "recall", "error": str(exc)},
+            )
             return MemoryContext(
                 preferences=preferences,
                 recalled=[],
@@ -236,11 +297,37 @@ class MemoryService:
                 results=filtered_results,
             )
         except Exception as exc:
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                payload={"stage": "recall", "error": str(exc)},
+            )
             return MemoryContext(
                 preferences=preferences,
                 recalled=[],
                 recall_available=False,
                 error=_combine_errors(preference_error, str(exc)),
+            )
+
+        if recalled:
+            await self._emit(
+                AuditEventType.MEMORY_RECALLED,
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                payload={
+                    "count": len(recalled),
+                    "memory_entry_ids": [
+                        str(memory.memory_entry_id) for memory in recalled
+                    ],
+                },
+            )
+        if recall_error is not None:
+            await self._emit(
+                AuditEventType.MEMORY_FAILED,
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                payload={"stage": "recall_bookkeeping", "error": recall_error},
             )
 
         return MemoryContext(
@@ -249,6 +336,28 @@ class MemoryService:
             recall_available=True,
             error=_combine_errors(preference_error, recall_error),
         )
+
+    async def _emit(
+        self,
+        event_type: AuditEventType,
+        *,
+        conversation_id: UUID | None = None,
+        trigger_id: UUID | None = None,
+        payload: dict | None = None,
+    ) -> None:
+        if self._audit is None:
+            return
+        try:
+            await self._audit.emit(
+                AuditEvent(
+                    type=event_type,
+                    conversation_id=conversation_id,
+                    trigger_id=trigger_id,
+                    payload=payload or {},
+                )
+            )
+        except Exception:
+            return
 
     async def _load_preferences(self) -> tuple[list[str], str | None]:
         try:
@@ -394,7 +503,7 @@ async def _mark_unindexed_best_effort(
 async def _create_preference_proposals(
     session: AsyncSession,
     candidates: list[str],
-) -> int:
+) -> list[MemoryPreferenceRow]:
     existing = await _existing_preferences(session)
     limited_candidates = _limited_unique_preference_candidates(candidates)
     proposals = [
@@ -403,13 +512,12 @@ async def _create_preference_proposals(
         if normalized not in existing
     ]
     if not proposals:
-        return 0
+        return []
 
-    rows = await MemoryPreferenceRepo(session).create_pending_many(
+    return await MemoryPreferenceRepo(session).create_pending_many(
         contents=proposals,
         source="agent_proposal",
     )
-    return len(rows)
 
 
 def _limited_unique_preference_candidates(candidates: list[str]) -> list[tuple[str, str]]:

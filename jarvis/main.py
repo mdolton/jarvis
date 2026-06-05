@@ -112,6 +112,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         db_url=db_url,
         session_factory=factory,
         llm_client=llm_client,
+        audit=audit,
     )
 
     # OAuth.
@@ -257,6 +258,7 @@ async def _build_memory_service(
     db_url: str,
     session_factory: async_sessionmaker[AsyncSession],
     llm_client: AsyncOpenAI,
+    audit: AuditLogger,
 ) -> MemoryService | None:
     if not cfg.jarvis.memory.enabled:
         return None
@@ -293,6 +295,7 @@ async def _build_memory_service(
         max_recalled_memories=max_recalled_memories,
         min_relevance_score=cfg.jarvis.memory.min_relevance_score,
         summarizer=summarizer,
+        audit=audit,
     )
 
 
