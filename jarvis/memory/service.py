@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from uuid import UUID
 
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.memory.embeddings import EmbeddingProvider
@@ -12,7 +15,18 @@ from jarvis.memory.types import (
     VectorSearchResult,
 )
 from jarvis.memory.vector_store import MemoryVectorStore
+from jarvis.persistence.models import MemoryEntryRow, MemoryPreferenceRow
 from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRepo, MemoryRecallRepo
+
+_MAX_PREFERENCE_PROPOSALS_PER_SUMMARY = 5
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySummarizeOutcome:
+    status: str
+    memory_entry_id: UUID | None = None
+    preferences_created: int = 0
+    error: str | None = None
 
 
 class MemoryService:
@@ -41,37 +55,86 @@ class MemoryService:
         channel_ref: str,
         user_prompt: str,
         assistant_output: str,
-    ) -> None:
+    ) -> MemorySummarizeOutcome:
         if self._summarizer is None:
-            return
-
-        summary = await self._summarizer.summarize(
-            user_prompt=user_prompt,
-            assistant_output=assistant_output,
-        )
-        if not summary.summary:
-            return
-
-        async with self._session_factory() as session:
-            entry = await MemoryEntryRepo(session).create(
-                conversation_id=conversation_id,
-                source_channel_kind=channel_kind,
-                source_channel_ref=channel_ref,
-                summary=summary.summary,
-                topics=summary.topics,
-                entities=summary.entities,
-                evidence=summary.evidence,
+            return MemorySummarizeOutcome(
+                status="skipped",
+                error="summarizer unavailable",
             )
-            preference_repo = MemoryPreferenceRepo(session)
-            for candidate in summary.preference_candidates:
-                await preference_repo.create_pending(
-                    content=candidate,
-                    source="agent_proposal",
+
+        try:
+            summary = await self._summarizer.summarize(
+                user_prompt=user_prompt,
+                assistant_output=assistant_output,
+            )
+        except Exception as exc:
+            return MemorySummarizeOutcome(status="failed", error=str(exc))
+
+        if not summary.summary:
+            return MemorySummarizeOutcome(status="skipped", error="empty summary")
+
+        entry_id: UUID | None = None
+        async with self._session_factory() as session:
+            try:
+                entry = await MemoryEntryRepo(session).create(
+                    conversation_id=conversation_id,
+                    source_channel_kind=channel_kind,
+                    source_channel_ref=channel_ref,
+                    summary=summary.summary,
+                    topics=summary.topics,
+                    entities=summary.entities,
+                    evidence=summary.evidence,
+                )
+                entry_id = entry.id
+                await _set_memory_entry_status(session, entry_id, "unindexed")
+                preferences_created = await _create_preference_proposals(
+                    session,
+                    summary.preference_candidates,
+                )
+            except Exception as exc:
+                if entry_id is not None:
+                    await _mark_unindexed_best_effort(self._session_factory, entry_id)
+                return MemorySummarizeOutcome(
+                    status="failed",
+                    memory_entry_id=entry_id,
+                    error=str(exc),
                 )
 
-        if self._vector_store.available:
+        if not self._vector_store.available:
+            return MemorySummarizeOutcome(
+                status="unindexed",
+                memory_entry_id=entry_id,
+                preferences_created=preferences_created,
+                error=self._vector_store.last_error or "vector store unavailable",
+            )
+
+        try:
             embedding = await self._embedding_provider.embed(_embedding_text(summary))
             await self._vector_store.upsert(entry.id, embedding)
+        except Exception as exc:
+            return MemorySummarizeOutcome(
+                status="unindexed",
+                memory_entry_id=entry_id,
+                preferences_created=preferences_created,
+                error=str(exc),
+            )
+
+        try:
+            async with self._session_factory() as session:
+                await _set_memory_entry_status(session, entry_id, "active")
+        except Exception as exc:
+            return MemorySummarizeOutcome(
+                status="failed",
+                memory_entry_id=entry_id,
+                preferences_created=preferences_created,
+                error=str(exc),
+            )
+
+        return MemorySummarizeOutcome(
+            status="created",
+            memory_entry_id=entry_id,
+            preferences_created=preferences_created,
+        )
 
     async def build_context(
         self,
@@ -207,3 +270,77 @@ def _embedding_text(summary: MemorySummary) -> str:
         " ".join(summary.entities),
     ]
     return "\n".join(part for part in parts if part)
+
+
+async def _set_memory_entry_status(
+    session: AsyncSession,
+    memory_entry_id: UUID,
+    status: str,
+) -> None:
+    await session.execute(
+        update(MemoryEntryRow)
+        .where(MemoryEntryRow.id == memory_entry_id)
+        .values(status=status)
+    )
+    await session.commit()
+
+
+async def _mark_unindexed_best_effort(
+    session_factory: async_sessionmaker[AsyncSession],
+    memory_entry_id: UUID,
+) -> None:
+    try:
+        async with session_factory() as session:
+            await _set_memory_entry_status(session, memory_entry_id, "unindexed")
+    except Exception:
+        return
+
+
+async def _create_preference_proposals(
+    session: AsyncSession,
+    candidates: list[str],
+) -> int:
+    existing = await _existing_agent_proposal_preferences(session)
+    limited_candidates = _limited_unique_preference_candidates(candidates)
+    proposals = [
+        content
+        for normalized, content in limited_candidates
+        if normalized not in existing
+    ]
+
+    preference_repo = MemoryPreferenceRepo(session)
+    for proposal in proposals:
+        await preference_repo.create_pending(
+            content=proposal,
+            source="agent_proposal",
+        )
+    return len(proposals)
+
+
+def _limited_unique_preference_candidates(candidates: list[str]) -> list[tuple[str, str]]:
+    proposals = []
+    seen = set()
+    for candidate in candidates:
+        content = str(candidate).strip()
+        normalized = _normalize_preference(content)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        proposals.append((normalized, content))
+        if len(proposals) >= _MAX_PREFERENCE_PROPOSALS_PER_SUMMARY:
+            break
+    return proposals
+
+
+async def _existing_agent_proposal_preferences(session: AsyncSession) -> set[str]:
+    result = await session.execute(
+        select(MemoryPreferenceRow.content).where(
+            MemoryPreferenceRow.source == "agent_proposal",
+            MemoryPreferenceRow.status.in_(["pending", "active"]),
+        )
+    )
+    return {_normalize_preference(content) for content in result.scalars()}
+
+
+def _normalize_preference(content: str) -> str:
+    return re.sub(r"\s+", " ", content).strip().casefold()

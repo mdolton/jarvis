@@ -16,14 +16,22 @@ class _FakeEmbeddingProvider:
         return [0.1, 0.2, 0.3]
 
 
+class _FailingEmbeddingProvider:
+    async def embed(self, text: str) -> list[float]:
+        raise RuntimeError("embedding failed")
+
+
 class _FakeVectorStore:
-    available = True
     last_error = None
 
-    def __init__(self) -> None:
+    def __init__(self, *, available: bool = True, fail_upsert: bool = False) -> None:
+        self.available = available
+        self.fail_upsert = fail_upsert
         self.upserts = []
 
     async def upsert(self, memory_entry_id, embedding):
+        if self.fail_upsert:
+            raise RuntimeError("vector failed")
         self.upserts.append((memory_entry_id, embedding))
 
     async def search(self, embedding, *, limit):
@@ -31,6 +39,9 @@ class _FakeVectorStore:
 
 
 class _FakeSummarizer:
+    def __init__(self, *, preference_candidates=None) -> None:
+        self.preference_candidates = preference_candidates or ["Prefer concise answers."]
+
     async def summarize(self, *, user_prompt: str, assistant_output: str) -> MemorySummary:
         return MemorySummary(
             summary="We discussed Jarvis memory.",
@@ -43,8 +54,24 @@ class _FakeSummarizer:
                     "content": "sqlite-vec",
                 }
             ],
-            preference_candidates=["Prefer concise answers."],
+            preference_candidates=self.preference_candidates,
         )
+
+
+class _EmptySummarizer:
+    async def summarize(self, *, user_prompt: str, assistant_output: str) -> MemorySummary:
+        return MemorySummary(
+            summary="",
+            topics=[],
+            entities=[],
+            evidence=[],
+            preference_candidates=[],
+        )
+
+
+class _FailingSummarizer:
+    async def summarize(self, *, user_prompt: str, assistant_output: str) -> MemorySummary:
+        raise RuntimeError("summary failed")
 
 
 @pytest.fixture
@@ -57,8 +84,7 @@ async def factory(tmp_path):
     await engine.dispose()
 
 
-async def test_memory_service_summarize_run_creates_entry_vector_and_preference(factory):
-    vector_store = _FakeVectorStore()
+async def _create_conversation(factory):
     conversation_id = uuid4()
     async with factory() as session:
         session.add(
@@ -72,6 +98,22 @@ async def test_memory_service_summarize_run_creates_entry_vector_and_preference(
             )
         )
         await session.commit()
+    return conversation_id
+
+
+async def _summarize(service, conversation_id):
+    return await service.summarize_run(
+        conversation_id=conversation_id,
+        channel_kind=ChannelKind.DASHBOARD.value,
+        channel_ref="mark",
+        user_prompt="let's add memory",
+        assistant_output="done",
+    )
+
+
+async def test_memory_service_summarize_run_creates_entry_vector_and_preference(factory):
+    vector_store = _FakeVectorStore()
+    conversation_id = await _create_conversation(factory)
 
     service = MemoryService(
         session_factory=factory,
@@ -82,20 +124,19 @@ async def test_memory_service_summarize_run_creates_entry_vector_and_preference(
         min_relevance_score=0.25,
     )
 
-    await service.summarize_run(
-        conversation_id=conversation_id,
-        channel_kind=ChannelKind.DASHBOARD.value,
-        channel_ref="mark",
-        user_prompt="let's add memory",
-        assistant_output="done",
-    )
+    outcome = await _summarize(service, conversation_id)
 
     async with factory() as session:
         entries = await MemoryEntryRepo(session).list_recent()
         preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
         evidence = await MemoryEntryRepo(session).list_evidence(entries[0].id)
 
+    assert outcome.status == "created"
+    assert outcome.memory_entry_id == entries[0].id
+    assert outcome.error is None
+    assert outcome.preferences_created == 1
     assert len(entries) == 1
+    assert entries[0].status == "active"
     assert entries[0].conversation_id == conversation_id
     assert entries[0].source_channel_kind == ChannelKind.DASHBOARD.value
     assert entries[0].source_channel_ref == "mark"
@@ -122,3 +163,177 @@ async def test_memory_service_summarize_run_creates_entry_vector_and_preference(
     assert preferences[0].content == "Prefer concise answers."
     assert preferences[0].source == "agent_proposal"
     assert preferences[0].status == "pending"
+
+
+async def test_memory_service_summarize_run_skips_when_no_summarizer(factory):
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, None)
+
+    assert outcome.status == "skipped"
+    assert outcome.memory_entry_id is None
+    assert outcome.error == "summarizer unavailable"
+
+
+async def test_memory_service_summarize_run_catches_summarizer_failure(factory):
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_FailingSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, None)
+
+    async with factory() as session:
+        entries = await MemoryEntryRepo(session).list_recent()
+        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
+
+    assert outcome.status == "failed"
+    assert "summary failed" in outcome.error
+    assert outcome.memory_entry_id is None
+    assert entries == []
+    assert preferences == []
+
+
+async def test_memory_service_summarize_run_skips_empty_summary(factory):
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_EmptySummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, None)
+
+    async with factory() as session:
+        entries = await MemoryEntryRepo(session).list_recent()
+
+    assert outcome.status == "skipped"
+    assert outcome.memory_entry_id is None
+    assert outcome.error == "empty summary"
+    assert entries == []
+
+
+async def test_memory_service_summarize_run_marks_entry_unindexed_on_embedding_failure(
+    factory,
+):
+    conversation_id = await _create_conversation(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FailingEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_FakeSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, conversation_id)
+
+    async with factory() as session:
+        entries = await MemoryEntryRepo(session).list_recent()
+        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
+
+    assert outcome.status == "unindexed"
+    assert "embedding failed" in outcome.error
+    assert outcome.memory_entry_id == entries[0].id
+    assert entries[0].status == "unindexed"
+    assert len(preferences) == 1
+
+
+async def test_memory_service_summarize_run_marks_entry_unindexed_when_vector_unavailable(
+    factory,
+):
+    conversation_id = await _create_conversation(factory)
+    vector_store = _FakeVectorStore(available=False)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=vector_store,
+        summarizer=_FakeSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, conversation_id)
+
+    async with factory() as session:
+        entries = await MemoryEntryRepo(session).list_recent()
+
+    assert outcome.status == "unindexed"
+    assert outcome.error == "vector store unavailable"
+    assert outcome.memory_entry_id == entries[0].id
+    assert entries[0].status == "unindexed"
+    assert vector_store.upserts == []
+
+
+async def test_memory_service_summarize_run_marks_entry_unindexed_on_vector_failure(
+    factory,
+):
+    conversation_id = await _create_conversation(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(fail_upsert=True),
+        summarizer=_FakeSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, conversation_id)
+
+    async with factory() as session:
+        entries = await MemoryEntryRepo(session).list_recent()
+
+    assert outcome.status == "unindexed"
+    assert "vector failed" in outcome.error
+    assert outcome.memory_entry_id == entries[0].id
+    assert entries[0].status == "unindexed"
+
+
+async def test_memory_service_summarize_run_dedupes_and_caps_pending_preferences(factory):
+    candidates = [
+        " Prefer concise answers. ",
+        "prefer concise answers.",
+        "Use bullets.",
+        "Use bullets. ",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+    ]
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_FakeSummarizer(preference_candidates=candidates),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    first = await _summarize(service, None)
+    second = await _summarize(service, None)
+
+    async with factory() as session:
+        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
+
+    assert first.preferences_created == 5
+    assert second.preferences_created == 0
+    assert [preference.content for preference in preferences] == [
+        "C",
+        "B",
+        "A",
+        "Use bullets.",
+        "Prefer concise answers.",
+    ]
