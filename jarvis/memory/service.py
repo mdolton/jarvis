@@ -40,7 +40,7 @@ class MemoryService:
                 preferences=preferences,
                 recalled=[],
                 recall_available=self._vector_store.available,
-                error=preference_error or self._vector_store.last_error,
+                error=_combine_errors(preference_error, self._vector_store.last_error),
             )
 
         try:
@@ -54,17 +54,25 @@ class MemoryService:
                 preferences=preferences,
                 recalled=[],
                 recall_available=False,
-                error=preference_error or str(exc),
+                error=_combine_errors(preference_error, str(exc)),
             )
 
         filtered_results = [
             result for result in results if result.score >= self._min_relevance_score
         ][: self._max_recalled_memories]
-        recalled = await self._load_recalled_memories(
-            conversation_id=conversation_id,
-            trigger_id=trigger_id,
-            results=filtered_results,
-        )
+        try:
+            recalled = await self._load_recalled_memories(
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                results=filtered_results,
+            )
+        except Exception as exc:
+            return MemoryContext(
+                preferences=preferences,
+                recalled=[],
+                recall_available=False,
+                error=_combine_errors(preference_error, str(exc)),
+            )
 
         return MemoryContext(
             preferences=preferences,
@@ -133,3 +141,10 @@ class MemoryService:
             await entry_repo.mark_recalled([memory.memory_entry_id for memory in recalled])
 
         return recalled
+
+
+def _combine_errors(*errors: str | None) -> str | None:
+    messages = [error for error in errors if error]
+    if not messages:
+        return None
+    return "; ".join(messages)

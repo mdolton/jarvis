@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -21,18 +21,28 @@ class BrokenEmbeddingProvider:
 
 
 class FakeVectorStore:
-    def __init__(self, memory_entry_id: UUID) -> None:
-        self.available = True
-        self.last_error = None
-        self._memory_entry_id = memory_entry_id
+    def __init__(
+        self,
+        memory_entry_id: UUID,
+        *,
+        available: bool = True,
+        last_error: str | None = None,
+        score: float = 0.91,
+        result_ids: list[UUID] | None = None,
+    ) -> None:
+        self.available = available
+        self.last_error = last_error
+        self._score = score
+        self._result_ids = result_ids or [memory_entry_id]
 
     async def search(self, embedding: list[float], *, limit: int) -> list[VectorSearchResult]:
         return [
             VectorSearchResult(
-                memory_entry_id=self._memory_entry_id,
+                memory_entry_id=memory_entry_id,
                 distance=0.1,
-                score=0.91,
+                score=self._score,
             )
+            for memory_entry_id in self._result_ids[:limit]
         ]
 
 
@@ -154,3 +164,164 @@ async def test_memory_service_build_context_returns_empty_on_embedding_error(fac
     assert ctx.recall_available is False
     assert ctx.error is not None
     assert "embedding failed" in ctx.error
+
+
+async def test_memory_service_vector_unavailable_returns_preferences_and_error(factory):
+    conv, trigger, entry = await _seed_memory(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(
+            entry.id,
+            available=False,
+            last_error="vector store unavailable",
+        ),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=conv.id,
+        trigger_id=trigger.id,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == ["Prefer concise answers."]
+    assert ctx.recalled == []
+    assert ctx.recall_available is False
+    assert ctx.error == "vector store unavailable"
+
+
+async def test_memory_service_excludes_below_threshold_results_without_recall_event(factory):
+    conv, trigger, entry = await _seed_memory(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(entry.id, score=0.7),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=conv.id,
+        trigger_id=trigger.id,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == ["Prefer concise answers."]
+    assert ctx.recalled == []
+    assert ctx.recall_available is True
+    assert ctx.error is None
+    async with factory() as session:
+        events = await MemoryRecallRepo(session).list_for_conversation(conv.id)
+    assert events == []
+
+
+async def test_memory_service_skips_missing_and_archived_vector_results(factory):
+    conv, trigger, entry = await _seed_memory(factory)
+    async with factory() as session:
+        await MemoryEntryRepo(session).archive(entry.id)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(entry.id, result_ids=[entry.id, uuid4()]),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=conv.id,
+        trigger_id=trigger.id,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == ["Prefer concise answers."]
+    assert ctx.recalled == []
+    assert ctx.recall_available is True
+    assert ctx.error is None
+    async with factory() as session:
+        events = await MemoryRecallRepo(session).list_for_conversation(conv.id)
+    assert events == []
+
+
+async def test_memory_service_hydration_failure_degrades_without_raising(factory, monkeypatch):
+    conv, trigger, entry = await _seed_memory(factory)
+
+    async def fail_list_active_by_ids(self, ids):
+        raise RuntimeError("hydration failed")
+
+    monkeypatch.setattr(MemoryEntryRepo, "list_active_by_ids", fail_list_active_by_ids)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(entry.id),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=conv.id,
+        trigger_id=trigger.id,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == ["Prefer concise answers."]
+    assert ctx.recalled == []
+    assert ctx.recall_available is False
+    assert ctx.error is not None
+    assert "hydration failed" in ctx.error
+
+
+async def test_memory_service_recall_write_failure_degrades_without_raising(factory, monkeypatch):
+    conv, trigger, entry = await _seed_memory(factory)
+
+    async def fail_record_many(self, *, conversation_id, trigger_id, recalled):
+        raise RuntimeError("recall write failed")
+
+    monkeypatch.setattr(MemoryRecallRepo, "record_many", fail_record_many)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(entry.id),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=conv.id,
+        trigger_id=trigger.id,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == ["Prefer concise answers."]
+    assert ctx.recalled == []
+    assert ctx.recall_available is False
+    assert ctx.error is not None
+    assert "recall write failed" in ctx.error
+
+
+async def test_memory_service_combines_preference_and_embedding_errors(factory, monkeypatch):
+    _conv, _trigger, entry = await _seed_memory(factory, preference_content=None)
+
+    async def fail_list_active(self):
+        raise RuntimeError("preference failed")
+
+    monkeypatch.setattr(MemoryPreferenceRepo, "list_active", fail_list_active)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=BrokenEmbeddingProvider(),
+        vector_store=FakeVectorStore(entry.id),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=None,
+        trigger_id=None,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == []
+    assert ctx.recalled == []
+    assert ctx.recall_available is False
+    assert ctx.error == "preference failed; embedding failed"
