@@ -3,7 +3,12 @@ from fastapi.testclient import TestClient
 
 from jarvis.core.types import ChannelKind, MessageRole
 from jarvis.persistence.db import Base, create_engine, session_factory
-from jarvis.persistence.repositories import ConversationRepo, MessageRepo
+from jarvis.persistence.repositories import (
+    ConversationRepo,
+    MemoryEntryRepo,
+    MemoryRecallRepo,
+    MessageRepo,
+)
 from jarvis.web.app import create_app
 
 
@@ -26,6 +31,41 @@ async def ctx_and_client(tmp_path):
         await msg_repo.append(conversation_id=conv.id, role=MessageRole.USER, content="hello")
         await msg_repo.append(
             conversation_id=conv.id, role=MessageRole.ASSISTANT, content="hi there"
+        )
+        memory_repo = MemoryEntryRepo(s)
+        first_memory = await memory_repo.create(
+            conversation_id=conv.id,
+            source_channel_kind=ChannelKind.DISCORD.value,
+            source_channel_ref="user-1",
+            summary="User prefers TDD and concise updates.",
+            topics=["testing"],
+            entities=["Jarvis"],
+            evidence=[],
+        )
+        second_memory = await memory_repo.create(
+            conversation_id=conv.id,
+            source_channel_kind=ChannelKind.DISCORD.value,
+            source_channel_ref="user-1",
+            summary="Use live verification before claiming success.",
+            topics=["verification"],
+            entities=["Codex"],
+            evidence=[],
+        )
+        await MemoryRecallRepo(s).record_many(
+            conversation_id=conv.id,
+            trigger_id=None,
+            recalled=[
+                {
+                    "memory_entry_id": second_memory.id,
+                    "score": 0.97,
+                    "rank": 1,
+                },
+                {
+                    "memory_entry_id": first_memory.id,
+                    "score": 0.81,
+                    "rank": 2,
+                },
+            ],
         )
         conv_id = conv.id
 
@@ -55,3 +95,10 @@ def test_conversation_detail(ctx_and_client):
     assert resp.status_code == 200
     assert "hello" in resp.text
     assert "hi there" in resp.text
+    assert "Recalled memories" in resp.text
+    assert "Rank 1" in resp.text
+    assert "0.97" in resp.text
+    assert "Use live verification before claiming success." in resp.text
+    assert "Rank 2" in resp.text
+    assert "0.81" in resp.text
+    assert "User prefers TDD and concise updates." in resp.text

@@ -5,6 +5,18 @@
 <h1>Conversation <span class="muted">{{ conversation.channel_kind }} / {{ conversation.channel_ref }}</span></h1>
 <p class="muted">Started {{ conversation.started_at.strftime('%Y-%m-%d %H:%M') }} — {{ conversation.status }}</p>
 
+{% if recall_items %}
+<section class="section-block">
+    <h2>Recalled memories</h2>
+    {% for item in recall_items %}
+    <div class="audit-row">
+        <div><strong>Rank {{ item.event.rank }}</strong> <span class="muted">score {{ '%.2f'|format(item.event.score) }}</span></div>
+        <div>{{ item.memory.summary }}</div>
+    </div>
+    {% endfor %}
+</section>
+{% endif %}
+
 <div class="messages">
 {% for msg in messages %}
     <div class="audit-row">
