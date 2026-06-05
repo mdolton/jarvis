@@ -109,6 +109,7 @@ class MemoryPreferenceRow(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     content: Mapped[str] = mapped_column(Text)
+    content_normalized: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     source: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
@@ -118,6 +119,11 @@ class MemoryPreferenceRow(Base):
 
     __table_args__ = (
         Index("ix_memory_preferences_status_updated_at", "status", "updated_at"),
+        Index(
+            "ix_memory_preferences_content_normalized_unique",
+            "content_normalized",
+            unique=True,
+        ),
     )
 
 
@@ -130,6 +136,7 @@ class MemoryEntryRow(Base):
     )
     source_channel_kind: Mapped[str] = mapped_column(String(32))
     source_channel_ref: Mapped[str] = mapped_column(String(128))
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary: Mapped[str] = mapped_column(Text)
     topics: Mapped[list] = mapped_column(JSON, default=list)
     entities: Mapped[list] = mapped_column(JSON, default=list)
@@ -144,6 +151,7 @@ class MemoryEntryRow(Base):
 
     __table_args__ = (
         Index("ix_memory_entries_status_updated_at", "status", "updated_at"),
+        Index("ix_memory_entries_source_hash_unique", "source_hash", unique=True),
     )
 
 

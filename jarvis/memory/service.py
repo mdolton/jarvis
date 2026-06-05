@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,7 +18,7 @@ from jarvis.memory.types import (
     VectorSearchResult,
 )
 from jarvis.memory.vector_store import MemoryVectorStore
-from jarvis.persistence.models import MemoryEntryRow, MemoryPreferenceRow
+from jarvis.persistence.models import MemoryEntryRow
 from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRepo, MemoryRecallRepo
 
 _MAX_PREFERENCE_PROPOSALS_PER_SUMMARY = 5
@@ -76,17 +78,30 @@ class MemoryService:
 
         entry_id: UUID | None = None
         entry_status: str | None = None
+        entry_created = False
+        source_hash = _source_hash(
+            conversation_id=conversation_id,
+            channel_kind=channel_kind,
+            channel_ref=channel_ref,
+            user_prompt=user_prompt,
+            assistant_output=assistant_output,
+            summary=summary,
+        )
         async with self._session_factory() as session:
             try:
-                existing_entry = await _find_existing_summary_entry(
-                    session=session,
-                    conversation_id=conversation_id,
-                    channel_kind=channel_kind,
-                    channel_ref=channel_ref,
-                    summary=summary,
-                )
+                entry_repo = MemoryEntryRepo(session)
+                existing_entry = await entry_repo.get_by_source_hash(source_hash)
                 if existing_entry is None:
-                    entry = await MemoryEntryRepo(session).create(
+                    existing_entry = await _find_existing_summary_entry(
+                        session=session,
+                        conversation_id=conversation_id,
+                        channel_kind=channel_kind,
+                        channel_ref=channel_ref,
+                        summary=summary,
+                    )
+                if existing_entry is None:
+                    entry, entry_created = await entry_repo.create_or_get_by_source_hash(
+                        source_hash=source_hash,
                         conversation_id=conversation_id,
                         source_channel_kind=channel_kind,
                         source_channel_ref=channel_ref,
@@ -94,13 +109,19 @@ class MemoryService:
                         topics=summary.topics,
                         entities=summary.entities,
                         evidence=summary.evidence,
+                        status="indexing",
                     )
                     entry_id = entry.id
-                    entry_status = "unindexed"
-                    await _set_memory_entry_status(session, entry_id, "unindexed")
+                    entry_status = entry.status
                 else:
                     entry_id = existing_entry.id
                     entry_status = existing_entry.status
+                    if existing_entry.source_hash is None:
+                        await _set_memory_entry_source_hash(
+                            session=session,
+                            memory_entry_id=entry_id,
+                            source_hash=source_hash,
+                        )
                 preferences_created = await _create_preference_proposals(
                     session,
                     summary.preference_candidates,
@@ -114,7 +135,22 @@ class MemoryService:
                     error=str(exc),
                 )
 
+        if entry_status == "active":
+            return MemorySummarizeOutcome(
+                status="created",
+                memory_entry_id=entry_id,
+                preferences_created=preferences_created,
+            )
+        if entry_status == "indexing" and not entry_created:
+            return MemorySummarizeOutcome(
+                status="created",
+                memory_entry_id=entry_id,
+                preferences_created=preferences_created,
+            )
+
         if not self._vector_store.available:
+            if entry_id is not None:
+                await _mark_unindexed_best_effort(self._session_factory, entry_id)
             return MemorySummarizeOutcome(
                 status="unindexed",
                 memory_entry_id=entry_id,
@@ -122,17 +158,12 @@ class MemoryService:
                 error=self._vector_store.last_error or "vector store unavailable",
             )
 
-        if entry_status == "active":
-            return MemorySummarizeOutcome(
-                status="created",
-                memory_entry_id=entry_id,
-                preferences_created=preferences_created,
-            )
-
         try:
             embedding = await self._embedding_provider.embed(_embedding_text(summary))
             await self._vector_store.upsert(entry_id, embedding)
         except Exception as exc:
+            if entry_id is not None:
+                await _mark_unindexed_best_effort(self._session_factory, entry_id)
             return MemorySummarizeOutcome(
                 status="unindexed",
                 memory_entry_id=entry_id,
@@ -293,6 +324,30 @@ def _embedding_text(summary: MemorySummary) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def _source_hash(
+    *,
+    conversation_id: UUID | None,
+    channel_kind: str,
+    channel_ref: str,
+    user_prompt: str,
+    assistant_output: str,
+    summary: MemorySummary,
+) -> str:
+    payload = {
+        "conversation_id": str(conversation_id) if conversation_id else None,
+        "channel_kind": channel_kind,
+        "channel_ref": channel_ref,
+        "user_prompt": user_prompt,
+        "assistant_output": assistant_output,
+        "summary": summary.summary,
+        "topics": summary.topics,
+        "entities": summary.entities,
+        "evidence": summary.evidence,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
 async def _set_memory_entry_status(
     session: AsyncSession,
     memory_entry_id: UUID,
@@ -304,6 +359,23 @@ async def _set_memory_entry_status(
         .values(status=status, updated_at=datetime.now(UTC))
     )
     await session.commit()
+
+
+async def _set_memory_entry_source_hash(
+    *,
+    session: AsyncSession,
+    memory_entry_id: UUID,
+    source_hash: str,
+) -> None:
+    try:
+        await session.execute(
+            update(MemoryEntryRow)
+            .where(MemoryEntryRow.id == memory_entry_id)
+            .values(source_hash=source_hash, updated_at=datetime.now(UTC))
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
 
 
 async def _mark_unindexed_best_effort(
@@ -331,11 +403,11 @@ async def _create_preference_proposals(
     if not proposals:
         return 0
 
-    await MemoryPreferenceRepo(session).create_pending_many(
+    rows = await MemoryPreferenceRepo(session).create_pending_many(
         contents=proposals,
         source="agent_proposal",
     )
-    return len(proposals)
+    return len(rows)
 
 
 def _limited_unique_preference_candidates(candidates: list[str]) -> list[tuple[str, str]]:
@@ -354,10 +426,7 @@ def _limited_unique_preference_candidates(candidates: list[str]) -> list[tuple[s
 
 
 async def _existing_preferences(session: AsyncSession) -> set[str]:
-    result = await session.execute(
-        select(MemoryPreferenceRow.content)
-    )
-    return {_normalize_preference(content) for content in result.scalars()}
+    return await MemoryPreferenceRepo(session).existing_normalized_contents()
 
 
 def _normalize_preference(content: str) -> str:

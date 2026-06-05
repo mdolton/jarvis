@@ -1,9 +1,11 @@
 """Repositories — the only way core modules touch the database."""
 
+import re
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import case, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -237,6 +239,7 @@ class MemoryPreferenceRepo:
         now = _utcnow()
         row = MemoryPreferenceRow(
             content=content,
+            content_normalized=_normalize_preference_content(content),
             status="pending",
             source=source,
             created_at=now,
@@ -257,6 +260,7 @@ class MemoryPreferenceRepo:
         rows = [
             MemoryPreferenceRow(
                 content=content,
+                content_normalized=_normalize_preference_content(content),
                 status="pending",
                 source=source,
                 created_at=now,
@@ -264,15 +268,66 @@ class MemoryPreferenceRepo:
             )
             for content in contents
         ]
+        if not rows:
+            return []
         try:
             self._session.add_all(rows)
             await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            return await self._create_missing_pending(
+                contents=contents,
+                source=source,
+            )
         except Exception:
             await self._session.rollback()
             raise
         for row in rows:
             await self._session.refresh(row)
         return rows
+
+    async def _create_missing_pending(
+        self,
+        *,
+        contents: list[str],
+        source: str,
+    ) -> list[MemoryPreferenceRow]:
+        existing = await self.existing_normalized_contents()
+        missing = [
+            content
+            for content in contents
+            if _normalize_preference_content(content) not in existing
+        ]
+        if not missing:
+            return []
+        now = _utcnow()
+        rows = [
+            MemoryPreferenceRow(
+                content=content,
+                content_normalized=_normalize_preference_content(content),
+                status="pending",
+                source=source,
+                created_at=now,
+                updated_at=now,
+            )
+            for content in missing
+        ]
+        try:
+            self._session.add_all(rows)
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            return []
+        except Exception:
+            await self._session.rollback()
+            raise
+        for row in rows:
+            await self._session.refresh(row)
+        return rows
+
+    async def existing_normalized_contents(self) -> set[str]:
+        result = await self._session.execute(select(MemoryPreferenceRow.content))
+        return {_normalize_preference_content(content) for content in result.scalars()}
 
     async def list_active(self) -> list[MemoryPreferenceRow]:
         result = await self._session.execute(
@@ -324,9 +379,10 @@ class MemoryEntryRepo:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(
+    async def create_or_get_by_source_hash(
         self,
         *,
+        source_hash: str,
         conversation_id: UUID | None,
         source_channel_kind: str,
         source_channel_ref: str,
@@ -334,16 +390,18 @@ class MemoryEntryRepo:
         topics: list,
         entities: list,
         evidence: list[dict],
-    ) -> MemoryEntryRow:
+        status: str,
+    ) -> tuple[MemoryEntryRow, bool]:
         now = _utcnow()
         row = MemoryEntryRow(
             conversation_id=conversation_id,
             source_channel_kind=source_channel_kind,
             source_channel_ref=source_channel_ref,
+            source_hash=source_hash,
             summary=summary,
             topics=topics,
             entities=entities,
-            status="active",
+            status=status,
             created_at=now,
             updated_at=now,
             evidence=[
@@ -357,13 +415,81 @@ class MemoryEntryRepo:
             ],
         )
         self._session.add(row)
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            existing = await self.get_by_source_hash(source_hash)
+            if existing is None:
+                raise
+            return existing, False
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.id == row.id)
+            .options(selectinload(MemoryEntryRow.evidence))
+        )
+        return result.scalar_one(), True
+
+    async def create(
+        self,
+        *,
+        conversation_id: UUID | None,
+        source_channel_kind: str,
+        source_channel_ref: str,
+        summary: str,
+        topics: list,
+        entities: list,
+        evidence: list[dict],
+        source_hash: str | None = None,
+        status: str = "active",
+    ) -> MemoryEntryRow:
+        now = _utcnow()
+        row = MemoryEntryRow(
+            conversation_id=conversation_id,
+            source_channel_kind=source_channel_kind,
+            source_channel_ref=source_channel_ref,
+            source_hash=source_hash,
+            summary=summary,
+            topics=topics,
+            entities=entities,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            evidence=[
+                MemoryEvidenceRow(
+                    kind=item["kind"],
+                    label=item["label"],
+                    content=item["content"],
+                    created_at=now,
+                )
+                for item in evidence
+            ],
+        )
+        self._session.add(row)
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            if source_hash is None:
+                raise
+            existing = await self.get_by_source_hash(source_hash)
+            if existing is None:
+                raise
+            return existing
         result = await self._session.execute(
             select(MemoryEntryRow)
             .where(MemoryEntryRow.id == row.id)
             .options(selectinload(MemoryEntryRow.evidence))
         )
         return result.scalar_one()
+
+    async def get_by_source_hash(self, source_hash: str) -> MemoryEntryRow | None:
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.source_hash == source_hash)
+            .options(selectinload(MemoryEntryRow.evidence))
+        )
+        return result.scalar_one_or_none()
 
     async def list_recent(self, *, limit: int = 100) -> list[MemoryEntryRow]:
         result = await self._session.execute(
@@ -444,6 +570,10 @@ class MemoryRecallRepo:
             .order_by(MemoryRecallEventRow.created_at.desc(), MemoryRecallEventRow.rank.asc())
         )
         return list(result.scalars())
+
+
+def _normalize_preference_content(content: str) -> str:
+    return re.sub(r"\s+", " ", content).strip().casefold()
 
 
 class ScheduleRepo:

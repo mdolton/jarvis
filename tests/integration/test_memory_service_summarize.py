@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -72,6 +73,24 @@ class _EmptySummarizer:
 class _FailingSummarizer:
     async def summarize(self, *, user_prompt: str, assistant_output: str) -> MemorySummary:
         raise RuntimeError("summary failed")
+
+
+class _BarrierSummarizer(_FakeSummarizer):
+    def __init__(self, *, parties: int, preference_candidates=None) -> None:
+        super().__init__(preference_candidates=preference_candidates)
+        self._parties = parties
+        self._waiting = 0
+        self._event = asyncio.Event()
+
+    async def summarize(self, *, user_prompt: str, assistant_output: str) -> MemorySummary:
+        self._waiting += 1
+        if self._waiting >= self._parties:
+            self._event.set()
+        await self._event.wait()
+        return await super().summarize(
+            user_prompt=user_prompt,
+            assistant_output=assistant_output,
+        )
 
 
 @pytest.fixture
@@ -425,6 +444,61 @@ async def test_memory_service_summarize_run_retry_reuses_entry_vector_and_prefer
     assert len(entries) == 1
     assert len(preferences) == 1
     assert vector_store.upserts == [(entries[0].id, [0.1, 0.2, 0.3])]
+
+
+async def test_memory_service_summarize_run_concurrent_identical_calls_reuse_entry(
+    factory,
+):
+    vector_store = _FakeVectorStore()
+    conversation_id = await _create_conversation(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=vector_store,
+        summarizer=_BarrierSummarizer(parties=2),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    first, second = await asyncio.gather(
+        _summarize(service, conversation_id),
+        _summarize(service, conversation_id),
+    )
+
+    entries, preferences, _evidence = await _list_entries_preferences_and_evidence(factory)
+
+    assert first.status == "created"
+    assert second.status == "created"
+    assert first.memory_entry_id == second.memory_entry_id == entries[0].id
+    assert len(entries) == 1
+    assert len(preferences) == 1
+    assert len(vector_store.upserts) == 1
+    assert vector_store.upserts[0] == (entries[0].id, [0.1, 0.2, 0.3])
+
+
+async def test_memory_service_summarize_run_concurrent_identical_preferences_dedupe(
+    factory,
+):
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_BarrierSummarizer(parties=2),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    first, second = await asyncio.gather(
+        _summarize(service, None),
+        _summarize(service, None),
+    )
+
+    entries, preferences, _evidence = await _list_entries_preferences_and_evidence(factory)
+
+    assert {first.preferences_created, second.preferences_created} == {0, 1}
+    assert len(entries) == 1
+    assert len(preferences) == 1
+    assert preferences[0].content == "Prefer concise answers."
 
 
 async def test_memory_service_summarize_run_rolls_back_preference_batch_on_failure(
