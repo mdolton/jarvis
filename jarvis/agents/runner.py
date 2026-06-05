@@ -11,8 +11,10 @@ Responsibilities:
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agents import RunConfig, Runner
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -207,7 +209,7 @@ def _extract_from_trigger(request: InvocationRequest):
     if isinstance(t, ChannelMessage):
         return t.channel_kind, t.channel_ref, t.text
     if isinstance(t, ScheduledTrigger):
-        return ChannelKind.SCHEDULED, t.schedule_id, t.prompt
+        return ChannelKind.SCHEDULED, t.schedule_id, _scheduled_prompt(t)
     if isinstance(t, ManualTrigger):
         return ChannelKind.DASHBOARD, t.user, t.prompt
     raise ValueError(f"unknown trigger: {t!r}")
@@ -229,6 +231,29 @@ def _idle_for_kind(kind: ChannelKind, default_sec: int) -> int:
     if kind == ChannelKind.SCHEDULED:
         return 0
     return default_sec
+
+
+def _scheduled_prompt(trigger: ScheduledTrigger) -> str:
+    if trigger.timezone is None or trigger.fired_at is None:
+        return trigger.prompt
+
+    try:
+        zone = ZoneInfo(trigger.timezone)
+    except ZoneInfoNotFoundError:
+        return trigger.prompt
+
+    fired_at_utc = trigger.fired_at
+    if fired_at_utc.tzinfo is None:
+        fired_at_utc = fired_at_utc.replace(tzinfo=UTC)
+    local_time = fired_at_utc.astimezone(zone)
+    context = (
+        "Schedule context:\n"
+        f"- Timezone: {trigger.timezone}\n"
+        f"- Local date: {local_time:%Y-%m-%d}\n"
+        f"- Local time: {local_time:%Y-%m-%d %H:%M %Z}\n"
+        "- Interpret relative dates like today, tomorrow, and yesterday in this timezone.\n\n"
+    )
+    return f"{context}{trigger.prompt}"
 
 
 def _extract_text(sdk_result) -> str:

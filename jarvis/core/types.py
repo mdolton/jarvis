@@ -95,6 +95,8 @@ class ScheduledTrigger(_ModelBase):
     prompt: str
     output_mode: Literal["discord", "dashboard_only", "discord_if_noteworthy"]
     model: str | None = None
+    timezone: str | None = None
+    fired_at: datetime | None = None
 
 
 class ManualTrigger(_ModelBase):
