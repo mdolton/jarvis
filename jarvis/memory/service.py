@@ -85,7 +85,6 @@ class MemoryService:
             channel_ref=channel_ref,
             user_prompt=user_prompt,
             assistant_output=assistant_output,
-            summary=summary,
         )
         async with self._session_factory() as session:
             try:
@@ -331,7 +330,6 @@ def _source_hash(
     channel_ref: str,
     user_prompt: str,
     assistant_output: str,
-    summary: MemorySummary,
 ) -> str:
     payload = {
         "conversation_id": str(conversation_id) if conversation_id else None,
@@ -339,10 +337,6 @@ def _source_hash(
         "channel_ref": channel_ref,
         "user_prompt": user_prompt,
         "assistant_output": assistant_output,
-        "summary": summary.summary,
-        "topics": summary.topics,
-        "entities": summary.entities,
-        "evidence": summary.evidence,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()

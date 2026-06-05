@@ -35,6 +35,17 @@ async def test_memory_preference_repo_lifecycle(session):
     assert await repo.list_active() == []
 
 
+async def test_memory_preference_repo_duplicate_create_pending_keeps_session_usable(session):
+    repo = MemoryPreferenceRepo(session)
+
+    first = await repo.create_pending(content="Use concise answers", source="user")
+    second = await repo.create_pending(content=" use concise answers ", source="agent_proposal")
+    rows = await repo.list_for_dashboard()
+
+    assert second.id == first.id
+    assert [row.id for row in rows] == [first.id]
+
+
 async def test_memory_entry_repo_lifecycle(session):
     repo = MemoryEntryRepo(session)
     conversation_id = uuid4()

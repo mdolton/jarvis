@@ -237,16 +237,24 @@ class MemoryPreferenceRepo:
 
     async def create_pending(self, *, content: str, source: str) -> MemoryPreferenceRow:
         now = _utcnow()
+        content_normalized = _normalize_preference_content(content)
         row = MemoryPreferenceRow(
             content=content,
-            content_normalized=_normalize_preference_content(content),
+            content_normalized=content_normalized,
             status="pending",
             source=source,
             created_at=now,
             updated_at=now,
         )
         self._session.add(row)
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            existing = await self.get_by_normalized_content(content_normalized)
+            if existing is None:
+                raise
+            return existing
         await self._session.refresh(row)
         return row
 
@@ -328,6 +336,17 @@ class MemoryPreferenceRepo:
     async def existing_normalized_contents(self) -> set[str]:
         result = await self._session.execute(select(MemoryPreferenceRow.content))
         return {_normalize_preference_content(content) for content in result.scalars()}
+
+    async def get_by_normalized_content(
+        self,
+        content_normalized: str,
+    ) -> MemoryPreferenceRow | None:
+        result = await self._session.execute(
+            select(MemoryPreferenceRow).where(
+                MemoryPreferenceRow.content_normalized == content_normalized
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def list_active(self) -> list[MemoryPreferenceRow]:
         result = await self._session.execute(

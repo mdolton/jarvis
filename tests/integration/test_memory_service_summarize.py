@@ -93,6 +93,49 @@ class _BarrierSummarizer(_FakeSummarizer):
         )
 
 
+class _DivergentBarrierSummarizer(_BarrierSummarizer):
+    def __init__(self, *, parties: int) -> None:
+        super().__init__(parties=parties)
+        self._outputs = [
+            MemorySummary(
+                summary="We discussed Jarvis memory.",
+                topics=["jarvis", "memory"],
+                entities=["sqlite-vec"],
+                evidence=[
+                    {
+                        "kind": "identifier",
+                        "label": "library",
+                        "content": "sqlite-vec",
+                    }
+                ],
+                preference_candidates=["Prefer concise answers."],
+            ),
+            MemorySummary(
+                summary="Jarvis memory came up.",
+                topics=["memory", "jarvis"],
+                entities=["sqlite-vec"],
+                evidence=[
+                    {
+                        "kind": "identifier",
+                        "label": "library",
+                        "content": "sqlite-vec",
+                    }
+                ],
+                preference_candidates=["Prefer concise answers."],
+            ),
+        ]
+        self._next_output = 0
+
+    async def summarize(self, *, user_prompt: str, assistant_output: str) -> MemorySummary:
+        self._waiting += 1
+        output_index = self._next_output
+        self._next_output += 1
+        if self._waiting >= self._parties:
+            self._event.set()
+        await self._event.wait()
+        return self._outputs[output_index]
+
+
 @pytest.fixture
 async def factory(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
@@ -499,6 +542,35 @@ async def test_memory_service_summarize_run_concurrent_identical_preferences_ded
     assert len(entries) == 1
     assert len(preferences) == 1
     assert preferences[0].content == "Prefer concise answers."
+
+
+async def test_memory_service_summarize_run_concurrent_different_summaries_reuse_entry(
+    factory,
+):
+    vector_store = _FakeVectorStore()
+    conversation_id = await _create_conversation(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=vector_store,
+        summarizer=_DivergentBarrierSummarizer(parties=2),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    first, second = await asyncio.gather(
+        _summarize(service, conversation_id),
+        _summarize(service, conversation_id),
+    )
+
+    entries, preferences, _evidence = await _list_entries_preferences_and_evidence(factory)
+
+    assert first.status == "created"
+    assert second.status == "created"
+    assert first.memory_entry_id == second.memory_entry_id == entries[0].id
+    assert len(entries) == 1
+    assert len(preferences) == 1
+    assert len(vector_store.upserts) == 1
 
 
 async def test_memory_service_summarize_run_rolls_back_preference_batch_on_failure(
