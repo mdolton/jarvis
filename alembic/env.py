@@ -2,9 +2,11 @@
 
 import asyncio
 from logging.config import fileConfig
+from pathlib import Path
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
@@ -44,7 +46,17 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
+def _ensure_sqlite_parent_dir(url: str) -> None:
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "sqlite":
+        return
+    if not parsed.database or parsed.database == ":memory:":
+        return
+    Path(parsed.database).parent.mkdir(parents=True, exist_ok=True)
+
+
 async def run_migrations_online() -> None:
+    _ensure_sqlite_parent_dir(config.get_main_option("sqlalchemy.url"))
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

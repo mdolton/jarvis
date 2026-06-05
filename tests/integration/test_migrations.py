@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -36,3 +37,27 @@ def test_migration_roundtrip(tmp_path):
     assert up.returncode == 0, up.stderr
     down = _run_alembic(db_path, "downgrade base")
     assert down.returncode == 0, down.stderr
+
+
+def test_default_sqlite_parent_dir_is_created_for_alembic_check(tmp_path):
+    cwd = Path(__file__).resolve().parents[2]
+    data_dir = cwd / "data"
+    backup_dir = tmp_path / "data-backup"
+
+    if data_dir.exists():
+        shutil.move(data_dir, backup_dir)
+    try:
+        result = subprocess.run(
+            ["uv", "run", "alembic", "check"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            env={**os.environ},
+        )
+        assert "unable to open database file" not in result.stderr
+        assert data_dir.exists()
+    finally:
+        if data_dir.exists():
+            shutil.rmtree(data_dir)
+        if backup_dir.exists():
+            shutil.move(backup_dir, data_dir)
