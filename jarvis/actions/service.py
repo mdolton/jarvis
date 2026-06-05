@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -36,6 +37,7 @@ class ActionService:
         llm_config: LLMConfig,
         mcp_servers_provider: Callable[[], list],
         scheduled_output_router: ScheduledOutputRouter | None = None,
+        memory_service: Any = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -43,6 +45,8 @@ class ActionService:
         self._scheduled_output_router = scheduled_output_router
         self._llm_config = llm_config
         self._mcp_servers_provider = mcp_servers_provider
+        self._memory_service = memory_service
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def approve(self, action_id: UUID) -> AgentRunResult:
         return await self._decide(action_id, decision="approved", reason=None)
@@ -124,6 +128,16 @@ class ActionService:
 
             async with self._session_factory() as session:
                 await ActionRepo(session).mark_completed(action_id)
+
+            user_prompt = await self._latest_user_prompt(action.conversation_id)
+            if user_prompt is not None:
+                self._schedule_memory_summary(
+                    conversation_id=action.conversation_id,
+                    channel_kind=action.channel_kind,
+                    channel_ref=action.channel_ref,
+                    user_prompt=user_prompt,
+                    assistant_output=final_text,
+                )
 
             await self._audit.emit(
                 AuditEvent(
@@ -253,6 +267,54 @@ class ActionService:
             output_mode=row.output_mode,
             discord_user_id=row.discord_user_id or "",
         )
+
+    async def _latest_user_prompt(self, conversation_id: UUID | None) -> str | None:
+        if conversation_id is None:
+            return None
+
+        async with self._session_factory() as session:
+            history = await MessageRepo(session).history(conversation_id)
+
+        for message in reversed(history):
+            if message.role == MessageRole.USER.value:
+                return message.content
+        return None
+
+    def _schedule_memory_summary(
+        self,
+        *,
+        conversation_id: UUID | None,
+        channel_kind: str,
+        channel_ref: str,
+        user_prompt: str,
+        assistant_output: str,
+    ) -> None:
+        if self._memory_service is None:
+            return
+
+        async def _run() -> None:
+            try:
+                await self._memory_service.summarize_run(
+                    conversation_id=conversation_id,
+                    channel_kind=channel_kind,
+                    channel_ref=channel_ref,
+                    user_prompt=user_prompt,
+                    assistant_output=assistant_output,
+                )
+            except Exception:
+                _log.exception("memory summarization failed during action resume")
+
+        task = asyncio.create_task(_run(), name="action-memory-summary")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def drain_memory_tasks(self) -> None:
+        while self._background_tasks:
+            pending = tuple(self._background_tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        await self.drain_memory_tasks()
 
 
 def _approval_interruption_for_action(run_state: Any, action: ActionRow) -> Any:

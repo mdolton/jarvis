@@ -192,6 +192,28 @@ async def test_memory_service_vector_unavailable_returns_preferences_and_error(f
     assert ctx.error == "vector store unavailable"
 
 
+async def test_memory_service_recall_disabled_reports_unavailable(factory):
+    conv, trigger, entry = await _seed_memory(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(entry.id),
+        max_recalled_memories=0,
+        min_relevance_score=0.8,
+    )
+
+    ctx = await service.build_context(
+        conversation_id=conv.id,
+        trigger_id=trigger.id,
+        prompt="What did we ship?",
+    )
+
+    assert ctx.preferences == ["Prefer concise answers."]
+    assert ctx.recalled == []
+    assert ctx.recall_available is False
+    assert ctx.error is None
+
+
 async def test_memory_service_excludes_below_threshold_results_without_recall_event(factory):
     conv, trigger, entry = await _seed_memory(factory)
     service = MemoryService(

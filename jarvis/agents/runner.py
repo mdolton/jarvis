@@ -82,6 +82,10 @@ class AgentRunner:
     async def run(self, request: InvocationRequest) -> AgentRunResult:
         channel_kind, channel_ref, user_prompt, trigger_context = _extract_from_trigger(request)
         trigger_kind = request.trigger.kind
+        stored_user_prompt = _assemble_trigger_prompt(
+            trigger_context=trigger_context,
+            user_prompt=user_prompt,
+        )
 
         async with self._session_factory() as session:
             # Record the trigger.
@@ -103,7 +107,7 @@ class AgentRunner:
             await MessageRepo(session).append(
                 conversation_id=conv_id,
                 role=MessageRole.USER,
-                content=user_prompt,
+                content=stored_user_prompt,
             )
 
         prompt = await self._build_prompt_with_memory(
@@ -176,15 +180,6 @@ class AgentRunner:
                         role=MessageRole.ASSISTANT,
                         content=final_text,
                     )
-
-            self._schedule_memory_summary(
-                conversation_id=conv_id,
-                channel_kind=channel_kind.value,
-                channel_ref=channel_ref,
-                user_prompt=user_prompt,
-                assistant_output=final_text,
-            )
-
             await self._audit.emit(
                 AuditEvent(
                     type=AuditEventType.ACTION_CREATED,
@@ -291,6 +286,14 @@ class AgentRunner:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    async def drain_memory_tasks(self) -> None:
+        while self._background_tasks:
+            pending = tuple(self._background_tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        await self.drain_memory_tasks()
+
 
 def _extract_from_trigger(request: InvocationRequest):
     t = request.trigger
@@ -348,6 +351,14 @@ def _extract_text(sdk_result) -> str:
     if hasattr(sdk_result, "final_output") and sdk_result.final_output is not None:
         return str(sdk_result.final_output)
     return ""
+
+
+def _assemble_trigger_prompt(*, trigger_context: str, user_prompt: str) -> str:
+    return assemble_memory_prompt(
+        memory_context=_empty_memory_context(),
+        trigger_context=trigger_context,
+        current_prompt=user_prompt,
+    )
 
 
 def _empty_memory_context() -> MemoryContext:

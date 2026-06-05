@@ -238,3 +238,48 @@ async def test_agent_runner_continues_when_memory_recall_or_summary_fails(infra,
     assert "Standing preferences:" not in captured["prompt"]
     assert "Schedule context:" in captured["prompt"]
     assert captured["prompt"].endswith("Prepare my daily brief for today.")
+
+
+async def test_agent_runner_drain_waits_for_inflight_summary(infra, monkeypatch):
+    factory, audit = infra
+
+    class BlockingMemoryService:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def build_context(self, **kwargs):
+            return MemoryContext(
+                preferences=[],
+                recalled=[],
+                recall_available=False,
+                error=None,
+            )
+
+        async def summarize_run(self, **kwargs):
+            self.started.set()
+            await self.release.wait()
+
+    async def fake_run(agent, prompt, run_config=None):
+        return SimpleNamespace(final_output="done")
+
+    monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
+    memory_service = BlockingMemoryService()
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers_provider=lambda: [],
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        model=_FakeModel(),
+        memory_service=memory_service,
+    )
+
+    await runner.run(InvocationRequest(trigger=ManualTrigger(user="mark", prompt="hello")))
+    await memory_service.started.wait()
+
+    drain_task = asyncio.create_task(runner.drain_memory_tasks())
+    await asyncio.sleep(0)
+    assert not drain_task.done()
+
+    memory_service.release.set()
+    await drain_task

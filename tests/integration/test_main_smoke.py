@@ -1,6 +1,7 @@
 import pytest
+from fastapi import FastAPI
 
-from jarvis.main import bootstrap
+from jarvis.main import AppContext, bootstrap
 
 # JARVIS_SECRETS_KEY is set for every integration test by the autouse
 # `_set_secrets_key` fixture in tests/integration/conftest.py.
@@ -158,6 +159,8 @@ async def test_bootstrap_wires_memory_service_for_local_sqlite(tmp_path, config_
     try:
         assert ctx.memory_service is not None
         assert ctx.agent_runner._memory_service is ctx.memory_service
+        assert ctx.action_service._memory_service is ctx.memory_service
+        assert ctx.scheduler._runner._memory_service is ctx.memory_service
         assert ctx.memory_service._embedding_provider._client is ctx.llm_client
         assert ctx.memory_service._summarizer._client is ctx.llm_client
     finally:
@@ -208,6 +211,73 @@ async def test_bootstrap_disables_memory_for_non_sqlite_db_url(tmp_path, config_
     try:
         assert ctx.memory_service is None
         assert ctx.agent_runner._memory_service is None
+        assert ctx.action_service._memory_service is None
+        assert ctx.scheduler._runner._memory_service is None
         assert "memory disabled" in caplog.text
     finally:
         await ctx.shutdown()
+
+
+async def test_app_context_shutdown_drains_memory_tasks_before_closing_clients():
+    events = []
+
+    class FakeScheduler:
+        async def stop(self):
+            events.append("scheduler.stop")
+
+    class FakeDrainable:
+        def __init__(self, name):
+            self.name = name
+
+        async def drain_memory_tasks(self):
+            events.append(f"{self.name}.drain")
+
+    class FakeAdapter:
+        async def stop(self):
+            events.append("adapter.stop")
+
+    class FakeStopper:
+        def __init__(self, name):
+            self.name = name
+
+        async def stop(self):
+            events.append(f"{self.name}.stop")
+
+        async def aclose(self):
+            events.append(f"{self.name}.aclose")
+
+        async def close(self):
+            events.append(f"{self.name}.close")
+
+        async def dispose(self):
+            events.append(f"{self.name}.dispose")
+
+    ctx = AppContext(
+        config=object(),
+        engine=FakeStopper("engine"),
+        session_factory=object(),
+        audit=FakeStopper("audit"),
+        mcp_manager=FakeStopper("mcp"),
+        agent_runner=FakeDrainable("runner"),
+        action_service=FakeDrainable("actions"),
+        dispatcher=object(),
+        channel_adapters=[FakeAdapter()],
+        output_router=object(),
+        scheduler=FakeScheduler(),
+        web_app=FastAPI(),
+        oauth_flow=object(),
+        oauth_http=FakeStopper("oauth"),
+        llm_client=FakeStopper("llm"),
+        model_catalog=object(),
+        model_store=object(),
+        memory_service=None,
+    )
+
+    await ctx.shutdown()
+
+    assert events.index("runner.drain") < events.index("llm.close")
+    assert events.index("runner.drain") < events.index("audit.stop")
+    assert events.index("runner.drain") < events.index("engine.dispose")
+    assert events.index("actions.drain") < events.index("llm.close")
+    assert events.index("actions.drain") < events.index("audit.stop")
+    assert events.index("actions.drain") < events.index("engine.dispose")

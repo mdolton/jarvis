@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -73,6 +74,24 @@ class _RecordingAdapter:
 
     async def send(self, msg: OutboundMessage) -> None:
         self.sent.append(msg)
+
+
+class _RecordingMemoryService:
+    def __init__(self) -> None:
+        self.summarize_calls = []
+
+    async def summarize_run(self, **kwargs):
+        self.summarize_calls.append(kwargs)
+
+
+class _BlockingMemoryService:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def summarize_run(self, **kwargs):
+        self.started.set()
+        await self.release.wait()
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -202,6 +221,36 @@ async def test_approve_uses_restored_interruption_and_routes(monkeypatch, infra)
             assert event.payload["action_id"] == str(action.id)
             assert event.payload["server_name"] == "gmail"
             assert event.payload["tool_name"] == "send_email"
+
+
+async def test_approve_summarizes_real_resumed_output(monkeypatch, infra):
+    factory, audit = infra
+    action = await _action(factory, conversation=True)
+    canonical_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    state = _FakeRunState([canonical_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr("jarvis.actions.service.Runner.run", AsyncMock(return_value=_FakeResult()))
+    memory_service = _RecordingMemoryService()
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=None,
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+        memory_service=memory_service,
+    )
+
+    await service.approve(action.id)
+    await service.drain_memory_tasks()
+
+    assert len(memory_service.summarize_calls) == 1
+    assert memory_service.summarize_calls[0]["conversation_id"] == action.conversation_id
+    assert memory_service.summarize_calls[0]["user_prompt"] == "send it"
+    assert memory_service.summarize_calls[0]["assistant_output"] == "resume complete"
 
 
 async def test_route_failure_after_success_leaves_action_completed(monkeypatch, infra):
@@ -355,6 +404,76 @@ async def test_second_interruption_creates_new_pending_action(monkeypatch, infra
         assert completed.payload["action_id"] == str(action.id)
         assert completed.payload["server_name"] == "gmail"
         assert completed.payload["tool_name"] == "send_email"
+
+
+async def test_second_interruption_does_not_summarize_placeholder_notice(monkeypatch, infra):
+    factory, audit = infra
+    action = await _action(factory, conversation=True)
+    first_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    second_item = SimpleNamespace(
+        raw_item=SimpleNamespace(
+            name="delete_message",
+            call_id="call-2",
+            arguments='{"id":"m-1"}',
+            server_label="gmail",
+        )
+    )
+    state = _FakeRunState([first_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr(
+        "jarvis.actions.service.Runner.run",
+        AsyncMock(return_value=_FakeInterruptedResult(second_item)),
+    )
+    memory_service = _RecordingMemoryService()
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=None,
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+        memory_service=memory_service,
+    )
+
+    await service.approve(action.id)
+    await service.drain_memory_tasks()
+
+    assert memory_service.summarize_calls == []
+
+
+async def test_action_service_drain_waits_for_inflight_summary(monkeypatch, infra):
+    factory, audit = infra
+    action = await _action(factory, conversation=True)
+    canonical_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    state = _FakeRunState([canonical_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr("jarvis.actions.service.Runner.run", AsyncMock(return_value=_FakeResult()))
+    memory_service = _BlockingMemoryService()
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=None,
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+        memory_service=memory_service,
+    )
+
+    await service.approve(action.id)
+    await memory_service.started.wait()
+
+    drain_task = asyncio.create_task(service.drain_memory_tasks())
+    await asyncio.sleep(0)
+    assert not drain_task.done()
+
+    memory_service.release.set()
+    await drain_task
 
 
 async def test_scheduled_resume_output_routes_through_scheduled_router(monkeypatch, infra):

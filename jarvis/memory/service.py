@@ -196,11 +196,19 @@ class MemoryService:
     ) -> MemoryContext:
         preferences, preference_error = await self._load_preferences()
 
-        if not self._vector_store.available or self._max_recalled_memories <= 0:
+        if self._max_recalled_memories <= 0:
             return MemoryContext(
                 preferences=preferences,
                 recalled=[],
-                recall_available=self._vector_store.available,
+                recall_available=False,
+                error=preference_error,
+            )
+
+        if not self._vector_store.available:
+            return MemoryContext(
+                preferences=preferences,
+                recalled=[],
+                recall_available=False,
                 error=_combine_errors(preference_error, self._vector_store.last_error),
             )
 

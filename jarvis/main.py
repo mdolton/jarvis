@@ -73,6 +73,8 @@ class AppContext:
                 await adapter.stop()
             except Exception:
                 _log.exception("error stopping channel adapter")
+        await self.action_service.drain_memory_tasks()
+        await self.agent_runner.drain_memory_tasks()
         await self.mcp_manager.stop()
         await self.oauth_http.aclose()
         await self.llm_client.close()
@@ -201,6 +203,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         llm_config=cfg.jarvis.llm,
         mcp_servers_provider=mcp_manager.agent_mcp_servers,
         scheduled_output_router=ScheduledOutputRouter(discord_adapter=discord_adapter),
+        memory_service=memory_service,
     )
 
     # Scheduler.
@@ -215,6 +218,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         max_concurrent=cfg.jarvis.max_concurrent_agents,
         oauth_flow=oauth_flow,
         mcp_manager=mcp_manager,
+        memory_service=memory_service,
     )
     await scheduler.start()
 
