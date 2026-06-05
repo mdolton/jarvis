@@ -368,29 +368,37 @@ class MemoryPreferenceRepo:
         return list(result.scalars())
 
     async def approve(self, preference_id: UUID) -> None:
+        row = await self._session.get(MemoryPreferenceRow, preference_id)
+        if row is None:
+            raise LookupError("memory preference not found")
+        if row.status != "pending":
+            raise ValueError("invalid preference transition")
         now = _utcnow()
-        await self._session.execute(
-            update(MemoryPreferenceRow)
-            .where(MemoryPreferenceRow.id == preference_id)
-            .values(status="active", approved_at=now, updated_at=now)
-        )
+        row.status = "active"
+        row.approved_at = now
+        row.updated_at = now
         await self._session.commit()
 
     async def reject(self, preference_id: UUID) -> None:
-        await self._session.execute(
-            update(MemoryPreferenceRow)
-            .where(MemoryPreferenceRow.id == preference_id)
-            .values(status="rejected", updated_at=_utcnow())
-        )
+        row = await self._session.get(MemoryPreferenceRow, preference_id)
+        if row is None:
+            raise LookupError("memory preference not found")
+        if row.status != "pending":
+            raise ValueError("invalid preference transition")
+        row.status = "rejected"
+        row.updated_at = _utcnow()
         await self._session.commit()
 
     async def archive(self, preference_id: UUID) -> None:
+        row = await self._session.get(MemoryPreferenceRow, preference_id)
+        if row is None:
+            raise LookupError("memory preference not found")
+        if row.status == "archived":
+            raise ValueError("invalid preference transition")
         now = _utcnow()
-        await self._session.execute(
-            update(MemoryPreferenceRow)
-            .where(MemoryPreferenceRow.id == preference_id)
-            .values(status="archived", archived_at=now, updated_at=now)
-        )
+        row.status = "archived"
+        row.archived_at = now
+        row.updated_at = now
         await self._session.commit()
 
 
@@ -568,11 +576,13 @@ class MemoryEntryRepo:
         return evidence_by_entry
 
     async def archive(self, memory_entry_id: UUID) -> None:
-        await self._session.execute(
-            update(MemoryEntryRow)
-            .where(MemoryEntryRow.id == memory_entry_id)
-            .values(status="archived", updated_at=_utcnow())
-        )
+        row = await self._session.get(MemoryEntryRow, memory_entry_id)
+        if row is None:
+            raise LookupError("memory entry not found")
+        if row.status == "archived":
+            raise ValueError("invalid memory entry transition")
+        row.status = "archived"
+        row.updated_at = _utcnow()
         await self._session.commit()
 
     async def mark_recalled(self, ids: list[UUID]) -> None:

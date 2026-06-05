@@ -46,6 +46,37 @@ async def test_memory_preference_repo_duplicate_create_pending_keeps_session_usa
     assert [row.id for row in rows] == [first.id]
 
 
+async def test_memory_preference_repo_rejects_invalid_transitions_and_missing_rows(session):
+    repo = MemoryPreferenceRepo(session)
+    pending = await repo.create_pending(content="Use concise answers", source="user")
+    active = await repo.create_pending(content="Use live checks", source="user")
+    rejected = await repo.create_pending(content="Reject me", source="user")
+    archived = await repo.create_pending(content="Archive me", source="user")
+
+    await repo.approve(active.id)
+    await repo.reject(rejected.id)
+    await repo.archive(archived.id)
+
+    with pytest.raises(ValueError):
+        await repo.reject(active.id)
+    with pytest.raises(ValueError):
+        await repo.approve(rejected.id)
+    with pytest.raises(ValueError):
+        await repo.archive(archived.id)
+    with pytest.raises(LookupError):
+        await repo.approve(uuid4())
+
+    refreshed = await repo.list_for_dashboard()
+    by_id = {row.id: row for row in refreshed}
+    assert by_id[active.id].status == "active"
+    assert by_id[active.id].approved_at is not None
+    assert by_id[rejected.id].status == "rejected"
+    assert by_id[rejected.id].approved_at is None
+    assert by_id[archived.id].status == "archived"
+    assert by_id[archived.id].archived_at is not None
+    assert by_id[pending.id].status == "pending"
+
+
 async def test_memory_entry_repo_lifecycle(session):
     repo = MemoryEntryRepo(session)
     conversation_id = uuid4()
@@ -93,6 +124,26 @@ async def test_memory_entry_repo_lifecycle(session):
 
     await repo.archive(entry.id)
     assert await repo.list_active_by_ids([entry.id]) == []
+
+
+async def test_memory_entry_repo_archive_rejects_invalid_transitions_and_missing_rows(session):
+    repo = MemoryEntryRepo(session)
+    entry = await repo.create(
+        conversation_id=None,
+        source_channel_kind="dashboard",
+        source_channel_ref="manual",
+        summary="Archive me once",
+        topics=[],
+        entities=[],
+        evidence=[],
+    )
+
+    await repo.archive(entry.id)
+
+    with pytest.raises(ValueError):
+        await repo.archive(entry.id)
+    with pytest.raises(LookupError):
+        await repo.archive(uuid4())
 
 
 async def test_memory_entry_repo_list_evidence_for_entries_batches_results(session):

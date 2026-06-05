@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
@@ -141,18 +142,14 @@ def test_archive_memory_entry_redirects_and_updates_state(client):
 
 
 def test_preference_routes_update_state_and_redirect(client):
-    c, pending_id, active_id, _, archived_preference_id, _, _, factory = client
+    c, pending_id, _, rejected_preference_id, _, _, _, factory = client
 
     approve_resp = c.post(
         f"/memory/preferences/{pending_id}/approve",
         follow_redirects=False,
     )
     reject_resp = c.post(
-        f"/memory/preferences/{active_id}/reject",
-        follow_redirects=False,
-    )
-    archive_resp = c.post(
-        f"/memory/preferences/{archived_preference_id}/archive",
+        f"/memory/preferences/{rejected_preference_id}/archive",
         follow_redirects=False,
     )
 
@@ -160,8 +157,6 @@ def test_preference_routes_update_state_and_redirect(client):
     assert approve_resp.headers["location"] == "/memory"
     assert reject_resp.status_code == 303
     assert reject_resp.headers["location"] == "/memory"
-    assert archive_resp.status_code == 303
-    assert archive_resp.headers["location"] == "/memory"
 
     async def _load_preferences():
         async with factory() as session:
@@ -172,8 +167,57 @@ def test_preference_routes_update_state_and_redirect(client):
     rows = anyio.run(_load_preferences)
     by_id = {row.id: row for row in rows}
     assert by_id[pending_id].status == "active"
-    assert by_id[active_id].status == "rejected"
-    assert by_id[archived_preference_id].status == "archived"
+    assert by_id[rejected_preference_id].status == "archived"
+
+
+def test_preference_routes_reject_invalid_transition_and_missing_ids(client):
+    c, _, active_id, rejected_preference_id, archived_preference_id, _, _, _ = client
+    safe_client = TestClient(c.app, raise_server_exceptions=False)
+
+    invalid_reject = safe_client.post(
+        f"/memory/preferences/{active_id}/reject",
+        follow_redirects=False,
+    )
+    invalid_approve = safe_client.post(
+        f"/memory/preferences/{rejected_preference_id}/approve",
+        follow_redirects=False,
+    )
+    invalid_archive = safe_client.post(
+        f"/memory/preferences/{archived_preference_id}/archive",
+        follow_redirects=False,
+    )
+    missing = safe_client.post(
+        f"/memory/preferences/{uuid4()}/approve",
+        follow_redirects=False,
+    )
+
+    assert invalid_reject.status_code == 409
+    assert invalid_reject.json() == {"detail": "invalid preference transition"}
+    assert invalid_approve.status_code == 409
+    assert invalid_approve.json() == {"detail": "invalid preference transition"}
+    assert invalid_archive.status_code == 409
+    assert invalid_archive.json() == {"detail": "invalid preference transition"}
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "memory preference not found"}
+
+
+def test_entry_archive_rejects_missing_and_already_archived_rows(client):
+    c, _, _, _, _, _, archived_entry_id, _ = client
+    safe_client = TestClient(c.app, raise_server_exceptions=False)
+
+    archived = safe_client.post(
+        f"/memory/entries/{archived_entry_id}/archive",
+        follow_redirects=False,
+    )
+    missing = safe_client.post(
+        f"/memory/entries/{uuid4()}/archive",
+        follow_redirects=False,
+    )
+
+    assert archived.status_code == 409
+    assert archived.json() == {"detail": "invalid memory entry transition"}
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "memory entry not found"}
 
 
 def test_memory_page_hides_invalid_controls_per_row(client):
