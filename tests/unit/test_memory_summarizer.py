@@ -113,13 +113,10 @@ async def test_memory_summarizer_extracts_json_from_fenced_prose():
         ("", None),
         ("not json", None),
         ("[]", None),
-        ('{"summary": "only summary"}', None),
         (None, []),
     ],
 )
-async def test_memory_summarizer_malformed_or_partial_content_returns_empty_summary(
-    text, choices
-):
+async def test_memory_summarizer_malformed_content_returns_empty_summary(text, choices):
     client = _FakeClient(text, choices=choices)
 
     summary = await MemorySummarizer(client=client, model="m").summarize(
@@ -128,6 +125,21 @@ async def test_memory_summarizer_malformed_or_partial_content_returns_empty_summ
     )
 
     assert summary.summary == ""
+    assert summary.topics == []
+    assert summary.entities == []
+    assert summary.evidence == []
+    assert summary.preference_candidates == []
+
+
+async def test_memory_summarizer_salvages_summary_with_missing_optional_fields():
+    client = _FakeClient('{"summary": "Only summary"}')
+
+    summary = await MemorySummarizer(client=client, model="m").summarize(
+        user_prompt="let's add memory",
+        assistant_output="sounds good",
+    )
+
+    assert summary.summary == "Only summary"
     assert summary.topics == []
     assert summary.entities == []
     assert summary.evidence == []

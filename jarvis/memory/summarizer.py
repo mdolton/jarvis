@@ -37,10 +37,13 @@ class MemorySummarizer:
         )
         text = _message_content(response)
         data = _loads_object(text)
-        if data is None or not _has_required_fields(data):
+        if data is None:
+            return _empty_summary()
+        summary = str(data.get("summary", "")).strip()
+        if not summary:
             return _empty_summary()
         return MemorySummary(
-            summary=str(data.get("summary", "")).strip(),
+            summary=summary,
             topics=_string_list(data.get("topics")),
             entities=_string_list(data.get("entities")),
             evidence=_evidence_list(data.get("evidence")),
@@ -87,19 +90,6 @@ def _json_candidates(text: str) -> list[str]:
         candidates.append(stripped[object_start : object_end + 1])
 
     return candidates
-
-
-def _has_required_fields(data: dict) -> bool:
-    return all(
-        key in data
-        for key in (
-            "summary",
-            "topics",
-            "entities",
-            "evidence",
-            "preference_candidates",
-        )
-    )
 
 
 def _empty_summary() -> MemorySummary:

@@ -247,6 +247,33 @@ class MemoryPreferenceRepo:
         await self._session.refresh(row)
         return row
 
+    async def create_pending_many(
+        self,
+        *,
+        contents: list[str],
+        source: str,
+    ) -> list[MemoryPreferenceRow]:
+        now = _utcnow()
+        rows = [
+            MemoryPreferenceRow(
+                content=content,
+                status="pending",
+                source=source,
+                created_at=now,
+                updated_at=now,
+            )
+            for content in contents
+        ]
+        try:
+            self._session.add_all(rows)
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise
+        for row in rows:
+            await self._session.refresh(row)
+        return rows
+
     async def list_active(self) -> list[MemoryPreferenceRow]:
         result = await self._session.execute(
             select(MemoryPreferenceRow)

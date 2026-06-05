@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -74,19 +75,32 @@ class MemoryService:
             return MemorySummarizeOutcome(status="skipped", error="empty summary")
 
         entry_id: UUID | None = None
+        entry_status: str | None = None
         async with self._session_factory() as session:
             try:
-                entry = await MemoryEntryRepo(session).create(
+                existing_entry = await _find_existing_summary_entry(
+                    session=session,
                     conversation_id=conversation_id,
-                    source_channel_kind=channel_kind,
-                    source_channel_ref=channel_ref,
-                    summary=summary.summary,
-                    topics=summary.topics,
-                    entities=summary.entities,
-                    evidence=summary.evidence,
+                    channel_kind=channel_kind,
+                    channel_ref=channel_ref,
+                    summary=summary,
                 )
-                entry_id = entry.id
-                await _set_memory_entry_status(session, entry_id, "unindexed")
+                if existing_entry is None:
+                    entry = await MemoryEntryRepo(session).create(
+                        conversation_id=conversation_id,
+                        source_channel_kind=channel_kind,
+                        source_channel_ref=channel_ref,
+                        summary=summary.summary,
+                        topics=summary.topics,
+                        entities=summary.entities,
+                        evidence=summary.evidence,
+                    )
+                    entry_id = entry.id
+                    entry_status = "unindexed"
+                    await _set_memory_entry_status(session, entry_id, "unindexed")
+                else:
+                    entry_id = existing_entry.id
+                    entry_status = existing_entry.status
                 preferences_created = await _create_preference_proposals(
                     session,
                     summary.preference_candidates,
@@ -108,9 +122,16 @@ class MemoryService:
                 error=self._vector_store.last_error or "vector store unavailable",
             )
 
+        if entry_status == "active":
+            return MemorySummarizeOutcome(
+                status="created",
+                memory_entry_id=entry_id,
+                preferences_created=preferences_created,
+            )
+
         try:
             embedding = await self._embedding_provider.embed(_embedding_text(summary))
-            await self._vector_store.upsert(entry.id, embedding)
+            await self._vector_store.upsert(entry_id, embedding)
         except Exception as exc:
             return MemorySummarizeOutcome(
                 status="unindexed",
@@ -280,7 +301,7 @@ async def _set_memory_entry_status(
     await session.execute(
         update(MemoryEntryRow)
         .where(MemoryEntryRow.id == memory_entry_id)
-        .values(status=status)
+        .values(status=status, updated_at=datetime.now(UTC))
     )
     await session.commit()
 
@@ -300,20 +321,20 @@ async def _create_preference_proposals(
     session: AsyncSession,
     candidates: list[str],
 ) -> int:
-    existing = await _existing_agent_proposal_preferences(session)
+    existing = await _existing_preferences(session)
     limited_candidates = _limited_unique_preference_candidates(candidates)
     proposals = [
         content
         for normalized, content in limited_candidates
         if normalized not in existing
     ]
+    if not proposals:
+        return 0
 
-    preference_repo = MemoryPreferenceRepo(session)
-    for proposal in proposals:
-        await preference_repo.create_pending(
-            content=proposal,
-            source="agent_proposal",
-        )
+    await MemoryPreferenceRepo(session).create_pending_many(
+        contents=proposals,
+        source="agent_proposal",
+    )
     return len(proposals)
 
 
@@ -332,15 +353,53 @@ def _limited_unique_preference_candidates(candidates: list[str]) -> list[tuple[s
     return proposals
 
 
-async def _existing_agent_proposal_preferences(session: AsyncSession) -> set[str]:
+async def _existing_preferences(session: AsyncSession) -> set[str]:
     result = await session.execute(
-        select(MemoryPreferenceRow.content).where(
-            MemoryPreferenceRow.source == "agent_proposal",
-            MemoryPreferenceRow.status.in_(["pending", "active"]),
-        )
+        select(MemoryPreferenceRow.content)
     )
     return {_normalize_preference(content) for content in result.scalars()}
 
 
 def _normalize_preference(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip().casefold()
+
+
+async def _find_existing_summary_entry(
+    *,
+    session: AsyncSession,
+    conversation_id: UUID | None,
+    channel_kind: str,
+    channel_ref: str,
+    summary: MemorySummary,
+) -> MemoryEntryRow | None:
+    stmt = select(MemoryEntryRow).where(
+        MemoryEntryRow.conversation_id == conversation_id,
+        MemoryEntryRow.source_channel_kind == channel_kind,
+        MemoryEntryRow.source_channel_ref == channel_ref,
+        MemoryEntryRow.summary == summary.summary,
+    )
+    result = await session.execute(stmt)
+    for entry in result.scalars():
+        if (
+            list(entry.topics) == summary.topics
+            and list(entry.entities) == summary.entities
+            and await _entry_evidence_matches(session, entry.id, summary.evidence)
+        ):
+            return entry
+    return None
+
+
+async def _entry_evidence_matches(
+    session: AsyncSession,
+    entry_id: UUID,
+    evidence: list[dict[str, str]],
+) -> bool:
+    rows = await MemoryEntryRepo(session).list_evidence(entry_id)
+    return [
+        {
+            "kind": row.kind,
+            "label": row.label,
+            "content": row.content,
+        }
+        for row in rows
+    ] == evidence

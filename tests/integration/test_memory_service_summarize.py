@@ -111,6 +111,16 @@ async def _summarize(service, conversation_id):
     )
 
 
+async def _list_entries_preferences_and_evidence(factory):
+    async with factory() as session:
+        entries = await MemoryEntryRepo(session).list_recent()
+        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
+        evidence = []
+        if entries:
+            evidence = await MemoryEntryRepo(session).list_evidence(entries[0].id)
+    return entries, preferences, evidence
+
+
 async def test_memory_service_summarize_run_creates_entry_vector_and_preference(factory):
     vector_store = _FakeVectorStore()
     conversation_id = await _create_conversation(factory)
@@ -126,10 +136,7 @@ async def test_memory_service_summarize_run_creates_entry_vector_and_preference(
 
     outcome = await _summarize(service, conversation_id)
 
-    async with factory() as session:
-        entries = await MemoryEntryRepo(session).list_recent()
-        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
-        evidence = await MemoryEntryRepo(session).list_evidence(entries[0].id)
+    entries, preferences, evidence = await _list_entries_preferences_and_evidence(factory)
 
     assert outcome.status == "created"
     assert outcome.memory_entry_id == entries[0].id
@@ -330,10 +337,122 @@ async def test_memory_service_summarize_run_dedupes_and_caps_pending_preferences
 
     assert first.preferences_created == 5
     assert second.preferences_created == 0
-    assert [preference.content for preference in preferences] == [
-        "C",
-        "B",
+    assert sorted(preference.content for preference in preferences) == [
         "A",
-        "Use bullets.",
+        "B",
+        "C",
         "Prefer concise answers.",
+        "Use bullets.",
     ]
+
+
+async def test_memory_service_summarize_run_does_not_repropose_rejected_preference(factory):
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        preference = await repo.create_pending(
+            content="Prefer concise answers.",
+            source="agent_proposal",
+        )
+        await repo.reject(preference.id)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_FakeSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, None)
+
+    async with factory() as session:
+        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
+
+    assert outcome.preferences_created == 0
+    assert len(preferences) == 1
+    assert preferences[0].status == "rejected"
+
+
+async def test_memory_service_summarize_run_does_not_repropose_active_user_preference(factory):
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        preference = await repo.create_pending(
+            content="Prefer concise answers.",
+            source="user",
+        )
+        await repo.approve(preference.id)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_FakeSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    outcome = await _summarize(service, None)
+
+    async with factory() as session:
+        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
+
+    assert outcome.preferences_created == 0
+    assert len(preferences) == 1
+    assert preferences[0].source == "user"
+    assert preferences[0].status == "active"
+
+
+async def test_memory_service_summarize_run_retry_reuses_entry_vector_and_preferences(factory):
+    vector_store = _FakeVectorStore()
+    conversation_id = await _create_conversation(factory)
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=vector_store,
+        summarizer=_FakeSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    first = await _summarize(service, conversation_id)
+    second = await _summarize(service, conversation_id)
+
+    entries, preferences, _evidence = await _list_entries_preferences_and_evidence(factory)
+
+    assert first.status == "created"
+    assert second.status == "created"
+    assert second.memory_entry_id == first.memory_entry_id
+    assert second.preferences_created == 0
+    assert len(entries) == 1
+    assert len(preferences) == 1
+    assert vector_store.upserts == [(entries[0].id, [0.1, 0.2, 0.3])]
+
+
+async def test_memory_service_summarize_run_rolls_back_preference_batch_on_failure(
+    factory,
+    monkeypatch,
+):
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=_FakeEmbeddingProvider(),
+        vector_store=_FakeVectorStore(),
+        summarizer=_FakeSummarizer(preference_candidates=["A", "B"]),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    original_add_all = list
+
+    def fail_add_all(self, instances):
+        original_add_all(instances)
+        raise RuntimeError("preference batch failed")
+
+    monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.add_all", fail_add_all)
+
+    outcome = await _summarize(service, None)
+
+    async with factory() as session:
+        preferences = await MemoryPreferenceRepo(session).list_for_dashboard()
+
+    assert outcome.status == "failed"
+    assert "preference batch failed" in outcome.error
+    assert preferences == []
