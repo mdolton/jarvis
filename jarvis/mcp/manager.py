@@ -18,9 +18,12 @@ through one task makes enter and exit always happen on the same task.
 import asyncio
 import logging
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 
+import httpx
 from agents.exceptions import UserError
 from agents.mcp import MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
+from mcp.shared._httpx_utils import create_mcp_http_client
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
@@ -41,11 +44,13 @@ class MCPManager:
         config: MCPServersConfig,
         session_factory: async_sessionmaker[AsyncSession],
         secrets_key: bytes | None = None,
+        oauth_flow=None,
         connect_timeout: float = 60.0,
     ) -> None:
         self._config = config
         self._session_factory = session_factory
         self._secrets_key = secrets_key
+        self._oauth_flow = oauth_flow
         # Hard ceiling on a single connect+list_tools so a transiently
         # unresponsive remote can never wedge the serial lifecycle loop (and
         # thereby block Disconnect/remove, which run through the same task).
@@ -107,6 +112,17 @@ class MCPManager:
     async def remove_oauth_server(self, provider_key: str) -> None:
         """Pop and close the stack/sdk_server entries for an OAuth provider."""
         await self._submit("remove", provider_key)
+
+    async def refresh_oauth_server_for_retry(self, provider_key: str) -> object:
+        """Force-refresh an OAuth provider and replace its live SDK server."""
+        if self._oauth_flow is None:
+            raise RuntimeError("MCPManager was not configured with an OAuthFlow")
+        entry = OAUTH_CATALOG[provider_key]
+        headers = await self._oauth_flow.refresh(provider_key)
+        return await self._submit(
+            "replace",
+            {"provider_key": provider_key, "url": entry.mcp_url, "headers": headers},
+        )
 
     # --- Owner task: the only place stacks are entered and exited ----------
 
@@ -217,12 +233,14 @@ class MCPManager:
         self, *, provider_key: str, url: str, headers: dict[str, str]
     ) -> None:
         new_stack = AsyncExitStack()
-        new_sdk = _build_streamable_http(
-            url,
-            headers,
-            name=provider_key,
-            approval_policy=self._approval_policy,
-        )
+
+        async def unauthorized_retry():
+            return await self.refresh_oauth_server_for_retry(provider_key)
+
+        build_kwargs = {"name": provider_key, "approval_policy": self._approval_policy}
+        if self._oauth_flow is not None:
+            build_kwargs["unauthorized_retry"] = unauthorized_retry
+        new_sdk = _build_streamable_http(url, headers, **build_kwargs)
 
         try:
             async with asyncio.timeout(self._connect_timeout):
@@ -256,6 +274,7 @@ class MCPManager:
         # was opened on. _aclose_silently swallows any stray teardown error.
         if old_stack is not None:
             await _aclose_silently(old_stack)
+        return new_sdk
 
     async def _do_remove_oauth(self, provider_key: str) -> None:
         self._sdk_servers.pop(provider_key, None)
@@ -277,6 +296,7 @@ def _build_streamable_http(
     *,
     name: str,
     approval_policy: MCPApprovalPolicy | None = None,
+    unauthorized_retry=None,
 ) -> object:
     """Module-level builder so tests can patch this single symbol.
 
@@ -287,15 +307,19 @@ def _build_streamable_http(
     model as a retry rather than a hard "technical error".
     """
     kwargs = {}
+    unauthorized_tracker = _UnauthorizedTracker()
     if approval_policy is not None:
         kwargs["require_approval"] = lambda ctx, agent, tool: approval_policy.needs_approval(
             name, tool
         )
         kwargs["tool_filter"] = lambda filter_context, tool: approval_policy.filter_tool(name, tool)
+    params = {"url": url, "headers": headers, "timeout": 30}
+    if unauthorized_retry is not None:
+        params["httpx_client_factory"] = _tracking_httpx_client_factory(unauthorized_tracker)
 
     sdk_server = MCPServerStreamableHttp(
         name=name,
-        params={"url": url, "headers": headers, "timeout": 30},
+        params=params,
         cache_tools_list=True,
         client_session_timeout_seconds=30,
         max_retry_attempts=2,
@@ -303,7 +327,13 @@ def _build_streamable_http(
         **kwargs,
     )
     if approval_policy is not None:
-        _apply_runtime_policy_guard(sdk_server, name, approval_policy)
+        _apply_runtime_policy_guard(
+            sdk_server,
+            name,
+            approval_policy,
+            unauthorized_retry=unauthorized_retry,
+            unauthorized_detector=unauthorized_tracker.is_unauthorized_error,
+        )
     return sdk_server
 
 
@@ -377,15 +407,63 @@ def _apply_runtime_policy_guard(
     sdk_server: object,
     name: str,
     approval_policy: MCPApprovalPolicy,
+    *,
+    unauthorized_retry=None,
+    unauthorized_detector=None,
 ) -> None:
     original_call_tool = sdk_server.call_tool  # type: ignore[attr-defined]
+    sdk_server._jarvis_original_call_tool = original_call_tool  # type: ignore[attr-defined]
 
     async def guarded_call_tool(tool_name: str, arguments: dict | None, meta: dict | None = None):
         if await approval_policy.is_denied(name, tool_name):
             raise UserError(f"MCP tool '{tool_name}' on server '{name}' is denied by policy.")
-        return await original_call_tool(tool_name, arguments, meta=meta)
+        try:
+            return await original_call_tool(tool_name, arguments, meta=meta)
+        except BaseException as exc:
+            detector = unauthorized_detector or _is_unauthorized_mcp_error
+            if unauthorized_retry is None or not detector(exc):
+                raise
+            refreshed_server = await unauthorized_retry()
+            retry_call_tool = getattr(
+                refreshed_server,
+                "_jarvis_original_call_tool",
+                refreshed_server.call_tool,  # type: ignore[attr-defined]
+            )
+            return await retry_call_tool(tool_name, arguments, meta=meta)
 
     sdk_server.call_tool = guarded_call_tool  # type: ignore[attr-defined]
+
+
+def _is_unauthorized_mcp_error(exc: BaseException) -> bool:
+    return "401" in str(exc) or "Unauthorized" in str(exc) or "invalid_token" in str(exc)
+
+
+@dataclass
+class _UnauthorizedTracker:
+    seen_unauthorized: bool = False
+
+    async def on_response(self, response: httpx.Response) -> None:
+        if response.status_code == 401:
+            self.seen_unauthorized = True
+
+    def is_unauthorized_error(self, exc: BaseException) -> bool:
+        if self.seen_unauthorized:
+            self.seen_unauthorized = False
+            return True
+        return _is_unauthorized_mcp_error(exc)
+
+
+def _tracking_httpx_client_factory(tracker: _UnauthorizedTracker):
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        client.event_hooks["response"].append(tracker.on_response)
+        return client
+
+    return factory
 
 
 async def _list_tools(sdk_server: object) -> list[MCPToolDescriptor]:

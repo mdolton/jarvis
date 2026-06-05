@@ -3,9 +3,10 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from agents.exceptions import UserError
 
 from jarvis.config.schema import MCPServersConfig
-from jarvis.mcp.manager import MCPManager
+from jarvis.mcp.manager import MCPManager, _apply_runtime_policy_guard
 from jarvis.oauth.crypto import encrypt_blob, generate_key
 from jarvis.oauth.store import OAuthCredentialsRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
@@ -33,6 +34,26 @@ class FakeSDKServer:
         return self._list_returns
 
 
+class UnauthorizedOnceSDKServer(FakeSDKServer):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    async def call_tool(self, tool_name, arguments, meta=None):
+        self.calls.append((tool_name, arguments, meta))
+        raise UserError("Failed to call tool 'list_calendars': HTTP error 401")
+
+
+class CallableSDKServer(FakeSDKServer):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    async def call_tool(self, tool_name, arguments, meta=None):
+        self.calls.append((tool_name, arguments, meta))
+        return "retried"
+
+
 class HangingSDKServer:
     """A server whose connect (aenter) never returns — models a transiently
     unresponsive remote like Google's early-access Calendar MCP endpoint."""
@@ -53,6 +74,15 @@ class HangingSDKServer:
 
     async def list_tools(self):
         return []
+
+
+class RefreshFlowStub:
+    def __init__(self):
+        self.refreshed = []
+
+    async def refresh(self, provider_key):
+        self.refreshed.append(provider_key)
+        return {"Authorization": "Bearer fresh-token"}
 
 
 @pytest.fixture
@@ -100,6 +130,59 @@ async def test_replace_oauth_server_swaps_sdk_object(factory, monkeypatch):
         import asyncio
         await asyncio.sleep(0)
         assert first.exited
+    finally:
+        await mgr.stop()
+
+
+async def test_oauth_server_call_401_refreshes_replaces_and_retries(factory, monkeypatch):
+    flow = RefreshFlowStub()
+    cfg = MCPServersConfig(servers=[])
+    mgr = MCPManager(config=cfg, session_factory=factory, oauth_flow=flow)
+    await mgr.start()
+    try:
+        stale = UnauthorizedOnceSDKServer()
+        fresh = CallableSDKServer()
+        builds = iter([stale, fresh])
+        captured = []
+
+        def fake_build(url, headers, *, name, approval_policy=None, unauthorized_retry=None):
+            sdk = next(builds)
+            captured.append((url, headers))
+            if unauthorized_retry is not None:
+                _apply_runtime_policy_guard(
+                    sdk,
+                    name,
+                    approval_policy,
+                    unauthorized_retry=unauthorized_retry,
+                    unauthorized_detector=lambda exc: "401" in str(exc),
+                )
+            return sdk
+
+        monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", fake_build)
+
+        await mgr.replace_oauth_server(
+            "calendar",
+            url="https://calendarmcp.googleapis.com/mcp/v1",
+            headers={"Authorization": "Bearer stale-token"},
+        )
+
+        result = await mgr.agent_mcp_servers()[0].call_tool("list_calendars", {}, meta={"t": "1"})
+
+        assert result == "retried"
+        assert flow.refreshed == ["calendar"]
+        assert captured == [
+            (
+                "https://calendarmcp.googleapis.com/mcp/v1",
+                {"Authorization": "Bearer stale-token"},
+            ),
+            (
+                "https://calendarmcp.googleapis.com/mcp/v1",
+                {"Authorization": "Bearer fresh-token"},
+            ),
+        ]
+        assert mgr.agent_mcp_servers() == [fresh]
+        assert stale.calls == [("list_calendars", {}, {"t": "1"})]
+        assert fresh.calls == [("list_calendars", {}, {"t": "1"})]
     finally:
         await mgr.stop()
 

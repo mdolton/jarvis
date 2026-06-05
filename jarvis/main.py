@@ -129,6 +129,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         config=cfg.mcp_servers,
         session_factory=factory,
         secrets_key=cfg.secrets_key,
+        oauth_flow=oauth_flow,
     )
     await mcp_manager.start()
 
