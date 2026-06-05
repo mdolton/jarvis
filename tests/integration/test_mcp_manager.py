@@ -381,6 +381,36 @@ async def test_runtime_policy_guard_delegates_allowed_tool_call():
     assert sdk_server.calls == [("list_events", {"calendar": "primary"}, {"trace": "1"})]
 
 
+async def test_runtime_policy_guard_refreshes_and_retries_once_on_unauthorized():
+    policy = _RecordingApprovalPolicy()
+    stale_server = _UnauthorizedSdkServer()
+    refreshed_server = _CallableSdkServer()
+    refreshes = []
+
+    async def refresh_server():
+        refreshes.append("calendar")
+        return refreshed_server
+
+    _apply_runtime_policy_guard(
+        stale_server,
+        "calendar",
+        policy,
+        unauthorized_retry=refresh_server,
+        unauthorized_detector=lambda exc: "401" in str(exc),
+    )
+
+    result = await stale_server.call_tool(
+        "list_calendars",
+        {},
+        meta={"trace": "calendar-401"},
+    )
+
+    assert result == "called"
+    assert refreshes == ["calendar"]
+    assert stale_server.calls == [("list_calendars", {}, {"trace": "calendar-401"})]
+    assert refreshed_server.calls == [("list_calendars", {}, {"trace": "calendar-401"})]
+
+
 class _RecordingApprovalPolicy:
     def __init__(self, *, filter_result=False, approval_result=True, denied_names=None):
         self.calls = []
@@ -442,6 +472,15 @@ class _CallableSdkServer:
     async def call_tool(self, tool_name, arguments, meta=None):
         self.calls.append((tool_name, arguments, meta))
         return "called"
+
+
+class _UnauthorizedSdkServer:
+    def __init__(self):
+        self.calls = []
+
+    async def call_tool(self, tool_name, arguments, meta=None):
+        self.calls.append((tool_name, arguments, meta))
+        raise UserError("Failed to call tool 'list_calendars': HTTP error 401")
 
 
 class _SdkTool:
