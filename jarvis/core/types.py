@@ -60,6 +60,12 @@ class AuditEventType(StrEnum):
     ACTION_REJECTED = "action.rejected"
     ACTION_COMPLETED = "action.completed"
     ACTION_FAILED = "action.failed"
+    MEMORY_PREFERENCE_PROPOSED = "memory.preference_proposed"
+    MEMORY_PREFERENCE_APPROVED = "memory.preference_approved"
+    MEMORY_PREFERENCE_REJECTED = "memory.preference_rejected"
+    MEMORY_ENTRY_CREATED = "memory.entry_created"
+    MEMORY_RECALLED = "memory.recalled"
+    MEMORY_FAILED = "memory.failed"
 
 
 class MessageRole(StrEnum):

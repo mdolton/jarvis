@@ -15,6 +15,10 @@ from jarvis.persistence.models import (
     DigestTemplateRow,
     MCPServerRow,
     MCPToolRow,
+    MemoryEntryRow,
+    MemoryEvidenceRow,
+    MemoryPreferenceRow,
+    MemoryRecallEventRow,
     MessageRow,
     ScheduleRow,
     SettingRow,
@@ -222,6 +226,190 @@ class AuditRepo:
             )
             for r in rows
         ]
+
+
+class MemoryPreferenceRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_pending(self, *, content: str, source: str) -> MemoryPreferenceRow:
+        now = _utcnow()
+        row = MemoryPreferenceRow(
+            content=content,
+            status="pending",
+            source=source,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def list_active(self) -> list[MemoryPreferenceRow]:
+        result = await self._session.execute(
+            select(MemoryPreferenceRow)
+            .where(MemoryPreferenceRow.status == "active")
+            .order_by(MemoryPreferenceRow.updated_at.desc())
+        )
+        return list(result.scalars())
+
+    async def list_for_dashboard(self, *, limit: int = 100) -> list[MemoryPreferenceRow]:
+        result = await self._session.execute(
+            select(MemoryPreferenceRow)
+            .order_by(
+                case((MemoryPreferenceRow.status == "pending", 0), else_=1),
+                MemoryPreferenceRow.updated_at.desc(),
+            )
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    async def approve(self, preference_id: UUID) -> None:
+        now = _utcnow()
+        await self._session.execute(
+            update(MemoryPreferenceRow)
+            .where(MemoryPreferenceRow.id == preference_id)
+            .values(status="active", approved_at=now, updated_at=now)
+        )
+        await self._session.commit()
+
+    async def reject(self, preference_id: UUID) -> None:
+        await self._session.execute(
+            update(MemoryPreferenceRow)
+            .where(MemoryPreferenceRow.id == preference_id)
+            .values(status="rejected", updated_at=_utcnow())
+        )
+        await self._session.commit()
+
+    async def archive(self, preference_id: UUID) -> None:
+        now = _utcnow()
+        await self._session.execute(
+            update(MemoryPreferenceRow)
+            .where(MemoryPreferenceRow.id == preference_id)
+            .values(status="archived", archived_at=now, updated_at=now)
+        )
+        await self._session.commit()
+
+
+class MemoryEntryRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        conversation_id: UUID | None,
+        source_channel_kind: str,
+        source_channel_ref: str,
+        summary: str,
+        topics: list,
+        entities: list,
+        evidence: list[dict],
+    ) -> MemoryEntryRow:
+        now = _utcnow()
+        row = MemoryEntryRow(
+            conversation_id=conversation_id,
+            source_channel_kind=source_channel_kind,
+            source_channel_ref=source_channel_ref,
+            summary=summary,
+            topics=topics,
+            entities=entities,
+            status="active",
+            created_at=now,
+            updated_at=now,
+            evidence=[
+                MemoryEvidenceRow(
+                    kind=item["kind"],
+                    label=item["label"],
+                    content=item["content"],
+                    created_at=now,
+                )
+                for item in evidence
+            ],
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def list_recent(self, *, limit: int = 100) -> list[MemoryEntryRow]:
+        result = await self._session.execute(
+            select(MemoryEntryRow).order_by(MemoryEntryRow.updated_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
+    async def list_active_by_ids(self, ids: list[UUID]) -> list[MemoryEntryRow]:
+        if not ids:
+            return []
+        ordering = case({memory_id: index for index, memory_id in enumerate(ids)}, value=MemoryEntryRow.id)
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.id.in_(ids), MemoryEntryRow.status == "active")
+            .order_by(ordering)
+        )
+        return list(result.scalars())
+
+    async def list_evidence(self, memory_entry_id: UUID) -> list[MemoryEvidenceRow]:
+        result = await self._session.execute(
+            select(MemoryEvidenceRow)
+            .where(MemoryEvidenceRow.memory_entry_id == memory_entry_id)
+            .order_by(MemoryEvidenceRow.created_at.asc())
+        )
+        return list(result.scalars())
+
+    async def archive(self, memory_entry_id: UUID) -> None:
+        await self._session.execute(
+            update(MemoryEntryRow)
+            .where(MemoryEntryRow.id == memory_entry_id)
+            .values(status="archived", updated_at=_utcnow())
+        )
+        await self._session.commit()
+
+    async def mark_recalled(self, ids: list[UUID]) -> None:
+        if not ids:
+            return
+        await self._session.execute(
+            update(MemoryEntryRow)
+            .where(MemoryEntryRow.id.in_(ids))
+            .values(last_recalled_at=_utcnow())
+        )
+        await self._session.commit()
+
+
+class MemoryRecallRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record_many(
+        self,
+        *,
+        conversation_id: UUID | None,
+        trigger_id: UUID | None,
+        recalled: list[dict],
+    ) -> None:
+        now = _utcnow()
+        rows = [
+            MemoryRecallEventRow(
+                conversation_id=conversation_id,
+                trigger_id=trigger_id,
+                memory_entry_id=item["memory_entry_id"],
+                score=item["score"],
+                rank=item["rank"],
+                created_at=now,
+            )
+            for item in recalled
+        ]
+        self._session.add_all(rows)
+        await self._session.commit()
+
+    async def list_for_conversation(self, conversation_id: UUID) -> list[MemoryRecallEventRow]:
+        result = await self._session.execute(
+            select(MemoryRecallEventRow)
+            .where(MemoryRecallEventRow.conversation_id == conversation_id)
+            .order_by(MemoryRecallEventRow.rank.asc(), MemoryRecallEventRow.created_at.desc())
+        )
+        return list(result.scalars())
 
 
 class ScheduleRepo:
