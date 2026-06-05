@@ -47,6 +47,7 @@ async def schedule_list(
             "digest_templates": digest_templates,
             "selected_template": selected_template,
             "template_warning": template_warning,
+            "default_timezone": ctx.config.jarvis.timezone,
         },
     )
 

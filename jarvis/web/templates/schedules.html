@@ -29,7 +29,7 @@
     <input name="name" placeholder="Name" value="{{ selected_template.name if selected_template else '' }}" required>
     <input name="description" placeholder="Description" value="{{ selected_template.description if selected_template else '' }}">
     <input name="cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" value="{{ selected_template.default_cron_expr if selected_template else '' }}" required>
-    <input name="timezone" placeholder="Timezone" value="{{ selected_template.default_timezone if selected_template and selected_template.default_timezone else 'UTC' }}">
+    <input name="timezone" placeholder="Timezone" value="{{ selected_template.default_timezone if selected_template and selected_template.default_timezone else default_timezone }}">
     <textarea name="prompt" placeholder="Agent prompt" rows="3" required>{{ selected_template.prompt if selected_template else '' }}</textarea>
     <select name="output_mode">
         <option value="discord" {% if not selected_template or selected_template.default_output_mode == "discord" %}selected{% endif %}>Discord</option>

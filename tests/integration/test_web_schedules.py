@@ -83,6 +83,16 @@ def test_schedules_page_lists_models_in_form(client_and_factory):
     assert "alpha" in resp.text and "beta" in resp.text
 
 
+def test_schedules_page_defaults_timezone_to_config(client_and_factory):
+    client, _ = client_and_factory
+    client.app.state.ctx.config.jarvis.timezone = "America/Los_Angeles"
+
+    resp = client.get("/schedules")
+
+    assert resp.status_code == 200
+    assert 'name="timezone" placeholder="Timezone" value="America/Los_Angeles"' in resp.text
+
+
 def test_create_schedule_with_model(client_and_factory):
     client, _ = client_and_factory
     resp = client.post(
