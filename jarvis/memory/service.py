@@ -5,7 +5,12 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.memory.embeddings import EmbeddingProvider
-from jarvis.memory.types import MemoryContext, RecalledMemory, VectorSearchResult
+from jarvis.memory.types import (
+    MemoryContext,
+    MemorySummary,
+    RecalledMemory,
+    VectorSearchResult,
+)
 from jarvis.memory.vector_store import MemoryVectorStore
 from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRepo, MemoryRecallRepo
 
@@ -19,12 +24,54 @@ class MemoryService:
         vector_store: MemoryVectorStore,
         max_recalled_memories: int,
         min_relevance_score: float,
+        summarizer=None,
     ) -> None:
         self._session_factory = session_factory
         self._embedding_provider = embedding_provider
         self._vector_store = vector_store
+        self._summarizer = summarizer
         self._max_recalled_memories = max_recalled_memories
         self._min_relevance_score = min_relevance_score
+
+    async def summarize_run(
+        self,
+        *,
+        conversation_id: UUID | None,
+        channel_kind: str,
+        channel_ref: str,
+        user_prompt: str,
+        assistant_output: str,
+    ) -> None:
+        if self._summarizer is None:
+            return
+
+        summary = await self._summarizer.summarize(
+            user_prompt=user_prompt,
+            assistant_output=assistant_output,
+        )
+        if not summary.summary:
+            return
+
+        async with self._session_factory() as session:
+            entry = await MemoryEntryRepo(session).create(
+                conversation_id=conversation_id,
+                source_channel_kind=channel_kind,
+                source_channel_ref=channel_ref,
+                summary=summary.summary,
+                topics=summary.topics,
+                entities=summary.entities,
+                evidence=summary.evidence,
+            )
+            preference_repo = MemoryPreferenceRepo(session)
+            for candidate in summary.preference_candidates:
+                await preference_repo.create_pending(
+                    content=candidate,
+                    source="agent_proposal",
+                )
+
+        if self._vector_store.available:
+            embedding = await self._embedding_provider.embed(_embedding_text(summary))
+            await self._vector_store.upsert(entry.id, embedding)
 
     async def build_context(
         self,
@@ -151,3 +198,12 @@ def _combine_errors(*errors: str | None) -> str | None:
     if not messages:
         return None
     return "; ".join(messages)
+
+
+def _embedding_text(summary: MemorySummary) -> str:
+    parts = [
+        summary.summary,
+        " ".join(summary.topics),
+        " ".join(summary.entities),
+    ]
+    return "\n".join(part for part in parts if part)
