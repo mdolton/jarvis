@@ -11,7 +11,12 @@
     {% for item in recall_items %}
     <div class="audit-row">
         <div><strong>Rank {{ item.event.rank }}</strong> <span class="muted">score {{ '%.2f'|format(item.event.score) }}</span></div>
+        {% if item.memory %}
         <div>{{ item.memory.summary }}</div>
+        <div class="muted">Status: {{ item.memory.status }}</div>
+        {% else %}
+        <div class="muted">Memory no longer available</div>
+        {% endif %}
     </div>
     {% endfor %}
     {% else %}

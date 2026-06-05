@@ -45,14 +45,16 @@ async def conversation_detail(request: Request, conv_id: UUID):
         conv = await session.get(ConversationRow, conv_id)
         messages = await msg_repo.history(conv_id) if conv else []
         recall_events = await recall_repo.list_for_conversation(conv_id) if conv else []
-        recalled_memories = await memory_repo.list_active_by_ids(
+        recalled_memories = await memory_repo.list_by_ids(
             [event.memory_entry_id for event in recall_events if event.memory_entry_id is not None]
         )
         memory_by_id = {memory.id: memory for memory in recalled_memories}
         recall_items = [
-            {"event": event, "memory": memory_by_id[event.memory_entry_id]}
+            {
+                "event": event,
+                "memory": memory_by_id.get(event.memory_entry_id) if event.memory_entry_id else None,
+            }
             for event in recall_events
-            if event.memory_entry_id in memory_by_id
         ]
 
     return templates.TemplateResponse(

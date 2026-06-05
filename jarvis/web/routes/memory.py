@@ -22,8 +22,9 @@ async def memory_page(request: Request):
         entry_repo = MemoryEntryRepo(session)
         preferences = await preference_repo.list_for_dashboard(limit=100)
         entries = await entry_repo.list_recent(limit=100)
+        evidence_by_entry = await entry_repo.list_evidence_for_entries([entry.id for entry in entries])
         entry_items = [
-            {"entry": entry, "evidence": await entry_repo.list_evidence(entry.id)} for entry in entries
+            {"entry": entry, "evidence": evidence_by_entry.get(entry.id, [])} for entry in entries
         ]
 
     return templates.TemplateResponse(

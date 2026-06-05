@@ -29,7 +29,12 @@ async def client(tmp_path):
             content="Old archived preference.",
             source="user",
         )
+        rejected_preference = await preference_repo.create_pending(
+            content="Rejected preference.",
+            source="agent_proposal",
+        )
         await preference_repo.approve(active.id)
+        await preference_repo.reject(rejected_preference.id)
         await preference_repo.archive(archived_preference.id)
 
         entry_repo = MemoryEntryRepo(session)
@@ -72,12 +77,21 @@ async def client(tmp_path):
 
     ctx = SimpleNamespace(session_factory=factory)
     app = create_app(app_context=ctx)
-    yield TestClient(app), pending.id, active.id, archived_preference.id, active_entry.id, archived_entry.id, factory
+    yield (
+        TestClient(app),
+        pending.id,
+        active.id,
+        rejected_preference.id,
+        archived_preference.id,
+        active_entry.id,
+        archived_entry.id,
+        factory,
+    )
     await engine.dispose()
 
 
 def test_memory_page_lists_preferences_entries_and_evidence(client):
-    c, pending_id, active_id, archived_preference_id, active_entry_id, archived_entry_id, _ = client
+    c, pending_id, active_id, rejected_preference_id, archived_preference_id, active_entry_id, archived_entry_id, _ = client
 
     resp = c.get("/memory")
 
@@ -85,11 +99,14 @@ def test_memory_page_lists_preferences_entries_and_evidence(client):
     assert 'href="/memory"' in resp.text
     assert str(pending_id) in resp.text
     assert str(active_id) in resp.text
+    assert str(rejected_preference_id) in resp.text
     assert str(archived_preference_id) in resp.text
     assert "Use concise answers." in resp.text
     assert "Prefer verification with real checks." in resp.text
+    assert "Rejected preference." in resp.text
     assert "pending" in resp.text
     assert "active" in resp.text
+    assert "rejected" in resp.text
     assert "archived" in resp.text
     assert str(active_entry_id) in resp.text
     assert str(archived_entry_id) in resp.text
@@ -105,7 +122,7 @@ def test_memory_page_lists_preferences_entries_and_evidence(client):
 
 
 def test_archive_memory_entry_redirects_and_updates_state(client):
-    c, _, _, _, active_entry_id, _, factory = client
+    c, _, _, _, _, active_entry_id, _, factory = client
 
     resp = c.post(f"/memory/entries/{active_entry_id}/archive", follow_redirects=False)
 
@@ -124,7 +141,7 @@ def test_archive_memory_entry_redirects_and_updates_state(client):
 
 
 def test_preference_routes_update_state_and_redirect(client):
-    c, pending_id, active_id, archived_preference_id, _, _, factory = client
+    c, pending_id, active_id, _, archived_preference_id, _, _, factory = client
 
     approve_resp = c.post(
         f"/memory/preferences/{pending_id}/approve",
@@ -157,3 +174,38 @@ def test_preference_routes_update_state_and_redirect(client):
     assert by_id[pending_id].status == "active"
     assert by_id[active_id].status == "rejected"
     assert by_id[archived_preference_id].status == "archived"
+
+
+def test_memory_page_hides_invalid_controls_per_row(client):
+    (
+        c,
+        pending_id,
+        active_id,
+        rejected_preference_id,
+        archived_preference_id,
+        active_entry_id,
+        archived_entry_id,
+        _,
+    ) = client
+
+    resp = c.get("/memory")
+
+    assert resp.status_code == 200
+    assert f'action="/memory/preferences/{pending_id}/approve"' in resp.text
+    assert f'action="/memory/preferences/{pending_id}/reject"' in resp.text
+    assert f'action="/memory/preferences/{pending_id}/archive"' in resp.text
+
+    assert f'action="/memory/preferences/{active_id}/approve"' not in resp.text
+    assert f'action="/memory/preferences/{active_id}/reject"' not in resp.text
+    assert f'action="/memory/preferences/{active_id}/archive"' in resp.text
+
+    assert f'action="/memory/preferences/{rejected_preference_id}/approve"' not in resp.text
+    assert f'action="/memory/preferences/{rejected_preference_id}/reject"' not in resp.text
+    assert f'action="/memory/preferences/{rejected_preference_id}/archive"' in resp.text
+
+    assert f'action="/memory/preferences/{archived_preference_id}/approve"' not in resp.text
+    assert f'action="/memory/preferences/{archived_preference_id}/reject"' not in resp.text
+    assert f'action="/memory/preferences/{archived_preference_id}/archive"' not in resp.text
+
+    assert f'action="/memory/entries/{active_entry_id}/archive"' in resp.text
+    assert f'action="/memory/entries/{archived_entry_id}/archive"' not in resp.text

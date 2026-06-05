@@ -95,6 +95,54 @@ async def test_memory_entry_repo_lifecycle(session):
     assert await repo.list_active_by_ids([entry.id]) == []
 
 
+async def test_memory_entry_repo_list_evidence_for_entries_batches_results(session):
+    repo = MemoryEntryRepo(session)
+    first = await repo.create(
+        conversation_id=None,
+        source_channel_kind="dashboard",
+        source_channel_ref="manual",
+        summary="First memory",
+        topics=[],
+        entities=[],
+        evidence=[
+            {
+                "kind": "message",
+                "label": "First note",
+                "content": "First content.",
+            },
+            {
+                "kind": "summary",
+                "label": "First summary",
+                "content": "First summary content.",
+            },
+        ],
+    )
+    second = await repo.create(
+        conversation_id=None,
+        source_channel_kind="dashboard",
+        source_channel_ref="manual",
+        summary="Second memory",
+        topics=[],
+        entities=[],
+        evidence=[
+            {
+                "kind": "message",
+                "label": "Second note",
+                "content": "Second content.",
+            }
+        ],
+    )
+
+    evidence_by_entry = await repo.list_evidence_for_entries([second.id, first.id])
+
+    assert list(evidence_by_entry) == [second.id, first.id]
+    assert [item.label for item in evidence_by_entry[first.id]] == [
+        "First note",
+        "First summary",
+    ]
+    assert [item.label for item in evidence_by_entry[second.id]] == ["Second note"]
+
+
 async def test_memory_entry_repo_create_returns_entry_with_loaded_evidence(session):
     repo = MemoryEntryRepo(session)
 

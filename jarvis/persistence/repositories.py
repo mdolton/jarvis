@@ -516,6 +516,17 @@ class MemoryEntryRepo:
         )
         return list(result.scalars())
 
+    async def list_by_ids(self, ids: list[UUID]) -> list[MemoryEntryRow]:
+        if not ids:
+            return []
+        ordering = case(
+            {memory_id: index for index, memory_id in enumerate(ids)}, value=MemoryEntryRow.id
+        )
+        result = await self._session.execute(
+            select(MemoryEntryRow).where(MemoryEntryRow.id.in_(ids)).order_by(ordering)
+        )
+        return list(result.scalars())
+
     async def list_active_by_ids(self, ids: list[UUID]) -> list[MemoryEntryRow]:
         if not ids:
             return []
@@ -536,6 +547,25 @@ class MemoryEntryRepo:
             .order_by(MemoryEvidenceRow.created_at.asc())
         )
         return list(result.scalars())
+
+    async def list_evidence_for_entries(
+        self, ids: list[UUID]
+    ) -> dict[UUID, list[MemoryEvidenceRow]]:
+        evidence_by_entry = {memory_id: [] for memory_id in ids}
+        if not ids:
+            return evidence_by_entry
+        ordering = case(
+            {memory_id: index for index, memory_id in enumerate(ids)},
+            value=MemoryEvidenceRow.memory_entry_id,
+        )
+        result = await self._session.execute(
+            select(MemoryEvidenceRow)
+            .where(MemoryEvidenceRow.memory_entry_id.in_(ids))
+            .order_by(ordering, MemoryEvidenceRow.created_at.asc())
+        )
+        for evidence in result.scalars():
+            evidence_by_entry[evidence.memory_entry_id].append(evidence)
+        return evidence_by_entry
 
     async def archive(self, memory_entry_id: UUID) -> None:
         await self._session.execute(
