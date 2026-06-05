@@ -1,6 +1,4 @@
 """Scheduler integration tests. Use fire_now to trigger immediately."""
-
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest_asyncio
@@ -128,7 +126,6 @@ async def test_scheduler_fires_and_records_run(infra):
     await scheduler.start()
     try:
         await scheduler.fire_now(sched_id)
-        await asyncio.sleep(0.3)
     finally:
         await scheduler.stop()
 

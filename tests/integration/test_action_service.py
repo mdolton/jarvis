@@ -253,6 +253,47 @@ async def test_approve_summarizes_real_resumed_output(monkeypatch, infra):
     assert memory_service.summarize_calls[0]["assistant_output"] == "resume complete"
 
 
+async def test_approve_summarizes_against_original_action_prompt_not_later_user_message(
+    monkeypatch, infra
+):
+    factory, audit = infra
+    action = await _action(factory, conversation=True)
+    async with factory() as s:
+        await TriggerRepo(s).record(
+            kind=TriggerKind.MANUAL.value,
+            source_ref="dashboard",
+        )
+        await MessageRepo(s).append(
+            conversation_id=action.conversation_id,
+            role=MessageRole.USER,
+            content="later unrelated prompt",
+        )
+
+    canonical_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    state = _FakeRunState([canonical_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr("jarvis.actions.service.Runner.run", AsyncMock(return_value=_FakeResult()))
+    memory_service = _RecordingMemoryService()
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=None,
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+        memory_service=memory_service,
+    )
+
+    await service.approve(action.id)
+    await service.drain_memory_tasks()
+
+    assert len(memory_service.summarize_calls) == 1
+    assert memory_service.summarize_calls[0]["user_prompt"] == "send it"
+
+
 async def test_route_failure_after_success_leaves_action_completed(monkeypatch, infra):
     factory, audit = infra
     action = await _action(factory, conversation=True)

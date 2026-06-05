@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from agents import RunConfig, Runner
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.actions.serialization import (
@@ -20,7 +21,7 @@ from jarvis.audit.logger import AuditLogger
 from jarvis.config.schema import LLMConfig
 from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind, MessageRole
-from jarvis.persistence.models import ActionRow
+from jarvis.persistence.models import ActionRow, MessageRow, TriggerRow
 from jarvis.persistence.repositories import ActionRepo, MessageRepo, ScheduleRepo
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
@@ -129,7 +130,7 @@ class ActionService:
             async with self._session_factory() as session:
                 await ActionRepo(session).mark_completed(action_id)
 
-            user_prompt = await self._latest_user_prompt(action.conversation_id)
+            user_prompt = await self._user_prompt_for_action(action)
             if user_prompt is not None:
                 self._schedule_memory_summary(
                     conversation_id=action.conversation_id,
@@ -268,17 +269,64 @@ class ActionService:
             discord_user_id=row.discord_user_id or "",
         )
 
-    async def _latest_user_prompt(self, conversation_id: UUID | None) -> str | None:
-        if conversation_id is None:
+    async def _user_prompt_for_action(self, action: ActionRow) -> str | None:
+        if action.conversation_id is None:
             return None
 
         async with self._session_factory() as session:
-            history = await MessageRepo(session).history(conversation_id)
+            trigger_created_at = await self._trigger_created_at(session, action.trigger_id)
+            prompt = await self._first_user_message_in_window(
+                session=session,
+                conversation_id=action.conversation_id,
+                start_at=trigger_created_at,
+                end_at=action.created_at,
+            )
+            if prompt is not None:
+                return prompt
 
-        for message in reversed(history):
-            if message.role == MessageRole.USER.value:
-                return message.content
+            history = await MessageRepo(session).history(action.conversation_id)
+            for message in reversed(history):
+                if (
+                    message.role == MessageRole.USER.value
+                    and message.created_at <= action.created_at
+                ):
+                    return message.content
         return None
+
+    async def _trigger_created_at(
+        self,
+        session: AsyncSession,
+        trigger_id: UUID | None,
+    ):
+        if trigger_id is None:
+            return None
+        result = await session.execute(
+            select(TriggerRow.created_at).where(TriggerRow.id == trigger_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def _first_user_message_in_window(
+        self,
+        *,
+        session: AsyncSession,
+        conversation_id: UUID,
+        start_at,
+        end_at,
+    ) -> str | None:
+        stmt = (
+            select(MessageRow.content)
+            .where(
+                MessageRow.conversation_id == conversation_id,
+                MessageRow.role == MessageRole.USER.value,
+                MessageRow.created_at <= end_at,
+            )
+            .order_by(MessageRow.created_at.asc())
+            .limit(1)
+        )
+        if start_at is not None:
+            stmt = stmt.where(MessageRow.created_at >= start_at)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
 
     def _schedule_memory_summary(
         self,
