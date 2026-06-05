@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from uuid import UUID
 
@@ -13,6 +14,8 @@ from jarvis.memory.types import VectorSearchResult
 
 class MemoryVectorStore:
     def __init__(self, *, db_path: Path, dimensions: int) -> None:
+        if dimensions < 1:
+            raise ValueError("dimensions must be positive")
         self._db_path = db_path
         self._dimensions = dimensions
         self.available = False
@@ -30,21 +33,22 @@ class MemoryVectorStore:
 
     def _initialize_sync(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memory_vector_ids (
-                    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                    memory_entry_id TEXT NOT NULL UNIQUE
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS memory_vector_ids (
+                        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                        memory_entry_id TEXT NOT NULL UNIQUE
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors
-                USING vec0(embedding float[{self._dimensions}])
-                """
-            )
+                conn.execute(
+                    f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors
+                    USING vec0(embedding float[{self._dimensions}])
+                    """
+                )
 
     async def upsert(self, memory_entry_id: UUID, embedding: list[float]) -> None:
         if not self.available:
@@ -52,24 +56,25 @@ class MemoryVectorStore:
         await asyncio.to_thread(self._upsert_sync, memory_entry_id, embedding)
 
     def _upsert_sync(self, memory_entry_id: UUID, embedding: list[float]) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO memory_vector_ids(memory_entry_id) VALUES (?)",
-                (str(memory_entry_id),),
-            )
-            row = conn.execute(
-                "SELECT rowid FROM memory_vector_ids WHERE memory_entry_id = ?",
-                (str(memory_entry_id),),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("memory vector id mapping was not created")
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO memory_vector_ids(memory_entry_id) VALUES (?)",
+                    (str(memory_entry_id),),
+                )
+                row = conn.execute(
+                    "SELECT rowid FROM memory_vector_ids WHERE memory_entry_id = ?",
+                    (str(memory_entry_id),),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("memory vector id mapping was not created")
 
-            rowid = int(row[0])
-            conn.execute("DELETE FROM memory_vectors WHERE rowid = ?", (rowid,))
-            conn.execute(
-                "INSERT INTO memory_vectors(rowid, embedding) VALUES (?, ?)",
-                (rowid, json.dumps(embedding)),
-            )
+                rowid = int(row[0])
+                conn.execute("DELETE FROM memory_vectors WHERE rowid = ?", (rowid,))
+                conn.execute(
+                    "INSERT INTO memory_vectors(rowid, embedding) VALUES (?, ?)",
+                    (rowid, json.dumps(embedding)),
+                )
 
     async def search(
         self,
@@ -86,7 +91,7 @@ class MemoryVectorStore:
         embedding: list[float],
         limit: int,
     ) -> list[VectorSearchResult]:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute(
                 """
                 SELECT memory_vector_ids.memory_entry_id, memory_vectors.distance
