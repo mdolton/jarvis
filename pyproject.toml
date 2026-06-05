@@ -7,6 +7,7 @@ dependencies = [
   "pydantic>=2.7",
   "sqlalchemy[asyncio]>=2.0.30",
   "aiosqlite>=0.20",
+  "sqlite-vec>=0.1.6",
   "alembic>=1.13",
   "pyyaml>=6.0",
   "watchfiles>=0.22",

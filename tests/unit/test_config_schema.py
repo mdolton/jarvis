@@ -69,3 +69,31 @@ def test_mcp_server_transport_validation():
 def test_mcp_servers_config_accepts_empty():
     cfg = MCPServersConfig(servers=[])
     assert cfg.servers == []
+
+
+def test_memory_config_defaults_are_enabled_and_deterministic():
+    cfg = JarvisConfig(llm=LLMConfig(base_url="http://x/v1", api_key="k", model="m"))
+
+    assert cfg.memory.enabled is True
+    assert cfg.memory.recall_enabled is True
+    assert cfg.memory.embedding_model is None
+    assert cfg.memory.embedding_dimensions == 1536
+    assert cfg.memory.max_recalled_memories == 5
+    assert cfg.memory.min_relevance_score == 0.25
+
+
+def test_memory_config_accepts_embedding_override():
+    cfg = JarvisConfig(
+        llm=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        memory={
+            "embedding_model": "text-embedding-3-small",
+            "embedding_dimensions": 768,
+            "max_recalled_memories": 3,
+            "min_relevance_score": 0.4,
+        },
+    )
+
+    assert cfg.memory.embedding_model == "text-embedding-3-small"
+    assert cfg.memory.embedding_dimensions == 768
+    assert cfg.memory.max_recalled_memories == 3
+    assert cfg.memory.min_relevance_score == 0.4
