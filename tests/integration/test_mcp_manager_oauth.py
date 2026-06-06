@@ -1,5 +1,6 @@
 """MCPManager OAuth integration: replace, remove, isolation from YAML servers."""
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -74,6 +75,13 @@ class HangingSDKServer:
 
     async def list_tools(self):
         return []
+
+
+class HangingCloseSDKServer(FakeSDKServer):
+    async def __aexit__(self, *exc):
+        import asyncio
+
+        await asyncio.Event().wait()
 
 
 class RefreshFlowStub:
@@ -325,6 +333,41 @@ async def test_hung_replace_times_out_and_does_not_block_remove(factory, monkeyp
         assert mgr.agent_mcp_servers() == []
     finally:
         await mgr.stop()
+
+
+async def test_replace_oauth_server_times_out_hung_old_connection_close(factory, monkeypatch):
+    """A wedged old stream close must not hang reconnect/callback after the new token is saved."""
+    import asyncio
+
+    mgr = MCPManager(
+        config=MCPServersConfig(servers=[]),
+        session_factory=factory,
+        close_timeout=0.1,
+    )
+    await mgr.start()
+    try:
+        old = HangingCloseSDKServer()
+        new = FakeSDKServer()
+        builds = iter([old, new])
+        monkeypatch.setattr(
+            "jarvis.mcp.manager._build_streamable_http",
+            lambda url, headers, *, name, approval_policy=None: next(builds),
+        )
+
+        await mgr.replace_oauth_server("calendar", url="x", headers={"Authorization": "old"})
+        await asyncio.wait_for(
+            mgr.replace_oauth_server("calendar", url="x", headers={"Authorization": "new"}),
+            timeout=1.0,
+        )
+
+        assert mgr.agent_mcp_servers() == [new]
+    finally:
+        if mgr._loop_task is not None and not mgr._loop_task.done():
+            await mgr.stop()
+        elif mgr._loop_task is not None:
+            mgr._loop_task.cancel()
+            with contextlib.suppress(BaseException):
+                await mgr._loop_task
 
 
 async def test_start_skips_oauth_provider_without_credentials(factory, monkeypatch):
