@@ -1,5 +1,6 @@
 """Web routes for OAuth connect/callback/disconnect."""
 
+import asyncio
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -211,6 +212,11 @@ class _ManagerStubReplaceRaises(_ManagerStub):
         raise RuntimeError("attach boom")
 
 
+class _ManagerStubReplaceHangs(_ManagerStub):
+    async def replace_oauth_server(self, key, *, url, headers):
+        await asyncio.Event().wait()
+
+
 async def test_disconnect_revokes_even_if_remove_fails(factory):
     """A failing/slow MCP teardown must not stop Disconnect from honoring the
     click. The credential row must be deleted regardless."""
@@ -274,6 +280,54 @@ async def test_callback_marks_needs_reauth_when_attach_fails(factory):
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
     r2 = client.get(f"/oauth/callback?state={state}&code=abc")
     assert r2.status_code == 500
+    async with factory() as session:
+        cred = await OAuthCredentialsRepo(session).get("fastmail")
+        assert cred is not None
+        assert cred.status == "needs_reauth"
+
+
+async def test_callback_times_out_hung_mcp_attach(factory, monkeypatch):
+    """The browser must not hang on Google's consent screen if post-callback MCP attach wedges."""
+
+    from jarvis.web.routes import oauth as oauth_routes
+
+    monkeypatch.setattr(oauth_routes, "POST_CALLBACK_ATTACH_TIMEOUT", 0.01, raising=False)
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata())
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(
+                200,
+                json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600},
+            )
+        return httpx.Response(404)
+
+    flow = OAuthFlow(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        session_factory=factory,
+        base_url="http://localhost:8080",
+        secrets_key=generate_key().encode(),
+    )
+    ctx = _Ctx(factory, flow)
+    ctx.mcp_manager = _ManagerStubReplaceHangs()
+    app = create_app(app_context=ctx)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        r = await client.get("/oauth/connect/fastmail", follow_redirects=False)
+        state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        r2 = await asyncio.wait_for(
+            client.get(f"/oauth/callback?state={state}&code=abc"),
+            timeout=1.0,
+        )
+
+    assert r2.status_code == 500
+    assert "MCP attach failed" in r2.text
     async with factory() as session:
         cred = await OAuthCredentialsRepo(session).get("fastmail")
         assert cred is not None
