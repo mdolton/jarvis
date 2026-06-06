@@ -11,6 +11,7 @@ from jarvis.oauth.flow import OAuthCallbackError, OAuthDiscoveryError
 
 router = APIRouter(prefix="/oauth")
 _log = logging.getLogger(__name__)
+POST_CALLBACK_ATTACH_TIMEOUT = 10.0
 
 
 @router.get("/callback")
@@ -71,8 +72,11 @@ async def oauth_callback(request: Request):
     entry = OAUTH_CATALOG[result.provider_key]
     if ctx.mcp_manager is not None:
         try:
-            await ctx.mcp_manager.replace_oauth_server(
-                result.provider_key, url=entry.mcp_url, headers=headers
+            await asyncio.wait_for(
+                ctx.mcp_manager.replace_oauth_server(
+                    result.provider_key, url=entry.mcp_url, headers=headers
+                ),
+                timeout=POST_CALLBACK_ATTACH_TIMEOUT,
             )
         except Exception as e:
             _log.exception("post-callback MCP attach failed for %s", result.provider_key)
