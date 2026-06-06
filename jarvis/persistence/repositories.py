@@ -524,6 +524,15 @@ class MemoryEntryRepo:
         )
         return list(result.scalars())
 
+    async def list_for_reindex(self, *, limit: int = 1000) -> list[MemoryEntryRow]:
+        result = await self._session.execute(
+            select(MemoryEntryRow)
+            .where(MemoryEntryRow.status.in_(("active", "indexing", "unindexed")))
+            .order_by(MemoryEntryRow.updated_at.asc())
+            .limit(limit)
+        )
+        return list(result.scalars())
+
     async def list_by_ids(self, ids: list[UUID]) -> list[MemoryEntryRow]:
         if not ids:
             return []

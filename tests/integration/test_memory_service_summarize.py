@@ -13,7 +13,11 @@ from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRep
 
 
 class _FakeEmbeddingProvider:
+    def __init__(self) -> None:
+        self.calls = []
+
     async def embed(self, text: str) -> list[float]:
+        self.calls.append(text)
         return [0.1, 0.2, 0.3]
 
 
@@ -368,6 +372,45 @@ async def test_memory_service_summarize_run_marks_entry_unindexed_on_vector_fail
     assert "vector failed" in outcome.error
     assert outcome.memory_entry_id == entries[0].id
     assert entries[0].status == "unindexed"
+
+
+async def test_memory_service_reindexes_saved_unindexed_entries(factory):
+    conversation_id = await _create_conversation(factory)
+    async with factory() as session:
+        entry = await MemoryEntryRepo(session).create(
+            conversation_id=conversation_id,
+            source_channel_kind=ChannelKind.DASHBOARD.value,
+            source_channel_ref="mark",
+            summary="Jarvis memory dimensions were corrected.",
+            topics=["jarvis", "memory"],
+            entities=["sqlite-vec"],
+            evidence=[],
+            status="unindexed",
+        )
+
+    embedding_provider = _FakeEmbeddingProvider()
+    vector_store = _FakeVectorStore()
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+        summarizer=_FakeSummarizer(),
+        max_recalled_memories=5,
+        min_relevance_score=0.25,
+    )
+
+    reindexed = await service.reindex_entries()
+
+    async with factory() as session:
+        entries = await MemoryEntryRepo(session).list_recent()
+
+    assert reindexed == 1
+    assert entries[0].id == entry.id
+    assert entries[0].status == "active"
+    assert embedding_provider.calls == [
+        "Jarvis memory dimensions were corrected.\njarvis memory\nsqlite-vec"
+    ]
+    assert vector_store.upserts == [(entry.id, [0.1, 0.2, 0.3])]
 
 
 async def test_memory_service_summarize_run_dedupes_and_caps_pending_preferences(factory):

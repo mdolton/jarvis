@@ -53,6 +53,31 @@ class MemoryService:
         self._max_recalled_memories = max_recalled_memories
         self._min_relevance_score = min_relevance_score
 
+    async def reindex_entries(self) -> int:
+        if not self._vector_store.available:
+            return 0
+
+        async with self._session_factory() as session:
+            entries = await MemoryEntryRepo(session).list_for_reindex()
+
+        reindexed = 0
+        for entry in entries:
+            try:
+                embedding = await self._embedding_provider.embed(_entry_embedding_text(entry))
+                await self._vector_store.upsert(entry.id, embedding)
+                async with self._session_factory() as session:
+                    await _set_memory_entry_status(session, entry.id, "active")
+            except Exception as exc:
+                await _mark_unindexed_best_effort(self._session_factory, entry.id)
+                await self._emit(
+                    AuditEventType.MEMORY_FAILED,
+                    conversation_id=entry.conversation_id,
+                    payload={"stage": "reindex", "error": str(exc)},
+                )
+                continue
+            reindexed += 1
+        return reindexed
+
     async def summarize_run(
         self,
         *,
@@ -438,6 +463,18 @@ def _embedding_text(summary: MemorySummary) -> str:
         " ".join(summary.entities),
     ]
     return "\n".join(part for part in parts if part)
+
+
+def _entry_embedding_text(entry: MemoryEntryRow) -> str:
+    return _embedding_text(
+        MemorySummary(
+            summary=entry.summary,
+            topics=entry.topics or [],
+            entities=entry.entities or [],
+            evidence=[],
+            preference_candidates=[],
+        )
+    )
 
 
 def _source_hash(
