@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -10,6 +11,8 @@ from uuid import UUID
 import sqlite_vec
 
 from jarvis.memory.types import VectorSearchResult
+
+_VECTOR_DIMENSION_RE = re.compile(r"embedding\s+float\[(\d+)\]")
 
 
 class MemoryVectorStore:
@@ -35,6 +38,12 @@ class MemoryVectorStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn:
             with conn:
+                existing_dimensions = self._existing_dimensions(conn)
+                if (
+                    existing_dimensions is not None
+                    and existing_dimensions != self._dimensions
+                ):
+                    self._reset_tables(conn)
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS memory_vector_ids (
@@ -49,6 +58,21 @@ class MemoryVectorStore:
                     USING vec0(embedding float[{self._dimensions}])
                     """
                 )
+
+    def _existing_dimensions(self, conn: sqlite3.Connection) -> int | None:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'memory_vectors'"
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        match = _VECTOR_DIMENSION_RE.search(str(row[0]))
+        if match is None:
+            return None
+        return int(match.group(1))
+
+    def _reset_tables(self, conn: sqlite3.Connection) -> None:
+        conn.execute("DROP TABLE IF EXISTS memory_vectors")
+        conn.execute("DROP TABLE IF EXISTS memory_vector_ids")
 
     async def upsert(self, memory_entry_id: UUID, embedding: list[float]) -> None:
         if not self.available:

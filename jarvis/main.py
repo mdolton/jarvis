@@ -289,7 +289,7 @@ async def _build_memory_service(
         cfg.jarvis.memory.max_recalled_memories if cfg.jarvis.memory.recall_enabled else 0
     )
 
-    return MemoryService(
+    service = MemoryService(
         session_factory=session_factory,
         embedding_provider=embedding_provider,
         vector_store=vector_store,
@@ -298,6 +298,8 @@ async def _build_memory_service(
         summarizer=summarizer,
         audit=audit,
     )
+    await service.reindex_entries()
+    return service
 
 
 def _local_sqlite_db_path(db_url: str) -> Path | None:

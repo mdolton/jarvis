@@ -40,6 +40,22 @@ async def test_vector_store_replaces_existing_embedding(store):
     assert results[0].memory_entry_id == memory_entry_id
 
 
+async def test_vector_store_recreates_dimension_mismatched_index(tmp_path):
+    db_path = tmp_path / "vec.db"
+    original = MemoryVectorStore(db_path=db_path, dimensions=1536)
+    await original.initialize()
+
+    resized = MemoryVectorStore(db_path=db_path, dimensions=1024)
+    await resized.initialize()
+    memory_entry_id = uuid4()
+
+    await resized.upsert(memory_entry_id, [0.1] * 1024)
+    results = await resized.search([0.1] * 1024, limit=1)
+
+    assert resized.available is True
+    assert results[0].memory_entry_id == memory_entry_id
+
+
 async def test_vector_store_unavailable_is_reported(monkeypatch, tmp_path):
     def broken_load(_conn):
         raise RuntimeError("extension missing")
