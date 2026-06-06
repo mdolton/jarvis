@@ -46,6 +46,7 @@ class Scheduler:
         model_override: Any = None,
         model_catalog=None,
         idle_timeout_sec: int = 900,
+        run_timeout_sec: float | None = None,
         max_concurrent: int = 3,
         oauth_flow=None,
         mcp_manager=None,
@@ -72,6 +73,7 @@ class Scheduler:
             llm_config=llm_config,
             model=model_override,
             idle_timeout_sec=idle_timeout_sec,
+            run_timeout_sec=run_timeout_sec if run_timeout_sec is not None else idle_timeout_sec,
             memory_service=memory_service,
         )
         self._dispatcher = TriggerDispatcher(

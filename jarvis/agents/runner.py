@@ -67,6 +67,7 @@ class AgentRunner:
         model: Any = None,  # Override for tests; None means "use config.model"
         model_provider: Callable[[], str] | None = None,
         idle_timeout_sec: int = 900,
+        run_timeout_sec: float | None = None,
         memory_service: Any = None,
     ) -> None:
         self._session_factory = session_factory
@@ -76,6 +77,7 @@ class AgentRunner:
         self._model = model
         self._model_provider = model_provider
         self._idle_timeout_sec = idle_timeout_sec
+        self._run_timeout_sec = run_timeout_sec
         self._memory_service = memory_service
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
@@ -138,11 +140,19 @@ class AgentRunner:
             model_provider=self._model_provider,
         )
 
-        sdk_result = await Runner.run(
-            agent,
-            prompt,
-            run_config=RunConfig(workflow_name="jarvis-invoke"),
-        )
+        if self._run_timeout_sec is None:
+            sdk_result = await Runner.run(
+                agent,
+                prompt,
+                run_config=RunConfig(workflow_name="jarvis-invoke"),
+            )
+        else:
+            async with asyncio.timeout(self._run_timeout_sec):
+                sdk_result = await Runner.run(
+                    agent,
+                    prompt,
+                    run_config=RunConfig(workflow_name="jarvis-invoke"),
+                )
 
         interruptions = list(getattr(sdk_result, "interruptions", []) or [])
         if interruptions:
