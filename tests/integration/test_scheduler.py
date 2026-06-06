@@ -1,4 +1,5 @@
 """Scheduler integration tests. Use fire_now to trigger immediately."""
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest_asyncio
@@ -275,3 +276,50 @@ async def test_scheduler_notifies_discord_recipient_on_failure_when_enabled(infr
     assert len(discord.sent) == 1
     assert discord.sent[0].channel_ref == "111"
     assert "Scheduled task `breaks` failed" in discord.sent[0].text
+
+
+async def test_scheduler_times_out_wedged_agent_run(infra, monkeypatch):
+    _, factory, audit = infra
+    discord = _RecordingDiscordAdapter()
+
+    async def never_returns(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("jarvis.agents.runner.Runner.run", never_returns)
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=discord,
+        run_timeout_sec=0.01,
+    )
+
+    async with factory() as s:
+        sched = await ScheduleRepo(s).create(
+            name="wedged",
+            description="",
+            cron_expr=_far_future_cron_expr(),
+            timezone="UTC",
+            prompt="x",
+            output_mode="discord",
+            notify_on_error=True,
+            enabled=True,
+            discord_user_id="111",
+        )
+
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(scheduler.fire_now(sched.id), timeout=1)
+    finally:
+        await scheduler.stop()
+
+    async with factory() as s:
+        refreshed = await ScheduleRepo(s).get(sched.id)
+        assert refreshed.last_run_status == "error"
+
+    assert len(discord.sent) == 1
+    assert discord.sent[0].channel_ref == "111"
+    assert "Scheduled task `wedged` failed" in discord.sent[0].text
