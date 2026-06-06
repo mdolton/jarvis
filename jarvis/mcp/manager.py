@@ -46,6 +46,7 @@ class MCPManager:
         secrets_key: bytes | None = None,
         oauth_flow=None,
         connect_timeout: float = 60.0,
+        close_timeout: float = 10.0,
     ) -> None:
         self._config = config
         self._session_factory = session_factory
@@ -55,6 +56,7 @@ class MCPManager:
         # unresponsive remote can never wedge the serial lifecycle loop (and
         # thereby block Disconnect/remove, which run through the same task).
         self._connect_timeout = connect_timeout
+        self._close_timeout = close_timeout
         self._approval_policy = MCPApprovalPolicy(session_factory=session_factory)
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
@@ -207,7 +209,7 @@ class MCPManager:
             except BaseException:
                 # Eagerly close on connect/list_tools failure or timeout so we
                 # never keep a half-broken (or hung) server around.
-                await _aclose_silently(stack)
+                await _aclose_silently(stack, close_timeout=self._close_timeout)
                 raise
 
             self._stacks[cfg.name] = stack
@@ -250,8 +252,8 @@ class MCPManager:
             # Connect/list_tools failed or timed out. Drop the half-open stack so
             # a hung connection can't linger, then surface the error to the caller
             # (the old server, if any, stays active).
-            await _aclose_silently(new_stack)
-            raise
+                await _aclose_silently(new_stack, close_timeout=self._close_timeout)
+                raise
 
         old_stack = self._stacks.get(provider_key)
         self._sdk_servers[provider_key] = new_sdk
@@ -273,7 +275,7 @@ class MCPManager:
         # Close the old connection LAST, on THIS (owner) task — the same task it
         # was opened on. _aclose_silently swallows any stray teardown error.
         if old_stack is not None:
-            await _aclose_silently(old_stack)
+            await _aclose_silently(old_stack, close_timeout=self._close_timeout)
         return new_sdk
 
     async def _do_remove_oauth(self, provider_key: str) -> None:
@@ -281,11 +283,11 @@ class MCPManager:
         stack = self._stacks.pop(provider_key, None)
         self.clear_policy_cache(provider_key)
         if stack is not None:
-            await _aclose_silently(stack)
+            await _aclose_silently(stack, close_timeout=self._close_timeout)
 
     async def _do_stop_all(self) -> None:
         for name in list(self._stacks):
-            await _aclose_silently(self._stacks[name])
+            await _aclose_silently(self._stacks[name], close_timeout=self._close_timeout)
         self._stacks.clear()
         self._sdk_servers.clear()
 
@@ -337,7 +339,7 @@ def _build_streamable_http(
     return sdk_server
 
 
-async def _aclose_silently(stack: AsyncExitStack) -> None:
+async def _aclose_silently(stack: AsyncExitStack, *, close_timeout: float = 10.0) -> None:
     """Close an AsyncExitStack, logging any error instead of propagating it.
 
     Catches BaseException because closing an anyio-based streamable-HTTP MCP
@@ -346,7 +348,10 @@ async def _aclose_silently(stack: AsyncExitStack) -> None:
     spurious here and must not be allowed to kill the owner task.
     """
     try:
-        await stack.aclose()
+        async with asyncio.timeout(close_timeout):
+            await stack.aclose()
+    except TimeoutError:
+        _log.warning("timed out closing MCP exit stack after %.1fs", close_timeout)
     except BaseException:  # best-effort close; see docstring
         _log.exception("error closing exit stack")
 
