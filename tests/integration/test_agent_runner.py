@@ -161,6 +161,37 @@ async def test_scheduled_trigger_prompt_includes_local_date_context(infra, monke
     assert captured["prompt"].endswith("Prepare my daily brief for today.")
 
 
+async def test_agent_runner_prompt_includes_current_mcp_context_before_user_prompt(
+    infra, monkeypatch
+):
+    _, factory, audit = infra
+    captured = {}
+
+    async def fake_run(agent, prompt, run_config=None):
+        captured["prompt"] = prompt
+        return SimpleNamespace(final_output="ok")
+
+    monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
+
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers_provider=lambda: [],
+        mcp_context_provider=lambda: "Current MCP servers:\n- ynab: list_accounts, get_month",
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        model=_FakeModel(),
+    )
+
+    await runner.run(
+        InvocationRequest(
+            trigger=ManualTrigger(user="mark", prompt="do you have access to the ynab mcp server?")
+        )
+    )
+
+    assert "Current MCP servers:\n- ynab: list_accounts, get_month" in captured["prompt"]
+    assert captured["prompt"].endswith("do you have access to the ynab mcp server?")
+
+
 async def test_agent_runner_writes_audit_events(infra):
     _, factory, audit = infra
     runner = AgentRunner(

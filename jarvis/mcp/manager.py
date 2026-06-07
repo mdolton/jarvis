@@ -62,6 +62,7 @@ class MCPManager:
         self._approval_policy = MCPApprovalPolicy(session_factory=session_factory)
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
+        self._tool_names_by_server: dict[str, tuple[str, ...]] = {}
         # All connection enter/exit happens on this single owner task.
         self._cmd_queue: asyncio.Queue[tuple[str, object, asyncio.Future]] | None = None
         self._loop_task: asyncio.Task | None = None
@@ -94,6 +95,19 @@ class MCPManager:
     def agent_mcp_servers(self) -> list[object]:
         """Return the SDK server objects to pass into `Agent(mcp_servers=...)`."""
         return list(self._sdk_servers.values())
+
+    def agent_mcp_context(self) -> str:
+        """Return a concise description of live MCP capabilities for the prompt."""
+        if not self._sdk_servers:
+            return ""
+        lines = ["Current MCP servers:"]
+        for name in sorted(self._sdk_servers):
+            tools = self._tool_names_by_server.get(name, ())
+            if tools:
+                lines.append(f"- {name}: {', '.join(tools)}")
+            else:
+                lines.append(f"- {name}")
+        return "\n".join(lines)
 
     def clear_policy_cache(self, server_name: str | None = None) -> None:
         if server_name is None:
@@ -216,6 +230,7 @@ class MCPManager:
 
             self._stacks[cfg.name] = stack
             self._sdk_servers[cfg.name] = sdk_server
+            self._tool_names_by_server[cfg.name] = tuple(t.name for t in tools)
 
             async with self._session_factory() as session:
                 srepo = MCPServerRepo(session)
@@ -260,6 +275,7 @@ class MCPManager:
         old_stack = self._stacks.get(provider_key)
         self._sdk_servers[provider_key] = new_sdk
         self._stacks[provider_key] = new_stack
+        self._tool_names_by_server[provider_key] = tuple(t.name for t in tools)
 
         # Persist status/tools BEFORE closing the old connection. Closing an
         # anyio-based streamable-HTTP connection can emit a stray cancellation
@@ -282,6 +298,7 @@ class MCPManager:
 
     async def _do_remove_oauth(self, provider_key: str) -> None:
         self._sdk_servers.pop(provider_key, None)
+        self._tool_names_by_server.pop(provider_key, None)
         stack = self._stacks.pop(provider_key, None)
         self.clear_policy_cache(provider_key)
         if stack is not None:
@@ -292,6 +309,7 @@ class MCPManager:
             await _aclose_silently(self._stacks[name], close_timeout=self._close_timeout)
         self._stacks.clear()
         self._sdk_servers.clear()
+        self._tool_names_by_server.clear()
 
 
 def _build_streamable_http(

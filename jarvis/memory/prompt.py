@@ -6,6 +6,7 @@ from jarvis.memory.types import MemoryContext, RecalledMemory
 def assemble_memory_prompt(
     *,
     memory_context: MemoryContext,
+    runtime_context: str = "",
     trigger_context: str,
     current_prompt: str,
 ) -> str:
@@ -15,6 +16,18 @@ def assemble_memory_prompt(
         lines = ["Standing preferences:"]
         lines.extend(f"- {preference}" for preference in memory_context.preferences)
         sections.append("\n".join(lines))
+
+    stripped_runtime_context = runtime_context.strip()
+    if stripped_runtime_context:
+        sections.append(
+            "\n".join(
+                [
+                    "Current runtime context:",
+                    "Use current runtime context as the source of truth for live capabilities.",
+                    stripped_runtime_context,
+                ]
+            )
+        )
 
     if memory_context.recalled:
         lines = [

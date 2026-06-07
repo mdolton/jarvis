@@ -42,11 +42,47 @@ def test_assemble_memory_prompt_orders_preferences_context_and_current_prompt():
     assert "PR #18" in prompt
 
 
+def test_assemble_memory_prompt_places_runtime_context_before_recalled_memory():
+    memory_id = uuid4()
+    ctx = MemoryContext(
+        preferences=[],
+        recalled=[
+            RecalledMemory(
+                memory_entry_id=memory_id,
+                summary="The assistant said it did not have access to YNAB.",
+                topics=["MCP"],
+                entities=["YNAB"],
+                evidence=[
+                    {
+                        "label": "YNAB access status",
+                        "content": "No YNAB MCP access.",
+                    }
+                ],
+                score=0.92,
+                rank=1,
+            )
+        ],
+        recall_available=True,
+    )
+
+    prompt = assemble_memory_prompt(
+        memory_context=ctx,
+        runtime_context="Current MCP servers:\n- ynab: list_accounts, get_month",
+        trigger_context="",
+        current_prompt="do you have access to the ynab mcp server?",
+    )
+
+    assert prompt.index("Current MCP servers") < prompt.index("Relevant prior context")
+    assert "Use current runtime context as the source of truth" in prompt
+    assert prompt.endswith("do you have access to the ynab mcp server?")
+
+
 def test_assemble_memory_prompt_without_memory_returns_current_prompt_only():
     ctx = MemoryContext(preferences=[], recalled=[], recall_available=True)
 
     prompt = assemble_memory_prompt(
         memory_context=ctx,
+        runtime_context="",
         trigger_context="",
         current_prompt="hello",
     )
