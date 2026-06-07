@@ -93,6 +93,7 @@ async def test_mcp_manager_connects_and_catalogs_tools(engine_and_factory, test_
         # Manager exposes the SDK server list for the Agent.
         sdk_servers = manager.agent_mcp_servers()
         assert len(sdk_servers) == 1
+        assert manager.agent_mcp_context() == "Current MCP servers:\n- test: echo"
 
         # DB shadow: one server marked connected, one tool recorded.
         async with factory() as s:

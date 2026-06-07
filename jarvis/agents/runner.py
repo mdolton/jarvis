@@ -64,6 +64,7 @@ class AgentRunner:
         audit: AuditLogger,
         mcp_servers_provider: Callable[[], list],
         llm_config: LLMConfig,
+        mcp_context_provider: Callable[[], str] | None = None,
         model: Any = None,  # Override for tests; None means "use config.model"
         model_provider: Callable[[], str] | None = None,
         idle_timeout_sec: int = 900,
@@ -73,6 +74,7 @@ class AgentRunner:
         self._session_factory = session_factory
         self._audit = audit
         self._mcp_servers_provider = mcp_servers_provider
+        self._mcp_context_provider = mcp_context_provider
         self._llm_config = llm_config
         self._model = model
         self._model_provider = model_provider
@@ -248,6 +250,7 @@ class AgentRunner:
         if self._memory_service is None:
             return assemble_memory_prompt(
                 memory_context=_empty_memory_context(),
+                runtime_context=self._build_runtime_context(),
                 trigger_context=trigger_context,
                 current_prompt=user_prompt,
             )
@@ -264,9 +267,15 @@ class AgentRunner:
 
         return assemble_memory_prompt(
             memory_context=memory_context,
+            runtime_context=self._build_runtime_context(),
             trigger_context=trigger_context,
             current_prompt=user_prompt,
         )
+
+    def _build_runtime_context(self) -> str:
+        if self._mcp_context_provider is None:
+            return ""
+        return self._mcp_context_provider()
 
     def _schedule_memory_summary(
         self,
