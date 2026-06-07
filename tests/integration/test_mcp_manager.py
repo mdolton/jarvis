@@ -1,5 +1,6 @@
 """MCPManager integration tests using a real in-process stdio MCP server."""
 
+import asyncio
 import re
 import sys
 from types import MethodType
@@ -411,6 +412,38 @@ async def test_runtime_policy_guard_refreshes_and_retries_once_on_unauthorized()
     assert refreshed_server.calls == [("list_calendars", {}, {"trace": "calendar-401"})]
 
 
+async def test_runtime_policy_guard_refreshes_when_unauthorized_call_hangs_until_timeout():
+    policy = _RecordingApprovalPolicy()
+    stale_server = _HangingSdkServer()
+    refreshed_server = _CallableSdkServer()
+    refreshes = []
+
+    async def refresh_server():
+        refreshes.append("calendar")
+        return refreshed_server
+
+    _apply_runtime_policy_guard(
+        stale_server,
+        "calendar",
+        policy,
+        unauthorized_retry=refresh_server,
+        unauthorized_detector=lambda exc: isinstance(exc, TimeoutError),
+        tool_call_timeout=0.01,
+    )
+
+    result = await asyncio.wait_for(
+        stale_server.call_tool("list_events", {"calendar": "primary"}, meta={"trace": "hung-401"}),
+        timeout=1.0,
+    )
+
+    assert result == "called"
+    assert refreshes == ["calendar"]
+    assert stale_server.calls == [("list_events", {"calendar": "primary"}, {"trace": "hung-401"})]
+    assert refreshed_server.calls == [
+        ("list_events", {"calendar": "primary"}, {"trace": "hung-401"})
+    ]
+
+
 class _RecordingApprovalPolicy:
     def __init__(self, *, filter_result=False, approval_result=True, denied_names=None):
         self.calls = []
@@ -481,6 +514,15 @@ class _UnauthorizedSdkServer:
     async def call_tool(self, tool_name, arguments, meta=None):
         self.calls.append((tool_name, arguments, meta))
         raise UserError("Failed to call tool 'list_calendars': HTTP error 401")
+
+
+class _HangingSdkServer:
+    def __init__(self):
+        self.calls = []
+
+    async def call_tool(self, tool_name, arguments, meta=None):
+        self.calls.append((tool_name, arguments, meta))
+        await asyncio.Event().wait()
 
 
 class _SdkTool:
