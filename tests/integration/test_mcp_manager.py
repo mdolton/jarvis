@@ -444,6 +444,31 @@ async def test_runtime_policy_guard_refreshes_when_unauthorized_call_hangs_until
     ]
 
 
+async def test_runtime_policy_guard_times_out_hung_unauthorized_retry():
+    policy = _RecordingApprovalPolicy()
+    stale_server = _UnauthorizedSdkServer()
+
+    async def refresh_server():
+        await asyncio.Event().wait()
+
+    _apply_runtime_policy_guard(
+        stale_server,
+        "calendar",
+        policy,
+        unauthorized_retry=refresh_server,
+        unauthorized_detector=lambda exc: "401" in str(exc),
+        unauthorized_retry_timeout=0.01,
+    )
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            stale_server.call_tool("list_events", {"calendar": "primary"}),
+            timeout=1.0,
+        )
+
+    assert stale_server.calls == [("list_events", {"calendar": "primary"}, None)]
+
+
 class _RecordingApprovalPolicy:
     def __init__(self, *, filter_result=False, approval_result=True, denied_names=None):
         self.calls = []

@@ -1,5 +1,6 @@
 """APScheduler job functions for OAuth: proactive refresh and pending sweep."""
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -14,6 +15,7 @@ from jarvis.oauth.flow import (
 from jarvis.oauth.store import OAuthCredentialsRepo, OAuthPendingRepo
 
 _log = logging.getLogger(__name__)
+OAUTH_REFRESH_ATTACH_TIMEOUT = 35.0
 
 
 async def oauth_token_refresh(
@@ -49,8 +51,11 @@ async def oauth_token_refresh(
                 _log.exception("failed to remove SDK server after needs_reauth")
             continue
         try:
-            await mcp_manager.replace_oauth_server(
-                provider_key, url=entry.mcp_url, headers=new_headers
+            await asyncio.wait_for(
+                mcp_manager.replace_oauth_server(
+                    provider_key, url=entry.mcp_url, headers=new_headers
+                ),
+                timeout=OAUTH_REFRESH_ATTACH_TIMEOUT,
             )
         except Exception:
             _log.exception("failed to swap SDK server after refresh for %s", provider_key)

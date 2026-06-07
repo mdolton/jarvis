@@ -1,5 +1,6 @@
 """APScheduler job functions for OAuth refresh + pending sweep."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -45,6 +46,12 @@ class _MgrStub:
         self.removed.append(key)
 
 
+class _MgrReplaceHangs(_MgrStub):
+    async def replace_oauth_server(self, key, *, url, headers):
+        self.replaced.append((key, headers))
+        await asyncio.Event().wait()
+
+
 async def test_refresh_job_refreshes_due_provider_and_swaps_server(factory):
     key = generate_key().encode()
     now = datetime.now(UTC)
@@ -76,6 +83,45 @@ async def test_refresh_job_refreshes_due_provider_and_swaps_server(factory):
         secrets_key=key,
     )
     mgr = _MgrStub()
+
+    await oauth_token_refresh(flow=flow, mcp_manager=mgr, session_factory=factory)
+    assert mgr.replaced == [("fastmail", {"Authorization": "Bearer AT-NEW"})]
+
+
+async def test_refresh_job_times_out_hung_server_swap(factory, monkeypatch):
+    from jarvis.scheduler import oauth_jobs
+
+    monkeypatch.setattr(oauth_jobs, "OAUTH_REFRESH_ATTACH_TIMEOUT", 0.01)
+    key = generate_key().encode()
+    now = datetime.now(UTC)
+    async with factory() as session:
+        await OAuthCredentialsRepo(session).upsert(
+            provider_key="fastmail",
+            client_id_enc=encrypt_blob(b"cid", key),
+            client_secret_enc=encrypt_blob(b"sec", key),
+            access_token_enc=encrypt_blob(b"AT-old", key),
+            refresh_token_enc=encrypt_blob(b"RT", key),
+            token_expires_at=now + timedelta(seconds=30),
+            scopes_granted=[],
+        )
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata())
+        if request.url.path == "/oauth/token":
+            return httpx.Response(
+                200,
+                json={"access_token": "AT-NEW", "refresh_token": "RT2", "expires_in": 3600},
+            )
+        return httpx.Response(404)
+
+    flow = OAuthFlow(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        session_factory=factory,
+        base_url="http://localhost:8080",
+        secrets_key=key,
+    )
+    mgr = _MgrReplaceHangs()
 
     await oauth_token_refresh(flow=flow, mcp_manager=mgr, session_factory=factory)
     assert mgr.replaced == [("fastmail", {"Authorization": "Bearer AT-NEW"})]

@@ -338,6 +338,7 @@ def _build_streamable_http(
             unauthorized_retry=unauthorized_retry,
             unauthorized_detector=unauthorized_tracker.is_unauthorized_error,
             tool_call_timeout=_OAUTH_TOOL_CALL_TIMEOUT_SEC,
+            unauthorized_retry_timeout=_OAUTH_TOOL_CALL_TIMEOUT_SEC,
         )
     return sdk_server
 
@@ -419,6 +420,7 @@ def _apply_runtime_policy_guard(
     unauthorized_retry=None,
     unauthorized_detector=None,
     tool_call_timeout: float | None = None,
+    unauthorized_retry_timeout: float | None = None,
 ) -> None:
     original_call_tool = sdk_server.call_tool  # type: ignore[attr-defined]
     sdk_server._jarvis_original_call_tool = original_call_tool  # type: ignore[attr-defined]
@@ -438,7 +440,10 @@ def _apply_runtime_policy_guard(
             detector = unauthorized_detector or _is_unauthorized_mcp_error
             if unauthorized_retry is None or not detector(exc):
                 raise
-            refreshed_server = await unauthorized_retry()
+            refreshed_server = await _unauthorized_retry_with_timeout(
+                unauthorized_retry,
+                retry_timeout=unauthorized_retry_timeout,
+            )
             retry_call_tool = getattr(
                 refreshed_server,
                 "_jarvis_original_call_tool",
@@ -467,6 +472,13 @@ async def _call_tool_with_timeout(
         return await call_tool(tool_name, arguments, meta=meta)
     async with asyncio.timeout(call_timeout):
         return await call_tool(tool_name, arguments, meta=meta)
+
+
+async def _unauthorized_retry_with_timeout(unauthorized_retry, *, retry_timeout: float | None):
+    if retry_timeout is None:
+        return await unauthorized_retry()
+    async with asyncio.timeout(retry_timeout):
+        return await unauthorized_retry()
 
 
 def _is_unauthorized_mcp_error(exc: BaseException) -> bool:
