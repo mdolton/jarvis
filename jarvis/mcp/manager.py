@@ -36,6 +36,8 @@ from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
 
 _log = logging.getLogger(__name__)
 
+_OAUTH_TOOL_CALL_TIMEOUT_SEC = 35.0
+
 
 class MCPManager:
     def __init__(
@@ -252,8 +254,8 @@ class MCPManager:
             # Connect/list_tools failed or timed out. Drop the half-open stack so
             # a hung connection can't linger, then surface the error to the caller
             # (the old server, if any, stays active).
-                await _aclose_silently(new_stack, close_timeout=self._close_timeout)
-                raise
+            await _aclose_silently(new_stack, close_timeout=self._close_timeout)
+            raise
 
         old_stack = self._stacks.get(provider_key)
         self._sdk_servers[provider_key] = new_sdk
@@ -335,6 +337,7 @@ def _build_streamable_http(
             approval_policy,
             unauthorized_retry=unauthorized_retry,
             unauthorized_detector=unauthorized_tracker.is_unauthorized_error,
+            tool_call_timeout=_OAUTH_TOOL_CALL_TIMEOUT_SEC,
         )
     return sdk_server
 
@@ -415,6 +418,7 @@ def _apply_runtime_policy_guard(
     *,
     unauthorized_retry=None,
     unauthorized_detector=None,
+    tool_call_timeout: float | None = None,
 ) -> None:
     original_call_tool = sdk_server.call_tool  # type: ignore[attr-defined]
     sdk_server._jarvis_original_call_tool = original_call_tool  # type: ignore[attr-defined]
@@ -423,7 +427,13 @@ def _apply_runtime_policy_guard(
         if await approval_policy.is_denied(name, tool_name):
             raise UserError(f"MCP tool '{tool_name}' on server '{name}' is denied by policy.")
         try:
-            return await original_call_tool(tool_name, arguments, meta=meta)
+            return await _call_tool_with_timeout(
+                original_call_tool,
+                tool_name,
+                arguments,
+                meta=meta,
+                call_timeout=tool_call_timeout,
+            )
         except BaseException as exc:
             detector = unauthorized_detector or _is_unauthorized_mcp_error
             if unauthorized_retry is None or not detector(exc):
@@ -434,9 +444,29 @@ def _apply_runtime_policy_guard(
                 "_jarvis_original_call_tool",
                 refreshed_server.call_tool,  # type: ignore[attr-defined]
             )
-            return await retry_call_tool(tool_name, arguments, meta=meta)
+            return await _call_tool_with_timeout(
+                retry_call_tool,
+                tool_name,
+                arguments,
+                meta=meta,
+                call_timeout=tool_call_timeout,
+            )
 
     sdk_server.call_tool = guarded_call_tool  # type: ignore[attr-defined]
+
+
+async def _call_tool_with_timeout(
+    call_tool,
+    tool_name: str,
+    arguments: dict | None,
+    *,
+    meta: dict | None,
+    call_timeout: float | None,
+):
+    if call_timeout is None:
+        return await call_tool(tool_name, arguments, meta=meta)
+    async with asyncio.timeout(call_timeout):
+        return await call_tool(tool_name, arguments, meta=meta)
 
 
 def _is_unauthorized_mcp_error(exc: BaseException) -> bool:
