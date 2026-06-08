@@ -237,7 +237,7 @@ async def test_mcp_manager_clears_policy_cache_after_oauth_replace_and_remove(
     manager._approval_policy = _RecordingCachePolicy()
     monkeypatch.setattr(
         "jarvis.mcp.manager._build_streamable_http",
-        lambda url, headers, *, name, approval_policy: _FakeSdkServer(
+        lambda url, headers, *, name, approval_policy, **_: _FakeSdkServer(
             [Tool(name="search_mail", inputSchema={})]
         ),
     )

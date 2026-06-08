@@ -55,6 +55,26 @@ class CallableSDKServer(FakeSDKServer):
         return "retried"
 
 
+class FlakyAuthSDKServer(FakeSDKServer):
+    """401s on the first call, then succeeds on the retry — same object.
+
+    Models the real fix: after a 401 the manager refreshes the token in place
+    and retries on the *same* live connection, rather than building a new one.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+        self._failed = False
+
+    async def call_tool(self, tool_name, arguments, meta=None):
+        self.calls.append((tool_name, arguments, meta))
+        if not self._failed:
+            self._failed = True
+            raise UserError("Failed to call tool 'list_calendars': HTTP error 401")
+        return "retried"
+
+
 class HangingSDKServer:
     """A server whose connect (aenter) never returns — models a transiently
     unresponsive remote like Google's early-access Calendar MCP endpoint."""
@@ -112,7 +132,7 @@ async def test_replace_oauth_server_swaps_sdk_object(factory, monkeypatch):
         second = FakeSDKServer()
         builds = iter([first, second])
 
-        def fake_build(url, headers, *, name, approval_policy=None):
+        def fake_build(url, headers, *, name, approval_policy=None, **_):
             assert approval_policy is not None
             return next(builds)
 
@@ -142,20 +162,21 @@ async def test_replace_oauth_server_swaps_sdk_object(factory, monkeypatch):
         await mgr.stop()
 
 
-async def test_oauth_server_call_401_refreshes_replaces_and_retries(factory, monkeypatch):
+async def test_oauth_server_call_401_refreshes_token_in_place_and_retries(factory, monkeypatch):
     flow = RefreshFlowStub()
     cfg = MCPServersConfig(servers=[])
     mgr = MCPManager(config=cfg, session_factory=factory, oauth_flow=flow)
     await mgr.start()
     try:
-        stale = UnauthorizedOnceSDKServer()
-        fresh = CallableSDKServer()
-        builds = iter([stale, fresh])
+        server = FlakyAuthSDKServer()
+        builds = iter([server])
         captured = []
 
-        def fake_build(url, headers, *, name, approval_policy=None, unauthorized_retry=None):
+        def fake_build(
+            url, headers, *, name, approval_policy=None, unauthorized_retry=None, token_holder=None
+        ):
             sdk = next(builds)
-            captured.append((url, headers))
+            captured.append((url, headers, token_holder))
             if unauthorized_retry is not None:
                 _apply_runtime_policy_guard(
                     sdk,
@@ -173,26 +194,56 @@ async def test_oauth_server_call_401_refreshes_replaces_and_retries(factory, mon
             url="https://calendarmcp.googleapis.com/mcp/v1",
             headers={"Authorization": "Bearer stale-token"},
         )
+        # Exactly one build; the live token starts stale.
+        assert len(captured) == 1
+        assert mgr._token_holders["calendar"].get() == "stale-token"
 
         result = await mgr.agent_mcp_servers()[0].call_tool("list_calendars", {}, meta={"t": "1"})
 
         assert result == "retried"
         assert flow.refreshed == ["calendar"]
-        assert captured == [
-            (
-                "https://calendarmcp.googleapis.com/mcp/v1",
-                {"Authorization": "Bearer stale-token"},
-            ),
-            (
-                "https://calendarmcp.googleapis.com/mcp/v1",
-                {"Authorization": "Bearer fresh-token"},
-            ),
+        # No second build and no swap: the SAME server is retried, with the
+        # refreshed token applied to its holder in place.
+        assert len(captured) == 1
+        assert mgr.agent_mcp_servers() == [server]
+        assert mgr._token_holders["calendar"].get() == "fresh-token"
+        assert server.calls == [
+            ("list_calendars", {}, {"t": "1"}),
+            ("list_calendars", {}, {"t": "1"}),
         ]
-        assert mgr.agent_mcp_servers() == [fresh]
-        assert stale.calls == [("list_calendars", {}, {"t": "1"})]
-        assert fresh.calls == [("list_calendars", {}, {"t": "1"})]
     finally:
         await mgr.stop()
+
+
+async def test_token_holder_request_hook_injects_current_bearer():
+    """The live httpx client must send whatever token the holder currently has,
+    so a refresh that mutates the holder is picked up without any reconnect."""
+    import httpx
+
+    from jarvis.mcp.manager import (
+        _TokenHolder,
+        _tracking_httpx_client_factory,
+        _UnauthorizedTracker,
+    )
+
+    holder = _TokenHolder("tok-1")
+    client = _tracking_httpx_client_factory(_UnauthorizedTracker(), holder)(
+        headers=None, timeout=None, auth=None
+    )
+    try:
+        hooks = client.event_hooks["request"]
+        req = httpx.Request("POST", "https://example.com/mcp")
+        for h in hooks:
+            await h(req)
+        assert req.headers["authorization"] == "Bearer tok-1"
+
+        holder.set("tok-2")  # simulate an in-place refresh
+        req2 = httpx.Request("POST", "https://example.com/mcp")
+        for h in hooks:
+            await h(req2)
+        assert req2.headers["authorization"] == "Bearer tok-2"
+    finally:
+        await client.aclose()
 
 
 async def test_replace_oauth_server_aborts_on_list_tools_failure(factory, monkeypatch):
@@ -205,7 +256,7 @@ async def test_replace_oauth_server_aborts_on_list_tools_failure(factory, monkey
         builds = iter([first, broken])
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name, approval_policy=None: next(builds),
+            lambda url, headers, *, name, approval_policy=None, **_: next(builds),
         )
         await mgr.replace_oauth_server("fastmail", url="x", headers={"Authorization": "Bearer A1"})
         with pytest.raises(RuntimeError, match="bad token"):
@@ -225,7 +276,7 @@ async def test_remove_oauth_server_closes_and_drops(factory, monkeypatch):
         sdk = FakeSDKServer()
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name, approval_policy=None: sdk,
+            lambda url, headers, *, name, approval_policy=None, **_: sdk,
         )
         await mgr.replace_oauth_server("fastmail", url="x", headers={"Authorization": "Bearer A"})
         await mgr.remove_oauth_server("fastmail")
@@ -253,7 +304,7 @@ async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeyp
     sdk = FakeSDKServer()
     monkeypatch.setattr(
         "jarvis.mcp.manager._build_streamable_http",
-        lambda url, headers, *, name, approval_policy=None: sdk,
+        lambda url, headers, *, name, approval_policy=None, **_: sdk,
     )
 
     cfg = MCPServersConfig(servers=[])
@@ -284,7 +335,7 @@ async def test_start_attaches_connected_manual_provider(factory, monkeypatch):
     captured = {}
     sdk = FakeSDKServer()
 
-    def fake_build(url, headers, *, name, approval_policy=None):
+    def fake_build(url, headers, *, name, approval_policy=None, **_):
         captured["url"] = url
         captured["approval_policy"] = approval_policy
         return sdk
@@ -322,7 +373,7 @@ async def test_hung_replace_times_out_and_does_not_block_remove(factory, monkeyp
     try:
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name, approval_policy=None: HangingSDKServer(),
+            lambda url, headers, *, name, approval_policy=None, **_: HangingSDKServer(),
         )
         with pytest.raises(TimeoutError):
             await mgr.replace_oauth_server(
@@ -351,7 +402,7 @@ async def test_replace_oauth_server_times_out_hung_old_connection_close(factory,
         builds = iter([old, new])
         monkeypatch.setattr(
             "jarvis.mcp.manager._build_streamable_http",
-            lambda url, headers, *, name, approval_policy=None: next(builds),
+            lambda url, headers, *, name, approval_policy=None, **_: next(builds),
         )
 
         await mgr.replace_oauth_server("calendar", url="x", headers={"Authorization": "old"})
@@ -376,7 +427,7 @@ async def test_start_skips_oauth_provider_without_credentials(factory, monkeypat
     builds = []
     monkeypatch.setattr(
         "jarvis.mcp.manager._build_streamable_http",
-        lambda url, headers, *, name, approval_policy=None: builds.append(1),
+        lambda url, headers, *, name, approval_policy=None, **_: builds.append(1),
     )
     await mgr.start()
     try:
