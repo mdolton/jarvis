@@ -50,6 +50,15 @@ async def oauth_token_refresh(
             except Exception:
                 _log.exception("failed to remove SDK server after needs_reauth")
             continue
+        # Apply the refreshed token to the live connection in place. This cannot
+        # fail and keeps the DB token state and the live socket in lockstep —
+        # the previous rebuild-and-swap could fail and leave the connection
+        # pinned to a dead token while the DB looked freshly refreshed. Only if
+        # the provider isn't attached yet (no live holder) do we pay for a full
+        # attach, which is the one path that can still hang, so keep it bounded.
+        token = new_headers["Authorization"].removeprefix("Bearer ")
+        if mcp_manager.update_oauth_token(provider_key, token):
+            continue
         try:
             await asyncio.wait_for(
                 mcp_manager.replace_oauth_server(
@@ -58,7 +67,7 @@ async def oauth_token_refresh(
                 timeout=OAUTH_REFRESH_ATTACH_TIMEOUT,
             )
         except Exception:
-            _log.exception("failed to swap SDK server after refresh for %s", provider_key)
+            _log.exception("failed to attach SDK server after refresh for %s", provider_key)
 
 
 async def oauth_pending_sweep(

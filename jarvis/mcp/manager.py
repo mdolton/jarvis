@@ -39,6 +39,35 @@ _log = logging.getLogger(__name__)
 _OAUTH_TOOL_CALL_TIMEOUT_SEC = 35.0
 
 
+class _TokenHolder:
+    """Mutable box for the current OAuth access token.
+
+    The live streamable-HTTP connection reads this on every request (via an
+    httpx request hook), so refreshing a token is a single in-memory write —
+    no reconnect, no list_tools, no SDK-server swap. This is what lets a
+    refresh take effect on the *existing* connection instead of requiring the
+    fragile rebuild-and-swap dance that previously left the live socket pinned
+    to a dead token whenever the swap failed.
+    """
+
+    __slots__ = ("_token",)
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def get(self) -> str:
+        return self._token
+
+    def set(self, token: str) -> None:
+        self._token = token
+
+
+def _bearer_token(headers: dict[str, str]) -> str:
+    """Extract the raw token from an ``{"Authorization": "Bearer <t>"}`` dict."""
+    auth = headers.get("Authorization", "")
+    return auth[7:] if auth.startswith("Bearer ") else auth
+
+
 class MCPManager:
     def __init__(
         self,
@@ -63,6 +92,9 @@ class MCPManager:
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
         self._tool_names_by_server: dict[str, tuple[str, ...]] = {}
+        # Live access token per OAuth provider. Refreshing updates the holder in
+        # place; the running connection reads it on every request.
+        self._token_holders: dict[str, _TokenHolder] = {}
         # All connection enter/exit happens on this single owner task.
         self._cmd_queue: asyncio.Queue[tuple[str, object, asyncio.Future]] | None = None
         self._loop_task: asyncio.Task | None = None
@@ -131,12 +163,34 @@ class MCPManager:
         """Pop and close the stack/sdk_server entries for an OAuth provider."""
         await self._submit("remove", provider_key)
 
+    def update_oauth_token(self, provider_key: str, access_token: str) -> bool:
+        """Point the live connection at a new access token, in place.
+
+        Returns True if a live holder existed and was updated; False if the
+        provider has no attached server (caller should fall back to a full
+        attach). Synchronous and cannot fail, so the DB token state and the
+        live connection's token never diverge.
+        """
+        holder = self._token_holders.get(provider_key)
+        if holder is None:
+            return False
+        holder.set(access_token)
+        return True
+
     async def refresh_oauth_server_for_retry(self, provider_key: str) -> object:
-        """Force-refresh an OAuth provider and replace its live SDK server."""
+        """Force-refresh an OAuth provider's token and keep the live connection.
+
+        The refreshed token is applied to the existing SDK server in place; we
+        return that same server so the caller retries on the connection that is
+        already open. Only if the provider isn't currently attached (no live
+        holder) do we fall back to a full attach via the lifecycle owner task.
+        """
         if self._oauth_flow is None:
             raise RuntimeError("MCPManager was not configured with an OAuthFlow")
-        entry = OAUTH_CATALOG[provider_key]
         headers = await self._oauth_flow.refresh(provider_key)
+        if self.update_oauth_token(provider_key, _bearer_token(headers)):
+            return self._sdk_servers.get(provider_key)
+        entry = OAUTH_CATALOG[provider_key]
         return await self._submit(
             "replace",
             {"provider_key": provider_key, "url": entry.mcp_url, "headers": headers},
@@ -256,7 +310,15 @@ class MCPManager:
         async def unauthorized_retry():
             return await self.refresh_oauth_server_for_retry(provider_key)
 
-        build_kwargs = {"name": provider_key, "approval_policy": self._approval_policy}
+        # Fresh holder for the new connection; only promoted into
+        # self._token_holders once this server is committed as live, so a failed
+        # build never disturbs the currently-attached connection's token.
+        holder = _TokenHolder(_bearer_token(headers))
+        build_kwargs = {
+            "name": provider_key,
+            "approval_policy": self._approval_policy,
+            "token_holder": holder,
+        }
         if self._oauth_flow is not None:
             build_kwargs["unauthorized_retry"] = unauthorized_retry
         new_sdk = _build_streamable_http(url, headers, **build_kwargs)
@@ -275,6 +337,7 @@ class MCPManager:
         old_stack = self._stacks.get(provider_key)
         self._sdk_servers[provider_key] = new_sdk
         self._stacks[provider_key] = new_stack
+        self._token_holders[provider_key] = holder
         self._tool_names_by_server[provider_key] = tuple(t.name for t in tools)
 
         # Persist status/tools BEFORE closing the old connection. Closing an
@@ -299,6 +362,7 @@ class MCPManager:
     async def _do_remove_oauth(self, provider_key: str) -> None:
         self._sdk_servers.pop(provider_key, None)
         self._tool_names_by_server.pop(provider_key, None)
+        self._token_holders.pop(provider_key, None)
         stack = self._stacks.pop(provider_key, None)
         self.clear_policy_cache(provider_key)
         if stack is not None:
@@ -309,6 +373,7 @@ class MCPManager:
             await _aclose_silently(self._stacks[name], close_timeout=self._close_timeout)
         self._stacks.clear()
         self._sdk_servers.clear()
+        self._token_holders.clear()
         self._tool_names_by_server.clear()
 
 
@@ -319,6 +384,7 @@ def _build_streamable_http(
     name: str,
     approval_policy: MCPApprovalPolicy | None = None,
     unauthorized_retry=None,
+    token_holder: _TokenHolder | None = None,
 ) -> object:
     """Module-level builder so tests can patch this single symbol.
 
@@ -336,8 +402,10 @@ def _build_streamable_http(
         )
         kwargs["tool_filter"] = lambda filter_context, tool: approval_policy.filter_tool(name, tool)
     params = {"url": url, "headers": headers, "timeout": 30}
-    if unauthorized_retry is not None:
-        params["httpx_client_factory"] = _tracking_httpx_client_factory(unauthorized_tracker)
+    if unauthorized_retry is not None or token_holder is not None:
+        params["httpx_client_factory"] = _tracking_httpx_client_factory(
+            unauthorized_tracker, token_holder
+        )
 
     sdk_server = MCPServerStreamableHttp(
         name=name,
@@ -518,7 +586,9 @@ class _UnauthorizedTracker:
         return _is_unauthorized_mcp_error(exc)
 
 
-def _tracking_httpx_client_factory(tracker: _UnauthorizedTracker):
+def _tracking_httpx_client_factory(
+    tracker: _UnauthorizedTracker, token_holder: _TokenHolder | None = None
+):
     def factory(
         headers: dict[str, str] | None = None,
         timeout: httpx.Timeout | None = None,
@@ -526,6 +596,14 @@ def _tracking_httpx_client_factory(tracker: _UnauthorizedTracker):
     ) -> httpx.AsyncClient:
         client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
         client.event_hooks["response"].append(tracker.on_response)
+        if token_holder is not None:
+            # Inject the *current* token on every request, so a refresh that
+            # mutates the holder takes effect on this already-open connection
+            # without any reconnect/swap.
+            async def _inject_bearer(request: httpx.Request) -> None:
+                request.headers["Authorization"] = f"Bearer {token_holder.get()}"
+
+            client.event_hooks["request"].append(_inject_bearer)
         return client
 
     return factory

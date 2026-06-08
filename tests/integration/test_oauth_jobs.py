@@ -38,6 +38,12 @@ class _MgrStub:
     def __init__(self):
         self.replaced = []
         self.removed = []
+        self.updated = []
+        self.attached = True  # what update_oauth_token reports
+
+    def update_oauth_token(self, key, token):
+        self.updated.append((key, token))
+        return self.attached
 
     async def replace_oauth_server(self, key, *, url, headers):
         self.replaced.append((key, headers))
@@ -47,12 +53,16 @@ class _MgrStub:
 
 
 class _MgrReplaceHangs(_MgrStub):
+    def __init__(self):
+        super().__init__()
+        self.attached = False  # force the (bounded) attach-fallback path
+
     async def replace_oauth_server(self, key, *, url, headers):
         self.replaced.append((key, headers))
         await asyncio.Event().wait()
 
 
-async def test_refresh_job_refreshes_due_provider_and_swaps_server(factory):
+async def test_refresh_job_refreshes_due_provider_and_updates_token_in_place(factory):
     key = generate_key().encode()
     now = datetime.now(UTC)
     async with factory() as session:
@@ -85,10 +95,12 @@ async def test_refresh_job_refreshes_due_provider_and_swaps_server(factory):
     mgr = _MgrStub()
 
     await oauth_token_refresh(flow=flow, mcp_manager=mgr, session_factory=factory)
-    assert mgr.replaced == [("fastmail", {"Authorization": "Bearer AT-NEW"})]
+    # The refreshed token is applied to the live connection in place — no rebuild.
+    assert mgr.updated == [("fastmail", "AT-NEW")]
+    assert mgr.replaced == []
 
 
-async def test_refresh_job_times_out_hung_server_swap(factory, monkeypatch):
+async def test_refresh_job_times_out_hung_attach_fallback(factory, monkeypatch):
     from jarvis.scheduler import oauth_jobs
 
     monkeypatch.setattr(oauth_jobs, "OAUTH_REFRESH_ATTACH_TIMEOUT", 0.01)
@@ -123,7 +135,10 @@ async def test_refresh_job_times_out_hung_server_swap(factory, monkeypatch):
     )
     mgr = _MgrReplaceHangs()
 
+    # Provider reports "not attached", so the job falls back to a full attach,
+    # which hangs. The bounded wait must let the job return rather than wedge.
     await oauth_token_refresh(flow=flow, mcp_manager=mgr, session_factory=factory)
+    assert mgr.updated == [("fastmail", "AT-NEW")]
     assert mgr.replaced == [("fastmail", {"Authorization": "Bearer AT-NEW"})]
 
 
