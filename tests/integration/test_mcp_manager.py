@@ -282,6 +282,26 @@ async def test_sdk_server_builders_wire_two_arg_tool_filter_for_all_transports(c
     assert policy.calls == [("filter_tool", cfg.name, "send_email")]
 
 
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        MCPServerConfig(name="http-server", transport="http", url="http://localhost/mcp"),
+        MCPServerConfig(name="sse-server", transport="sse", url="http://localhost/sse"),
+    ],
+)
+def test_sdk_server_builders_widen_timeouts_for_remote_transports(cfg):
+    # The SDK defaults (5s read/HTTP timeout, no retries) are too tight for real
+    # remote servers: e.g. the ynab MCP server's `initialize` regularly takes
+    # ~3-6s (cold start), which blew the 5s ClientSession read timeout and
+    # surfaced as "Connection timeout." at boot. http/sse YAML servers must get
+    # the same widened budget the OAuth path already uses.
+    sdk_server = _build_sdk_server(cfg)
+
+    assert sdk_server.client_session_timeout_seconds == 30
+    assert sdk_server.params["timeout"] == 30
+    assert sdk_server.max_retry_attempts == 2
+
+
 async def test_mcp_util_get_function_tools_uses_two_arg_filter_without_dropping_tools():
     policy = _RecordingApprovalPolicy(filter_result=True)
     sdk_server = _build_sdk_server(

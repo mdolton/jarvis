@@ -38,6 +38,16 @@ _log = logging.getLogger(__name__)
 
 _OAUTH_TOOL_CALL_TIMEOUT_SEC = 35.0
 
+# Remote (http/sse) MCP servers need a wider per-call budget than the agents-SDK
+# defaults (5s read timeout, 5s HTTP timeout, no retries), which are too tight
+# for real remote servers: e.g. the self-hosted ynab MCP server's `initialize`
+# regularly takes ~3-6s (cold start), which blew the 5s ClientSession read
+# timeout and surfaced as "Connection timeout." at boot. These are the same
+# widened values the OAuth streamable-HTTP path uses.
+_REMOTE_HTTP_TIMEOUT_SEC = 30
+_REMOTE_MAX_RETRY_ATTEMPTS = 2
+_REMOTE_RETRY_BACKOFF_BASE = 1.0
+
 
 class _TokenHolder:
     """Mutable box for the current OAuth access token.
@@ -401,7 +411,7 @@ def _build_streamable_http(
             name, tool
         )
         kwargs["tool_filter"] = lambda filter_context, tool: approval_policy.filter_tool(name, tool)
-    params = {"url": url, "headers": headers, "timeout": 30}
+    params = {"url": url, "headers": headers, "timeout": _REMOTE_HTTP_TIMEOUT_SEC}
     if unauthorized_retry is not None or token_holder is not None:
         params["httpx_client_factory"] = _tracking_httpx_client_factory(
             unauthorized_tracker, token_holder
@@ -411,9 +421,9 @@ def _build_streamable_http(
         name=name,
         params=params,
         cache_tools_list=True,
-        client_session_timeout_seconds=30,
-        max_retry_attempts=2,
-        retry_backoff_seconds_base=1.0,
+        client_session_timeout_seconds=_REMOTE_HTTP_TIMEOUT_SEC,
+        max_retry_attempts=_REMOTE_MAX_RETRY_ATTEMPTS,
+        retry_backoff_seconds_base=_REMOTE_RETRY_BACKOFF_BASE,
         **kwargs,
     )
     if approval_policy is not None:
@@ -478,8 +488,15 @@ def _build_sdk_server(
     if cfg.transport == "http":
         sdk_server = MCPServerStreamableHttp(
             name=cfg.name,
-            params={"url": cfg.url, "headers": cfg.headers or {}},
+            params={
+                "url": cfg.url,
+                "headers": cfg.headers or {},
+                "timeout": _REMOTE_HTTP_TIMEOUT_SEC,
+            },
             cache_tools_list=True,
+            client_session_timeout_seconds=_REMOTE_HTTP_TIMEOUT_SEC,
+            max_retry_attempts=_REMOTE_MAX_RETRY_ATTEMPTS,
+            retry_backoff_seconds_base=_REMOTE_RETRY_BACKOFF_BASE,
             **kwargs,
         )
         if approval_policy is not None:
@@ -488,8 +505,15 @@ def _build_sdk_server(
     if cfg.transport == "sse":
         sdk_server = MCPServerSse(
             name=cfg.name,
-            params={"url": cfg.url, "headers": cfg.headers or {}},
+            params={
+                "url": cfg.url,
+                "headers": cfg.headers or {},
+                "timeout": _REMOTE_HTTP_TIMEOUT_SEC,
+            },
             cache_tools_list=True,
+            client_session_timeout_seconds=_REMOTE_HTTP_TIMEOUT_SEC,
+            max_retry_attempts=_REMOTE_MAX_RETRY_ATTEMPTS,
+            retry_backoff_seconds_base=_REMOTE_RETRY_BACKOFF_BASE,
             **kwargs,
         )
         if approval_policy is not None:
