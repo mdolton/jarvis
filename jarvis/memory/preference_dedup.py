@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 import math
-from json import JSONDecodeError
 from typing import Protocol
+
+from jarvis.memory.llm_json import loads_object, message_content
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -52,31 +52,11 @@ class PreferenceJudge:
             )
         except Exception:
             return False
-        return _parse_duplicate(_message_content(response))
-
-
-def _message_content(response: object) -> str | None:
-    choices = getattr(response, "choices", None)
-    if not choices:
-        return None
-    message = getattr(choices[0], "message", None)
-    return getattr(message, "content", None)
+        return _parse_duplicate(message_content(response))
 
 
 def _parse_duplicate(text: str | None) -> bool:
-    if not text:
+    data = loads_object(text)
+    if not isinstance(data, dict):
         return False
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:]
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return False
-    try:
-        data = json.loads(cleaned[start : end + 1])
-    except (JSONDecodeError, ValueError):
-        return False
-    return bool(data.get("duplicate")) if isinstance(data, dict) else False
+    return bool(data.get("duplicate"))
