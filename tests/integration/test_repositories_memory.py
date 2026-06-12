@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -388,14 +389,15 @@ async def test_memory_recall_repo_lists_newest_batch_first_then_rank(session):
 async def test_create_pending_many_persists_embeddings(factory):
     async with factory() as session:
         repo = MemoryPreferenceRepo(session)
-        rows = await repo.create_pending_many(
+        await repo.create_pending_many(
             items=[
                 NewPreference(content="Run tests first", embedding=[0.1, 0.2], embedding_dimensions=2),
                 NewPreference(content="Use tabs"),
             ],
             source="agent_proposal",
         )
-    assert len(rows) == 2
+    async with factory() as session:
+        rows = await MemoryPreferenceRepo(session).list_for_dedup()
     by_content = {r.content: r for r in rows}
     assert by_content["Run tests first"].embedding == [0.1, 0.2]
     assert by_content["Run tests first"].embedding_dimensions == 2
@@ -424,7 +426,7 @@ async def test_set_embedding_updates_row(factory):
         await MemoryPreferenceRepo(session).set_embedding(row_id, [0.5, 0.6, 0.7], 3)
     async with factory() as session:
         refreshed = await MemoryPreferenceRepo(session).get_by_normalized_content(
-            __import__("re").sub(r"\s+", " ", "No embedding yet").strip().casefold()
+            re.sub(r"\s+", " ", "No embedding yet").strip().casefold()
         )
     assert refreshed.embedding == [0.5, 0.6, 0.7]
     assert refreshed.embedding_dimensions == 3
