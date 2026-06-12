@@ -30,6 +30,10 @@ class MemoryConfig(_StrictModel):
     embedding_dimensions: int = Field(default=1536, ge=1)
     max_recalled_memories: int = Field(default=5, ge=0, le=20)
     min_relevance_score: float = Field(default=0.25, ge=0.0)
+    preference_dedup_enabled: bool = True
+    preference_dup_high_threshold: float = Field(default=0.92, ge=0.0, le=1.0)
+    preference_dup_low_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
+    preference_dedup_max_judge_calls: int = Field(default=5, ge=0)
 
 
 class JarvisConfig(_StrictModel):

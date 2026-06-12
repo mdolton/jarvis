@@ -97,3 +97,24 @@ def test_memory_config_accepts_embedding_override():
     assert cfg.memory.embedding_dimensions == 768
     assert cfg.memory.max_recalled_memories == 3
     assert cfg.memory.min_relevance_score == 0.4
+
+
+def test_memory_config_preference_dedup_defaults():
+    from jarvis.config.schema import MemoryConfig
+
+    cfg = MemoryConfig()
+
+    assert cfg.preference_dedup_enabled is True
+    assert cfg.preference_dup_high_threshold == 0.92
+    assert cfg.preference_dup_low_threshold == 0.82
+    assert cfg.preference_dedup_max_judge_calls == 5
+
+
+def test_memory_config_rejects_out_of_range_threshold():
+    import pytest
+    from pydantic import ValidationError
+
+    from jarvis.config.schema import MemoryConfig
+
+    with pytest.raises(ValidationError):
+        MemoryConfig(preference_dup_high_threshold=1.5)

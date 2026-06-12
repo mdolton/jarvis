@@ -23,3 +23,10 @@ memory:
   embedding_dimensions: 1536
   max_recalled_memories: 5
   min_relevance_score: 0.25
+  # Deduplicate proposed preferences semantically (embedding + LLM tiebreak).
+  preference_dedup_enabled: true
+  # Cosine >= high -> duplicate outright; in [low, high) -> ask the LLM judge.
+  preference_dup_high_threshold: 0.92
+  preference_dup_low_threshold: 0.82
+  # Cap LLM judge calls per proposal batch / per Find-duplicates run.
+  preference_dedup_max_judge_calls: 5
