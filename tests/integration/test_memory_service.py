@@ -534,3 +534,47 @@ async def test_summarize_run_falls_back_when_dedup_embed_fails(factory):
         user_prompt="u", assistant_output="a",
     )
     assert outcome.preferences_created == 1
+
+
+async def test_summarize_run_dedupes_within_batch(factory):
+    from jarvis.memory.preference_dedup import PreferenceDeduplicator
+
+    class _NoJudge:
+        async def judge(self, *, candidate, existing):
+            return False
+
+    # Two distinct candidate strings that embed to the SAME vector -> the second
+    # is a semantic duplicate of the first accepted one, with no pre-existing rows.
+    embeddings = SequencedEmbeddingProvider(
+        {
+            "Always run tests before committing": [1.0, 0.0],
+            "Run the test suite before every commit": [1.0, 0.0],
+        }
+    )
+    dedup = PreferenceDeduplicator(
+        embedding_provider=embeddings,
+        judge=_NoJudge(),
+        high_threshold=0.92,
+        low_threshold=0.82,
+        max_judge_calls=5,
+    )
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=embeddings,
+        vector_store=FakeVectorStore(uuid4(), available=False),
+        max_recalled_memories=0,
+        min_relevance_score=0.25,
+        summarizer=FakeSummarizer(
+            [
+                "Always run tests before committing",
+                "Run the test suite before every commit",
+            ]
+        ),
+        preference_deduplicator=dedup,
+    )
+
+    outcome = await service.summarize_run(
+        conversation_id=None, channel_kind="discord", channel_ref="c1",
+        user_prompt="u", assistant_output="a",
+    )
+    assert outcome.preferences_created == 1

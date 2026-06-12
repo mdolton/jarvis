@@ -133,6 +133,7 @@ class MemoryService:
         entry_status: str | None = None
         entry_created = False
         proposal_result: _ProposalResult = _ProposalResult([], [], False)
+        created_preferences: list[MemoryPreferenceRow] = []
         source_hash = _source_hash(
             conversation_id=conversation_id,
             channel_kind=channel_kind,
@@ -669,6 +670,10 @@ async def _create_preference_proposals(
                     preference_id=None,
                 )
             )
+        # Persist once, after the full loop: no preference rows are committed before
+        # this point, so the except-fallback below can safely recreate `surviving`
+        # without risking double-inserts. (Embedding backfills may have committed, which
+        # is harmless.)
         created = await repo.create_pending_many(items=accepted, source="agent_proposal")
         return _ProposalResult(created, dropped, False)
     except Exception:
