@@ -1,6 +1,7 @@
 """Repositories — the only way core modules touch the database."""
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -31,6 +32,13 @@ from jarvis.persistence.models import (
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class NewPreference:
+    content: str
+    embedding: list[float] | None = None
+    embedding_dimensions: int | None = None
 
 
 class ConversationRepo:
@@ -235,7 +243,14 @@ class MemoryPreferenceRepo:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create_pending(self, *, content: str, source: str) -> MemoryPreferenceRow:
+    async def create_pending(
+        self,
+        *,
+        content: str,
+        source: str,
+        embedding: list[float] | None = None,
+        embedding_dimensions: int | None = None,
+    ) -> MemoryPreferenceRow:
         now = _utcnow()
         content_normalized = _normalize_preference_content(content)
         row = MemoryPreferenceRow(
@@ -243,6 +258,8 @@ class MemoryPreferenceRepo:
             content_normalized=content_normalized,
             status="pending",
             source=source,
+            embedding=embedding,
+            embedding_dimensions=embedding_dimensions,
             created_at=now,
             updated_at=now,
         )
@@ -261,32 +278,31 @@ class MemoryPreferenceRepo:
     async def create_pending_many(
         self,
         *,
-        contents: list[str],
+        items: list[NewPreference],
         source: str,
     ) -> list[MemoryPreferenceRow]:
+        if not items:
+            return []
         now = _utcnow()
         rows = [
             MemoryPreferenceRow(
-                content=content,
-                content_normalized=_normalize_preference_content(content),
+                content=item.content,
+                content_normalized=_normalize_preference_content(item.content),
                 status="pending",
                 source=source,
+                embedding=item.embedding,
+                embedding_dimensions=item.embedding_dimensions,
                 created_at=now,
                 updated_at=now,
             )
-            for content in contents
+            for item in items
         ]
-        if not rows:
-            return []
         try:
             self._session.add_all(rows)
             await self._session.commit()
         except IntegrityError:
             await self._session.rollback()
-            return await self._create_missing_pending(
-                contents=contents,
-                source=source,
-            )
+            return await self._create_missing_pending(items=items, source=source)
         except Exception:
             await self._session.rollback()
             raise
@@ -297,28 +313,30 @@ class MemoryPreferenceRepo:
     async def _create_missing_pending(
         self,
         *,
-        contents: list[str],
+        items: list[NewPreference],
         source: str,
     ) -> list[MemoryPreferenceRow]:
         existing = await self.existing_normalized_contents()
         missing = [
-            content
-            for content in contents
-            if _normalize_preference_content(content) not in existing
+            item
+            for item in items
+            if _normalize_preference_content(item.content) not in existing
         ]
         if not missing:
             return []
         now = _utcnow()
         rows = [
             MemoryPreferenceRow(
-                content=content,
-                content_normalized=_normalize_preference_content(content),
+                content=item.content,
+                content_normalized=_normalize_preference_content(item.content),
                 status="pending",
                 source=source,
+                embedding=item.embedding,
+                embedding_dimensions=item.embedding_dimensions,
                 created_at=now,
                 updated_at=now,
             )
-            for content in missing
+            for item in missing
         ]
         try:
             self._session.add_all(rows)
@@ -366,6 +384,28 @@ class MemoryPreferenceRepo:
             .limit(limit)
         )
         return list(result.scalars())
+
+    async def list_for_dedup(self) -> list[MemoryPreferenceRow]:
+        result = await self._session.execute(
+            select(MemoryPreferenceRow)
+            .where(MemoryPreferenceRow.status != "archived")
+            .order_by(MemoryPreferenceRow.created_at.asc())
+        )
+        return list(result.scalars())
+
+    async def set_embedding(
+        self,
+        preference_id: UUID,
+        embedding: list[float],
+        embedding_dimensions: int,
+    ) -> None:
+        row = await self._session.get(MemoryPreferenceRow, preference_id)
+        if row is None:
+            return
+        row.embedding = embedding
+        row.embedding_dimensions = embedding_dimensions
+        row.updated_at = _utcnow()
+        await self._session.commit()
 
     async def approve(self, preference_id: UUID) -> None:
         row = await self._session.get(MemoryPreferenceRow, preference_id)

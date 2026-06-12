@@ -20,7 +20,12 @@ from jarvis.memory.types import (
 )
 from jarvis.memory.vector_store import MemoryVectorStore
 from jarvis.persistence.models import MemoryEntryRow, MemoryPreferenceRow
-from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRepo, MemoryRecallRepo
+from jarvis.persistence.repositories import (
+    MemoryEntryRepo,
+    MemoryPreferenceRepo,
+    MemoryRecallRepo,
+    NewPreference,
+)
 
 _MAX_PREFERENCE_PROPOSALS_PER_SUMMARY = 5
 
@@ -552,7 +557,7 @@ async def _create_preference_proposals(
         return []
 
     return await MemoryPreferenceRepo(session).create_pending_many(
-        contents=proposals,
+        items=[NewPreference(content=c) for c in proposals],
         source="agent_proposal",
     )
 

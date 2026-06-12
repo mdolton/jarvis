@@ -5,7 +5,21 @@ import pytest
 
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.models import ConversationRow, TriggerRow
-from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRepo, MemoryRecallRepo
+from jarvis.persistence.repositories import (
+    MemoryEntryRepo,
+    MemoryPreferenceRepo,
+    MemoryRecallRepo,
+    NewPreference,
+)
+
+
+@pytest.fixture
+async def factory(tmp_path):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield session_factory(engine)
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -369,3 +383,48 @@ async def test_memory_recall_repo_lists_newest_batch_first_then_rank(session):
     events = await recall_repo.list_for_conversation(conversation_id)
 
     assert [event.memory_entry_id for event in events] == [third.id, second.id, first.id]
+
+
+async def test_create_pending_many_persists_embeddings(factory):
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        rows = await repo.create_pending_many(
+            items=[
+                NewPreference(content="Run tests first", embedding=[0.1, 0.2], embedding_dimensions=2),
+                NewPreference(content="Use tabs"),
+            ],
+            source="agent_proposal",
+        )
+    assert len(rows) == 2
+    by_content = {r.content: r for r in rows}
+    assert by_content["Run tests first"].embedding == [0.1, 0.2]
+    assert by_content["Run tests first"].embedding_dimensions == 2
+    assert by_content["Use tabs"].embedding is None
+
+
+async def test_list_for_dedup_excludes_archived(factory):
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        await repo.create_pending(content="Keep me", source="agent_proposal")
+        drop = await repo.create_pending(content="Archive me", source="agent_proposal")
+        await repo.archive(drop.id)
+    async with factory() as session:
+        rows = await MemoryPreferenceRepo(session).list_for_dedup()
+    contents = {r.content for r in rows}
+    assert "Keep me" in contents
+    assert "Archive me" not in contents
+
+
+async def test_set_embedding_updates_row(factory):
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        row = await repo.create_pending(content="No embedding yet", source="agent_proposal")
+        row_id = row.id
+    async with factory() as session:
+        await MemoryPreferenceRepo(session).set_embedding(row_id, [0.5, 0.6, 0.7], 3)
+    async with factory() as session:
+        refreshed = await MemoryPreferenceRepo(session).get_by_normalized_content(
+            __import__("re").sub(r"\s+", " ", "No embedding yet").strip().casefold()
+        )
+    assert refreshed.embedding == [0.5, 0.6, 0.7]
+    assert refreshed.embedding_dimensions == 3
