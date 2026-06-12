@@ -1,9 +1,12 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
+from jarvis.memory.preference_dedup import ClusterPreference
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRepo
 from jarvis.web.app import create_app
@@ -253,3 +256,59 @@ def test_memory_page_hides_invalid_controls_per_row(client):
 
     assert f'action="/memory/entries/{active_entry_id}/archive"' in resp.text
     assert f'action="/memory/entries/{archived_entry_id}/archive"' not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Duplicate preferences tests
+# ---------------------------------------------------------------------------
+
+
+def _cluster_pref(content, status="pending"):
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    return ClusterPreference(
+        preference_id=uuid4(),
+        content=content,
+        status=status,
+        created_at=now,
+        updated_at=now,
+        embedding=[1.0, 0.0],
+        embedding_dimensions=2,
+    )
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def memory_client(tmp_path):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = session_factory(engine)
+
+    keeper = _cluster_pref("Always run tests before committing", status="active")
+    dup = _cluster_pref("Run the test suite before each commit")
+
+    ctx = MagicMock()
+    ctx.session_factory = factory
+    ctx.memory_service.find_duplicate_preferences = AsyncMock(
+        return_value=[{"keeper": keeper, "duplicates": [dup]}]
+    )
+
+    app = create_app(app_context=ctx)
+    client = TestClient(app)
+    yield client, dup
+    await engine.dispose()
+
+
+def test_find_duplicates_renders_clusters(memory_client):
+    client, dup = memory_client
+    resp = client.post("/memory/preferences/find-duplicates")
+    assert resp.status_code == 200
+    assert "Duplicate groups" in resp.text
+    assert "Run the test suite before each commit" in resp.text
+    assert f"/memory/preferences/{dup.preference_id}/archive" in resp.text
+
+
+def test_memory_page_hides_duplicate_section(memory_client):
+    client, _ = memory_client
+    resp = client.get("/memory")
+    assert resp.status_code == 200
+    assert "Duplicate groups" not in resp.text

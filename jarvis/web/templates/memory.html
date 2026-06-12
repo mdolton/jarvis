@@ -9,7 +9,12 @@
 </section>
 
 <section class="section-block">
-    <h2>Preferences</h2>
+    <div class="section-head-row">
+        <h2>Preferences</h2>
+        <form class="inline-form" method="post" action="/memory/preferences/find-duplicates">
+            <button type="submit">Find duplicates</button>
+        </form>
+    </div>
     <table class="ops-table">
         <thead>
             <tr><th>Status</th><th>Content</th><th>Source</th><th>Updated</th><th>Actions</th></tr>
@@ -49,6 +54,28 @@
     </table>
     {% if not preferences %}
     <p class="muted">No memory preferences yet.</p>
+    {% endif %}
+    {% if duplicate_clusters is not none %}
+    <h3>Duplicate groups</h3>
+    {% if not duplicate_clusters %}
+    <p class="muted">No duplicate preferences found.</p>
+    {% else %}
+    {% for cluster in duplicate_clusters %}
+    <div class="dup-cluster">
+        <div class="muted">Keep: <strong>{{ cluster.keeper.content }}</strong></div>
+        <ul>
+            {% for dup in cluster.duplicates %}
+            <li>
+                {{ dup.content }}
+                <form class="inline-form" method="post" action="/memory/preferences/{{ dup.preference_id }}/archive">
+                    <button type="submit">Archive</button>
+                </form>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endfor %}
+    {% endif %}
     {% endif %}
 </section>
 
