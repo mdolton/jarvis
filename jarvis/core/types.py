@@ -66,6 +66,8 @@ class AuditEventType(StrEnum):
     MEMORY_ENTRY_CREATED = "memory.entry_created"
     MEMORY_RECALLED = "memory.recalled"
     MEMORY_FAILED = "memory.failed"
+    MEMORY_PREFERENCE_DEDUP_DROPPED = "memory.preference_dedup_dropped"
+    MEMORY_PREFERENCE_DEDUP_SKIPPED = "memory.preference_dedup_skipped"
 
 
 class MessageRole(StrEnum):

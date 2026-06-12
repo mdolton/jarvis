@@ -381,3 +381,200 @@ async def test_memory_service_combines_preference_and_embedding_errors(factory, 
     assert ctx.recalled == []
     assert ctx.recall_available is False
     assert ctx.error == "preference failed; embedding failed"
+
+
+class FakeSummarizer:
+    def __init__(self, preference_candidates):
+        self._candidates = preference_candidates
+
+    async def summarize(self, *, user_prompt, assistant_output):
+        from jarvis.memory.types import MemorySummary
+
+        return MemorySummary(
+            summary="did a thing",
+            topics=[],
+            entities=[],
+            evidence=[],
+            preference_candidates=list(self._candidates),
+        )
+
+
+class SequencedEmbeddingProvider:
+    """Returns a preset vector per exact text, else a default."""
+
+    def __init__(self, mapping, default=None):
+        self._mapping = mapping
+        self._default = default or [0.0, 0.0]
+
+    async def embed(self, text: str) -> list[float]:
+        return list(self._mapping.get(text, self._default))
+
+
+async def test_summarize_run_drops_semantic_duplicate_of_active(factory):
+    from jarvis.memory.preference_dedup import PreferenceDeduplicator
+    from jarvis.persistence.repositories import MemoryPreferenceRepo
+
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        pref = await repo.create_pending(
+            content="Always run the tests before committing",
+            source="agent_proposal",
+            embedding=[1.0, 0.0],
+            embedding_dimensions=2,
+        )
+        await repo.approve(pref.id)
+
+    class _NoJudge:
+        async def judge(self, *, candidate, existing):
+            return False
+
+    embeddings = SequencedEmbeddingProvider(
+        {"Run the test suite before each commit": [1.0, 0.0]}
+    )
+    dedup = PreferenceDeduplicator(
+        embedding_provider=embeddings,
+        judge=_NoJudge(),
+        high_threshold=0.92,
+        low_threshold=0.82,
+        max_judge_calls=5,
+    )
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=embeddings,
+        vector_store=FakeVectorStore(uuid4(), available=False),
+        max_recalled_memories=0,
+        min_relevance_score=0.25,
+        summarizer=FakeSummarizer(["Run the test suite before each commit"]),
+        preference_deduplicator=dedup,
+    )
+
+    outcome = await service.summarize_run(
+        conversation_id=None,
+        channel_kind="discord",
+        channel_ref="c1",
+        user_prompt="u",
+        assistant_output="a",
+    )
+    assert outcome.preferences_created == 0
+
+
+async def test_summarize_run_keeps_distinct_preference(factory):
+    from jarvis.memory.preference_dedup import PreferenceDeduplicator
+    from jarvis.persistence.repositories import MemoryPreferenceRepo
+
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        pref = await repo.create_pending(
+            content="Always run the tests before committing",
+            source="agent_proposal",
+            embedding=[1.0, 0.0],
+            embedding_dimensions=2,
+        )
+        await repo.approve(pref.id)
+
+    class _NoJudge:
+        async def judge(self, *, candidate, existing):
+            return False
+
+    embeddings = SequencedEmbeddingProvider({"Use dark mode in all dashboards": [0.0, 1.0]})
+    dedup = PreferenceDeduplicator(
+        embedding_provider=embeddings,
+        judge=_NoJudge(),
+        high_threshold=0.92,
+        low_threshold=0.82,
+        max_judge_calls=5,
+    )
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=embeddings,
+        vector_store=FakeVectorStore(uuid4(), available=False),
+        max_recalled_memories=0,
+        min_relevance_score=0.25,
+        summarizer=FakeSummarizer(["Use dark mode in all dashboards"]),
+        preference_deduplicator=dedup,
+    )
+
+    outcome = await service.summarize_run(
+        conversation_id=None, channel_kind="discord", channel_ref="c1",
+        user_prompt="u", assistant_output="a",
+    )
+    assert outcome.preferences_created == 1
+
+
+async def test_summarize_run_falls_back_when_dedup_embed_fails(factory):
+    from jarvis.memory.preference_dedup import PreferenceDeduplicator
+
+    class _BrokenEmbeddings:
+        async def embed(self, text: str):
+            raise RuntimeError("embed down")
+
+    class _NoJudge:
+        async def judge(self, *, candidate, existing):
+            return False
+
+    dedup = PreferenceDeduplicator(
+        embedding_provider=_BrokenEmbeddings(),
+        judge=_NoJudge(),
+        high_threshold=0.92,
+        low_threshold=0.82,
+        max_judge_calls=5,
+    )
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(uuid4(), available=False),
+        max_recalled_memories=0,
+        min_relevance_score=0.25,
+        summarizer=FakeSummarizer(["Brand new rule about formatting"]),
+        preference_deduplicator=dedup,
+    )
+
+    outcome = await service.summarize_run(
+        conversation_id=None, channel_kind="discord", channel_ref="c1",
+        user_prompt="u", assistant_output="a",
+    )
+    assert outcome.preferences_created == 1
+
+
+async def test_summarize_run_dedupes_within_batch(factory):
+    from jarvis.memory.preference_dedup import PreferenceDeduplicator
+
+    class _NoJudge:
+        async def judge(self, *, candidate, existing):
+            return False
+
+    # Two distinct candidate strings that embed to the SAME vector -> the second
+    # is a semantic duplicate of the first accepted one, with no pre-existing rows.
+    embeddings = SequencedEmbeddingProvider(
+        {
+            "Always run tests before committing": [1.0, 0.0],
+            "Run the test suite before every commit": [1.0, 0.0],
+        }
+    )
+    dedup = PreferenceDeduplicator(
+        embedding_provider=embeddings,
+        judge=_NoJudge(),
+        high_threshold=0.92,
+        low_threshold=0.82,
+        max_judge_calls=5,
+    )
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=embeddings,
+        vector_store=FakeVectorStore(uuid4(), available=False),
+        max_recalled_memories=0,
+        min_relevance_score=0.25,
+        summarizer=FakeSummarizer(
+            [
+                "Always run tests before committing",
+                "Run the test suite before every commit",
+            ]
+        ),
+        preference_deduplicator=dedup,
+    )
+
+    outcome = await service.summarize_run(
+        conversation_id=None, channel_kind="discord", channel_ref="c1",
+        user_prompt="u", assistant_output="a",
+    )
+    assert outcome.preferences_created == 1

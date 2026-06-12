@@ -85,3 +85,29 @@ def test_memory_migration_roundtrip(tmp_path):
     assert "memory_entries" not in tables_after_down
     assert "memory_evidence" not in tables_after_down
     assert "memory_recall_events" not in tables_after_down
+
+
+def test_memory_migration_adds_preference_embedding_columns(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "test.db"
+    up = _run_alembic(db_path, "upgrade head")
+    assert up.returncode == 0, up.stderr
+
+    with sqlite3.connect(db_path) as conn:
+        cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('memory_preferences')").fetchall()
+        }
+    assert "embedding" in cols
+    assert "embedding_dimensions" in cols
+
+    down = _run_alembic(db_path, "downgrade 0009")
+    assert down.returncode == 0, down.stderr
+    with sqlite3.connect(db_path) as conn:
+        cols_after = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('memory_preferences')").fetchall()
+        }
+    assert "embedding" not in cols_after
+    assert "embedding_dimensions" not in cols_after

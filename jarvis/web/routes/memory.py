@@ -12,8 +12,7 @@ from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRep
 router = APIRouter()
 
 
-@router.get("/memory", response_class=HTMLResponse)
-async def memory_page(request: Request):
+async def _render_memory_page(request: Request, *, duplicate_clusters=None, duplicate_error=None):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
 
@@ -22,9 +21,12 @@ async def memory_page(request: Request):
         entry_repo = MemoryEntryRepo(session)
         preferences = await preference_repo.list_for_dashboard(limit=100)
         entries = await entry_repo.list_recent(limit=100)
-        evidence_by_entry = await entry_repo.list_evidence_for_entries([entry.id for entry in entries])
+        evidence_by_entry = await entry_repo.list_evidence_for_entries(
+            [entry.id for entry in entries]
+        )
         entry_items = [
-            {"entry": entry, "evidence": evidence_by_entry.get(entry.id, [])} for entry in entries
+            {"entry": entry, "evidence": evidence_by_entry.get(entry.id, [])}
+            for entry in entries
         ]
 
     return templates.TemplateResponse(
@@ -33,8 +35,29 @@ async def memory_page(request: Request):
         {
             "preferences": preferences,
             "entry_items": entry_items,
+            "duplicate_clusters": duplicate_clusters,
+            "duplicate_error": duplicate_error,
         },
     )
+
+
+@router.get("/memory", response_class=HTMLResponse)
+async def memory_page(request: Request):
+    return await _render_memory_page(request)
+
+
+@router.post("/memory/preferences/find-duplicates", response_class=HTMLResponse)
+async def find_duplicate_preferences(request: Request):
+    ctx = request.app.state.ctx
+    memory_service = getattr(ctx, "memory_service", None)
+    clusters = []
+    error = None
+    if memory_service is not None:
+        try:
+            clusters = await memory_service.find_duplicate_preferences()
+        except Exception:
+            error = "Could not compute duplicate preferences. Please try again."
+    return await _render_memory_page(request, duplicate_clusters=clusters, duplicate_error=error)
 
 
 @router.post("/memory/preferences/{preference_id}/approve")
