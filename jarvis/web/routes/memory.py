@@ -12,7 +12,7 @@ from jarvis.persistence.repositories import MemoryEntryRepo, MemoryPreferenceRep
 router = APIRouter()
 
 
-async def _render_memory_page(request: Request, *, duplicate_clusters=None):
+async def _render_memory_page(request: Request, *, duplicate_clusters=None, duplicate_error=None):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
 
@@ -36,6 +36,7 @@ async def _render_memory_page(request: Request, *, duplicate_clusters=None):
             "preferences": preferences,
             "entry_items": entry_items,
             "duplicate_clusters": duplicate_clusters,
+            "duplicate_error": duplicate_error,
         },
     )
 
@@ -50,9 +51,13 @@ async def find_duplicate_preferences(request: Request):
     ctx = request.app.state.ctx
     memory_service = getattr(ctx, "memory_service", None)
     clusters = []
+    error = None
     if memory_service is not None:
-        clusters = await memory_service.find_duplicate_preferences()
-    return await _render_memory_page(request, duplicate_clusters=clusters)
+        try:
+            clusters = await memory_service.find_duplicate_preferences()
+        except Exception:
+            error = "Could not compute duplicate preferences. Please try again."
+    return await _render_memory_page(request, duplicate_clusters=clusters, duplicate_error=error)
 
 
 @router.post("/memory/preferences/{preference_id}/approve")

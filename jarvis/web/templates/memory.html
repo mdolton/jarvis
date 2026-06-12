@@ -60,7 +60,9 @@
        on-demand tool. #}
     {% if duplicate_clusters is not none %}
     <h3>Duplicate groups</h3>
-    {% if not duplicate_clusters %}
+    {% if duplicate_error %}
+    <p class="muted">{{ duplicate_error }}</p>
+    {% elif not duplicate_clusters %}
     <p class="muted">No duplicate preferences found.</p>
     {% else %}
     {% for cluster in duplicate_clusters %}
