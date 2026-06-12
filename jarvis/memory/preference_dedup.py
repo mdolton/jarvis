@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
 
 from jarvis.memory.llm_json import loads_object, message_content
 
@@ -60,3 +62,88 @@ def _parse_duplicate(text: str | None) -> bool:
     if not isinstance(data, dict):
         return False
     return bool(data.get("duplicate"))
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingPreference:
+    content: str
+    embedding: list[float] | None
+    embedding_dimensions: int | None
+    status: str
+    preference_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateMatch:
+    matched_content: str
+    matched_id: UUID | None
+    score: float
+    method: str  # "embedding" | "llm"
+
+
+class _JudgeBudget:
+    def __init__(self, limit: int) -> None:
+        self._remaining = limit
+
+    def available(self) -> bool:
+        return self._remaining > 0
+
+    def consume(self) -> None:
+        self._remaining -= 1
+
+
+class PreferenceDeduplicator:
+    def __init__(
+        self,
+        *,
+        embedding_provider,
+        judge: JudgeProtocol,
+        high_threshold: float,
+        low_threshold: float,
+        max_judge_calls: int,
+    ) -> None:
+        self._embedding_provider = embedding_provider
+        self._judge = judge
+        self._high_threshold = high_threshold
+        self._low_threshold = low_threshold
+        self._max_judge_calls = max_judge_calls
+
+    def new_budget(self) -> _JudgeBudget:
+        return _JudgeBudget(self._max_judge_calls)
+
+    async def embed(self, content: str) -> list[float] | None:
+        try:
+            return await self._embedding_provider.embed(content)
+        except Exception:
+            return None
+
+    async def is_duplicate(
+        self,
+        *,
+        candidate_content: str,
+        candidate_embedding: list[float] | None,
+        existing: list[ExistingPreference],
+        judge_budget: _JudgeBudget,
+    ) -> DuplicateMatch | None:
+        if not candidate_embedding:
+            return None
+        best_score = -1.0
+        best_pref: ExistingPreference | None = None
+        for pref in existing:
+            if not pref.embedding:
+                continue
+            if pref.embedding_dimensions != len(candidate_embedding):
+                continue
+            score = cosine(candidate_embedding, pref.embedding)
+            if score > best_score:
+                best_score = score
+                best_pref = pref
+        if best_pref is None:
+            return None
+        if best_score >= self._high_threshold:
+            return DuplicateMatch(best_pref.content, best_pref.preference_id, best_score, "embedding")
+        if best_score >= self._low_threshold and judge_budget.available():
+            judge_budget.consume()
+            if await self._judge.judge(candidate=candidate_content, existing=best_pref.content):
+                return DuplicateMatch(best_pref.content, best_pref.preference_id, best_score, "llm")
+        return None
