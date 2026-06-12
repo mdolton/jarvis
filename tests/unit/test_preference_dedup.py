@@ -179,6 +179,25 @@ async def test_is_duplicate_none_candidate_embedding_keeps():
     assert match is None
 
 
+async def test_is_duplicate_picks_best_scoring_existing():
+    judge = _RecordingJudge(False)
+    dedup = _dedup(judge)
+    existing = [
+        ExistingPreference(content="A", embedding=[1.0, 0.6], embedding_dimensions=2, status="active"),  # ~0.857, in band
+        ExistingPreference(content="B", embedding=[1.0, 0.0], embedding_dimensions=2, status="active"),  # 1.0, above high
+    ]
+    match = await dedup.is_duplicate(
+        candidate_content="c",
+        candidate_embedding=[1.0, 0.0],
+        existing=existing,
+        judge_budget=dedup.new_budget(),
+    )
+    assert match is not None
+    assert match.method == "embedding"
+    assert match.matched_content == "B"
+    assert judge.calls == 0
+
+
 async def test_judge_budget_caps_calls():
     judge = _RecordingJudge(False)
     dedup = PreferenceDeduplicator(

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from jarvis.memory.embeddings import EmbeddingProvider
 from jarvis.memory.llm_json import loads_object, message_content
 
 
@@ -96,7 +97,7 @@ class PreferenceDeduplicator:
     def __init__(
         self,
         *,
-        embedding_provider,
+        embedding_provider: EmbeddingProvider,
         judge: JudgeProtocol,
         high_threshold: float,
         low_threshold: float,
@@ -125,12 +126,12 @@ class PreferenceDeduplicator:
         existing: list[ExistingPreference],
         judge_budget: _JudgeBudget,
     ) -> DuplicateMatch | None:
-        if not candidate_embedding:
+        if not candidate_embedding:  # None or empty list -> treat as missing
             return None
         best_score = -1.0
         best_pref: ExistingPreference | None = None
         for pref in existing:
-            if not pref.embedding:
+            if not pref.embedding:  # None or empty list -> skip
                 continue
             if pref.embedding_dimensions != len(candidate_embedding):
                 continue
