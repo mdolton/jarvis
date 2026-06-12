@@ -32,6 +32,7 @@ from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.digests.seeds import seed_built_in_digest_templates
 from jarvis.mcp.manager import MCPManager
 from jarvis.memory.embeddings import OpenAIEmbeddingProvider
+from jarvis.memory.preference_dedup import PreferenceDeduplicator, PreferenceJudge
 from jarvis.memory.service import MemoryService
 from jarvis.memory.summarizer import MemorySummarizer
 from jarvis.memory.vector_store import MemoryVectorStore
@@ -291,6 +292,16 @@ async def _build_memory_service(
         cfg.jarvis.memory.max_recalled_memories if cfg.jarvis.memory.recall_enabled else 0
     )
 
+    preference_deduplicator = None
+    if cfg.jarvis.memory.preference_dedup_enabled:
+        preference_deduplicator = PreferenceDeduplicator(
+            embedding_provider=embedding_provider,
+            judge=PreferenceJudge(client=llm_client, model=cfg.jarvis.llm.model),
+            high_threshold=cfg.jarvis.memory.preference_dup_high_threshold,
+            low_threshold=cfg.jarvis.memory.preference_dup_low_threshold,
+            max_judge_calls=cfg.jarvis.memory.preference_dedup_max_judge_calls,
+        )
+
     service = MemoryService(
         session_factory=session_factory,
         embedding_provider=embedding_provider,
@@ -299,6 +310,7 @@ async def _build_memory_service(
         min_relevance_score=cfg.jarvis.memory.min_relevance_score,
         summarizer=summarizer,
         audit=audit,
+        preference_deduplicator=preference_deduplicator,
     )
     await service.reindex_entries()
     return service
