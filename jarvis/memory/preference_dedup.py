@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -148,3 +149,61 @@ class PreferenceDeduplicator:
             if await self._judge.judge(candidate=candidate_content, existing=best_pref.content):
                 return DuplicateMatch(best_pref.content, best_pref.preference_id, best_score, "llm")
         return None
+
+    async def cluster(
+        self, preferences: list[ClusterPreference]
+    ) -> list[list[ClusterPreference]]:
+        n = len(preferences)
+        parent = list(range(n))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        budget = self.new_budget()
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = preferences[i], preferences[j]
+                if not a.embedding or not b.embedding:
+                    continue
+                if a.embedding_dimensions != b.embedding_dimensions:
+                    continue
+                score = cosine(a.embedding, b.embedding)
+                connected = False
+                if score >= self._high_threshold:
+                    connected = True
+                elif score >= self._low_threshold and budget.available():
+                    budget.consume()
+                    connected = await self._judge.judge(candidate=a.content, existing=b.content)
+                if connected:
+                    union(i, j)
+
+        groups: dict[int, list[ClusterPreference]] = {}
+        for idx in range(n):
+            groups.setdefault(find(idx), []).append(preferences[idx])
+        return [group for group in groups.values() if len(group) >= 2]
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterPreference:
+    preference_id: UUID
+    content: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    embedding: list[float] | None
+    embedding_dimensions: int | None
+
+
+def choose_keeper(group: list[ClusterPreference]) -> ClusterPreference:
+    actives = [p for p in group if p.status == "active"]
+    if actives:
+        return min(actives, key=lambda p: p.created_at)
+    return max(group, key=lambda p: p.updated_at)

@@ -1,11 +1,15 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from jarvis.memory.preference_dedup import (
+    ClusterPreference,
     ExistingPreference,
     PreferenceDeduplicator,
     PreferenceJudge,
+    choose_keeper,
     cosine,
 )
 
@@ -212,3 +216,64 @@ async def test_judge_budget_caps_calls():
     await dedup.is_duplicate(candidate_content="c1", candidate_embedding=[1.0, 0.0], existing=existing, judge_budget=budget)
     await dedup.is_duplicate(candidate_content="c2", candidate_embedding=[1.0, 0.0], existing=existing, judge_budget=budget)
     assert judge.calls == 1  # second call had no budget left
+
+
+def _cp(content, vec, status="pending", created=1, updated=1):
+    base = datetime(2026, 6, 1, tzinfo=UTC)
+    return ClusterPreference(
+        preference_id=uuid4(),
+        content=content,
+        status=status,
+        created_at=base.replace(day=created),
+        updated_at=base.replace(day=updated),
+        embedding=vec,
+        embedding_dimensions=len(vec) if vec else None,
+    )
+
+
+async def test_cluster_groups_high_similarity_pairs():
+    judge = _RecordingJudge(False)
+    dedup = _dedup(judge)
+    prefs = [
+        _cp("Run tests", [1.0, 0.0]),
+        _cp("Run the tests", [1.0, 0.0]),
+        _cp("Use dark mode", [0.0, 1.0]),
+    ]
+    groups = await dedup.cluster(prefs)
+    assert len(groups) == 1
+    assert {p.content for p in groups[0]} == {"Run tests", "Run the tests"}
+    assert judge.calls == 0
+
+
+async def test_cluster_uses_judge_in_band():
+    judge = _RecordingJudge(True)
+    dedup = _dedup(judge)
+    prefs = [
+        _cp("a", [1.0, 0.0]),
+        _cp("b", [1.0, 0.6]),  # cosine ~0.857, in band
+    ]
+    groups = await dedup.cluster(prefs)
+    assert len(groups) == 1
+    assert judge.calls == 1
+
+
+async def test_cluster_skips_dimension_mismatch():
+    dedup = _dedup(_RecordingJudge(True))
+    groups = await dedup.cluster([
+        _cp("a", [1.0, 0.0]),
+        _cp("b", [1.0, 0.0, 0.0]),
+    ])
+    assert groups == []
+
+
+def test_choose_keeper_prefers_oldest_active():
+    active_new = _cp("new", [1.0], status="active", created=5)
+    active_old = _cp("old", [1.0], status="active", created=2)
+    pending = _cp("pending", [1.0], status="pending", created=1)
+    assert choose_keeper([active_new, active_old, pending]) is active_old
+
+
+def test_choose_keeper_falls_back_to_most_recent_update():
+    p1 = _cp("a", [1.0], status="pending", updated=2)
+    p2 = _cp("b", [1.0], status="rejected", updated=9)
+    assert choose_keeper([p1, p2]) is p2
