@@ -35,6 +35,15 @@ class MemoryConfig(_StrictModel):
     preference_dup_low_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
     preference_dedup_max_judge_calls: int = Field(default=5, ge=0)
 
+    @model_validator(mode="after")
+    def _thresholds_ordered(self) -> "MemoryConfig":
+        if self.preference_dup_low_threshold >= self.preference_dup_high_threshold:
+            raise ValueError(
+                "preference_dup_low_threshold must be strictly less than "
+                "preference_dup_high_threshold"
+            )
+        return self
+
 
 class JarvisConfig(_StrictModel):
     llm: LLMConfig

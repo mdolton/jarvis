@@ -8,6 +8,7 @@ from jarvis.config.schema import (
     LLMConfig,
     MCPServerConfig,
     MCPServersConfig,
+    MemoryConfig,
 )
 
 
@@ -100,8 +101,6 @@ def test_memory_config_accepts_embedding_override():
 
 
 def test_memory_config_preference_dedup_defaults():
-    from jarvis.config.schema import MemoryConfig
-
     cfg = MemoryConfig()
 
     assert cfg.preference_dedup_enabled is True
@@ -111,10 +110,13 @@ def test_memory_config_preference_dedup_defaults():
 
 
 def test_memory_config_rejects_out_of_range_threshold():
-    import pytest
-    from pydantic import ValidationError
-
-    from jarvis.config.schema import MemoryConfig
-
     with pytest.raises(ValidationError):
         MemoryConfig(preference_dup_high_threshold=1.5)
+
+
+def test_memory_config_rejects_inverted_thresholds():
+    with pytest.raises(ValidationError):
+        MemoryConfig(
+            preference_dup_low_threshold=0.95,
+            preference_dup_high_threshold=0.92,
+        )
