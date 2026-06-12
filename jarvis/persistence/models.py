@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Float, ForeignKey, Index, LargeBinary, String, Text
+from sqlalchemy import JSON, Float, ForeignKey, Index, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from jarvis.persistence.db import Base, TZDateTime
@@ -116,6 +116,8 @@ class MemoryPreferenceRow(Base):
     updated_at: Mapped[datetime] = mapped_column(TZDateTime())
     approved_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    embedding_dimensions: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_memory_preferences_status_updated_at", "status", "updated_at"),
