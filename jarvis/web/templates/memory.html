@@ -55,6 +55,9 @@
     {% if not preferences %}
     <p class="muted">No memory preferences yet.</p>
     {% endif %}
+    {# Archiving a duplicate redirects to GET /memory (no clusters), so the section
+       collapses; the user re-runs "Find duplicates" to continue. Intentional for an
+       on-demand tool. #}
     {% if duplicate_clusters is not none %}
     <h3>Duplicate groups</h3>
     {% if not duplicate_clusters %}

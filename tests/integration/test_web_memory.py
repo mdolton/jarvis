@@ -312,3 +312,27 @@ def test_memory_page_hides_duplicate_section(memory_client):
     resp = client.get("/memory")
     assert resp.status_code == 200
     assert "Duplicate groups" not in resp.text
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def memory_client_no_service(tmp_path):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = session_factory(engine)
+
+    ctx = MagicMock()
+    ctx.session_factory = factory
+    ctx.memory_service = None
+
+    app = create_app(app_context=ctx)
+    client = TestClient(app)
+    yield client
+    await engine.dispose()
+
+
+def test_find_duplicates_without_service_renders_empty(memory_client_no_service):
+    resp = memory_client_no_service.post("/memory/preferences/find-duplicates")
+    assert resp.status_code == 200
+    assert "Duplicate groups" in resp.text
+    assert "No duplicate preferences found." in resp.text
