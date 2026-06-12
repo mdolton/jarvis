@@ -12,6 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.core.types import AuditEvent, AuditEventType
 from jarvis.memory.embeddings import EmbeddingProvider
+from jarvis.memory.preference_dedup import (
+    ClusterPreference,
+    DuplicateMatch,
+    ExistingPreference,
+    choose_keeper,
+)
 from jarvis.memory.types import (
     MemoryContext,
     MemorySummary,
@@ -38,6 +44,13 @@ class MemorySummarizeOutcome:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _ProposalResult:
+    created: list[MemoryPreferenceRow]
+    dropped: list[DuplicateMatch]
+    fell_back: bool
+
+
 class MemoryService:
     def __init__(
         self,
@@ -49,12 +62,14 @@ class MemoryService:
         min_relevance_score: float,
         summarizer=None,
         audit=None,
+        preference_deduplicator=None,
     ) -> None:
         self._session_factory = session_factory
         self._embedding_provider = embedding_provider
         self._vector_store = vector_store
         self._summarizer = summarizer
         self._audit = audit
+        self._preference_deduplicator = preference_deduplicator
         self._max_recalled_memories = max_recalled_memories
         self._min_relevance_score = min_relevance_score
 
@@ -117,6 +132,7 @@ class MemoryService:
         entry_id: UUID | None = None
         entry_status: str | None = None
         entry_created = False
+        proposal_result: _ProposalResult = _ProposalResult([], [], False)
         source_hash = _source_hash(
             conversation_id=conversation_id,
             channel_kind=channel_kind,
@@ -159,10 +175,12 @@ class MemoryService:
                             memory_entry_id=entry_id,
                             source_hash=source_hash,
                         )
-                created_preferences = await _create_preference_proposals(
+                proposal_result = await _create_preference_proposals(
                     session,
                     summary.preference_candidates,
+                    self._preference_deduplicator,
                 )
+                created_preferences = proposal_result.created
                 preferences_created = len(created_preferences)
             except Exception as exc:
                 if entry_id is not None:
@@ -192,6 +210,23 @@ class MemoryService:
                     "preference_id": str(preference.id),
                     "content": preference.content,
                 },
+            )
+        for dropped in proposal_result.dropped:
+            await self._emit(
+                AuditEventType.MEMORY_PREFERENCE_DEDUP_DROPPED,
+                conversation_id=conversation_id,
+                payload={
+                    "matched_preference_id": str(dropped.matched_id) if dropped.matched_id else None,
+                    "matched_content": dropped.matched_content,
+                    "score": dropped.score,
+                    "method": dropped.method,
+                },
+            )
+        if proposal_result.fell_back:
+            await self._emit(
+                AuditEventType.MEMORY_PREFERENCE_DEDUP_SKIPPED,
+                conversation_id=conversation_id,
+                payload={"reason": "dedup pass failed; used exact-match fallback"},
             )
 
         if entry_status == "active":
@@ -264,6 +299,44 @@ class MemoryService:
             memory_entry_id=entry_id,
             preferences_created=preferences_created,
         )
+
+    async def find_duplicate_preferences(self) -> list[dict]:
+        if self._preference_deduplicator is None:
+            return []
+        async with self._session_factory() as session:
+            repo = MemoryPreferenceRepo(session)
+            rows = await repo.list_for_dedup()
+            cluster_prefs: list[ClusterPreference] = []
+            for row in rows:
+                embedding = row.embedding
+                dims = row.embedding_dimensions
+                if embedding is None:
+                    embedding = await self._preference_deduplicator.embed(row.content)
+                    if embedding is not None:
+                        dims = len(embedding)
+                        await repo.set_embedding(row.id, embedding, dims)
+                cluster_prefs.append(
+                    ClusterPreference(
+                        preference_id=row.id,
+                        content=row.content,
+                        status=row.status,
+                        created_at=row.created_at,
+                        updated_at=row.updated_at,
+                        embedding=embedding,
+                        embedding_dimensions=dims,
+                    )
+                )
+        groups = await self._preference_deduplicator.cluster(cluster_prefs)
+        clusters: list[dict] = []
+        for group in groups:
+            keeper = choose_keeper(group)
+            clusters.append(
+                {
+                    "keeper": keeper,
+                    "duplicates": [p for p in group if p.preference_id != keeper.preference_id],
+                }
+            )
+        return clusters
 
     async def build_context(
         self,
@@ -545,21 +618,92 @@ async def _mark_unindexed_best_effort(
 async def _create_preference_proposals(
     session: AsyncSession,
     candidates: list[str],
-) -> list[MemoryPreferenceRow]:
-    existing = await _existing_preferences(session)
+    deduplicator,
+) -> _ProposalResult:
+    existing_norm = await _existing_preferences(session)
     limited_candidates = _limited_unique_preference_candidates(candidates)
-    proposals = [
-        content
+    surviving = [
+        (normalized, content)
         for normalized, content in limited_candidates
-        if normalized not in existing
+        if normalized not in existing_norm
     ]
-    if not proposals:
-        return []
+    if not surviving:
+        return _ProposalResult([], [], False)
 
-    return await MemoryPreferenceRepo(session).create_pending_many(
-        items=[NewPreference(content=c) for c in proposals],
-        source="agent_proposal",
-    )
+    repo = MemoryPreferenceRepo(session)
+
+    if deduplicator is None:
+        created = await repo.create_pending_many(
+            items=[NewPreference(content=content) for _, content in surviving],
+            source="agent_proposal",
+        )
+        return _ProposalResult(created, [], False)
+
+    try:
+        existing_rows = await repo.list_for_dedup()
+        comparison_set = await _ensure_dedup_embeddings(session, repo, deduplicator, existing_rows)
+        budget = deduplicator.new_budget()
+        accepted: list[NewPreference] = []
+        dropped: list[DuplicateMatch] = []
+        for _, content in surviving:
+            embedding = await deduplicator.embed(content)
+            match = await deduplicator.is_duplicate(
+                candidate_content=content,
+                candidate_embedding=embedding,
+                existing=comparison_set,
+                judge_budget=budget,
+            )
+            if match is not None:
+                dropped.append(match)
+                continue
+            dims = len(embedding) if embedding else None
+            accepted.append(
+                NewPreference(content=content, embedding=embedding, embedding_dimensions=dims)
+            )
+            comparison_set.append(
+                ExistingPreference(
+                    content=content,
+                    embedding=embedding,
+                    embedding_dimensions=dims,
+                    status="pending",
+                    preference_id=None,
+                )
+            )
+        created = await repo.create_pending_many(items=accepted, source="agent_proposal")
+        return _ProposalResult(created, dropped, False)
+    except Exception:
+        created = await repo.create_pending_many(
+            items=[NewPreference(content=content) for _, content in surviving],
+            source="agent_proposal",
+        )
+        return _ProposalResult(created, [], True)
+
+
+async def _ensure_dedup_embeddings(
+    session: AsyncSession,
+    repo: MemoryPreferenceRepo,
+    deduplicator,
+    rows: list[MemoryPreferenceRow],
+) -> list[ExistingPreference]:
+    result: list[ExistingPreference] = []
+    for row in rows:
+        embedding = row.embedding
+        dims = row.embedding_dimensions
+        if embedding is None:
+            embedding = await deduplicator.embed(row.content)
+            if embedding is not None:
+                dims = len(embedding)
+                await repo.set_embedding(row.id, embedding, dims)
+        result.append(
+            ExistingPreference(
+                content=row.content,
+                embedding=embedding,
+                embedding_dimensions=dims,
+                status=row.status,
+                preference_id=row.id,
+            )
+        )
+    return result
 
 
 def _limited_unique_preference_candidates(candidates: list[str]) -> list[tuple[str, str]]:
