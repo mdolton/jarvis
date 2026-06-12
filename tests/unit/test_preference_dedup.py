@@ -277,3 +277,8 @@ def test_choose_keeper_falls_back_to_most_recent_update():
     p1 = _cp("a", [1.0], status="pending", updated=2)
     p2 = _cp("b", [1.0], status="rejected", updated=9)
     assert choose_keeper([p1, p2]) is p2
+
+
+def test_choose_keeper_rejects_empty_group():
+    with pytest.raises(ValueError):
+        choose_keeper([])

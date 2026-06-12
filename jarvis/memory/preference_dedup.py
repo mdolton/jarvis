@@ -179,6 +179,10 @@ class PreferenceDeduplicator:
                 connected = False
                 if score >= self._high_threshold:
                     connected = True
+                # Best-effort tiebreak: the judge is directional (is a covered by b?),
+                # but we treat duplication as symmetric here. Checking one ordering keeps
+                # the per-run judge budget bounded; the high-threshold path catches the
+                # clear duplicates regardless of order.
                 elif score >= self._low_threshold and budget.available():
                     budget.consume()
                     connected = await self._judge.judge(candidate=a.content, existing=b.content)
@@ -203,6 +207,8 @@ class ClusterPreference:
 
 
 def choose_keeper(group: list[ClusterPreference]) -> ClusterPreference:
+    if not group:
+        raise ValueError("choose_keeper requires a non-empty group")
     actives = [p for p in group if p.status == "active"]
     if actives:
         return min(actives, key=lambda p: p.created_at)
