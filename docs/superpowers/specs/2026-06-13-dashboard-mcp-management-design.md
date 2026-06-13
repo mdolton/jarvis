@@ -115,9 +115,16 @@ removable.
 
 `runtime_name` is derived once at creation as `f"{provider_key}:{slug(label)}"`
 and stored, guaranteeing a stable, unique manager key even if the label is later
-edited. Runtime status (`connected` / `disconnected` / `needs_reauth` / `error`)
-is **not** stored on the connection — it is read from the joined `MCPServerRow`,
-which keeps a single source of runtime truth.
+edited.
+
+The connection carries `status` / `last_error` / `connected_at` columns serving
+the same role `OAuthCredentialsRow.status` did today: the OAuth *credential/auth*
+state (`connected` / `needs_reauth` / `disconnected`), which the refresh job
+filters on and which expresses the "registered but not yet authorized" sentinel
+(NULL `access_token_enc`). This is distinct from the *live MCP server runtime*
+status, which remains on the joined `MCPServerRow` (and is the only status source
+for stdio servers, which have no connection row). The dashboard reads runtime
+status + tools from `MCPServerRow` and auth state from the connection.
 
 **`mcp_pending`** — renamed from `oauth_pending`; `state` (PK), `connection_id`
 (FK, replaces `provider_key`), `code_verifier`, `created_at`.
