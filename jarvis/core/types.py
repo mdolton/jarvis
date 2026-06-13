@@ -42,6 +42,7 @@ class AuditEventType(StrEnum):
     MODEL_FALLBACK = "model.fallback"
     MCP_CONNECTED = "mcp.connected"
     MCP_DISCONNECTED = "mcp.disconnected"
+    MCP_CONFIG_CHANGED = "mcp_config_changed"
     OAUTH_DISCOVERY_STARTED = "oauth.discovery_started"
     OAUTH_DISCOVERY_SUCCEEDED = "oauth.discovery_succeeded"
     OAUTH_DISCOVERY_FAILED = "oauth.discovery_failed"
