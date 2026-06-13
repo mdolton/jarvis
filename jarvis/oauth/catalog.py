@@ -137,6 +137,22 @@ def slug_label(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")
 
 
+def unique_runtime_name(existing: Iterable[str], provider_key: str, label: str) -> str:
+    """Return a runtime name that does not collide with any name in *existing*.
+
+    The base form is ``provider_key:slug_label(label)``.  If that is already
+    taken, a numeric suffix (-2, -3, …) is appended until a free slot is found.
+    """
+    base = f"{provider_key}:{slug_label(label) or 'default'}"
+    existing = set(existing)
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}-{n}" in existing:
+        n += 1
+    return f"{base}-{n}"
+
+
 def assert_no_yaml_collision(yaml_server_names: Iterable[str], catalog_keys: Iterable[str] | None = None) -> None:
     """Raise if any stdio YAML server name collides with a provider/catalog key."""
     keys = set(catalog_keys) if catalog_keys is not None else set(SEED_PROVIDERS)

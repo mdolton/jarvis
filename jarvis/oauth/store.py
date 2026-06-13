@@ -45,6 +45,12 @@ class MCPProviderRepo:
         await self._session.commit()
         return row
 
+    async def has_connections(self, provider_key: str) -> bool:
+        res = await self._session.execute(
+            select(MCPConnectionRow.id).where(MCPConnectionRow.provider_key == provider_key).limit(1)
+        )
+        return res.first() is not None
+
     async def delete(self, key: str) -> None:
         await self._session.execute(delete(MCPProviderRow).where(MCPProviderRow.key == key))
         await self._session.commit()
