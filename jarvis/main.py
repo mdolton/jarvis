@@ -36,6 +36,7 @@ from jarvis.memory.preference_dedup import PreferenceDeduplicator, PreferenceJud
 from jarvis.memory.service import MemoryService
 from jarvis.memory.summarizer import MemorySummarizer
 from jarvis.memory.vector_store import MemoryVectorStore
+from jarvis.oauth.catalog import ProviderCatalog, seed_built_in_providers
 from jarvis.oauth.flow import OAuthFlow
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
@@ -60,6 +61,7 @@ class AppContext:
     scheduler: Scheduler
     web_app: FastAPI
     oauth_flow: OAuthFlow
+    catalog: ProviderCatalog
     oauth_http: httpx.AsyncClient
     llm_client: AsyncOpenAI
     model_catalog: ModelCatalog
@@ -94,6 +96,8 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
     factory = session_factory(engine)
     async with factory() as session:
         await seed_built_in_digest_templates(session)
+        await seed_built_in_providers(session)
+    catalog = ProviderCatalog(factory)
 
     # Audit.
     audit = AuditLogger(session_factory=factory)
@@ -123,6 +127,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         session_factory=factory,
         base_url=cfg.base_url,
         secrets_key=cfg.secrets_key,
+        catalog=catalog,
     )
 
     # MCP.
@@ -131,6 +136,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         session_factory=factory,
         secrets_key=cfg.secrets_key,
         oauth_flow=oauth_flow,
+        catalog=catalog,
     )
     await mcp_manager.start()
 
@@ -245,6 +251,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         scheduler=scheduler,
         web_app=web_app,
         oauth_flow=oauth_flow,
+        catalog=catalog,
         oauth_http=oauth_http,
         llm_client=llm_client,
         model_catalog=model_catalog,

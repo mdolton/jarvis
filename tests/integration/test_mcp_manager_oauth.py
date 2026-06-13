@@ -8,8 +8,9 @@ from agents.exceptions import UserError
 
 from jarvis.config.schema import MCPServersConfig
 from jarvis.mcp.manager import MCPManager, _apply_runtime_policy_guard
+from jarvis.oauth.catalog import ProviderCatalog, seed_built_in_providers
 from jarvis.oauth.crypto import encrypt_blob, generate_key
-from jarvis.oauth.store import OAuthCredentialsRepo
+from jarvis.oauth.store import MCPConnectionRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 
 
@@ -108,8 +109,8 @@ class RefreshFlowStub:
     def __init__(self):
         self.refreshed = []
 
-    async def refresh(self, provider_key):
-        self.refreshed.append(provider_key)
+    async def refresh(self, connection_id):
+        self.refreshed.append(connection_id)
         return {"Authorization": "Bearer fresh-token"}
 
 
@@ -119,6 +120,8 @@ async def factory(tmp_path):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     f = session_factory(engine)
+    async with f() as s:
+        await seed_built_in_providers(s)
     yield f
     await engine.dispose()
 
@@ -164,8 +167,14 @@ async def test_replace_oauth_server_swaps_sdk_object(factory, monkeypatch):
 
 async def test_oauth_server_call_401_refreshes_token_in_place_and_retries(factory, monkeypatch):
     flow = RefreshFlowStub()
+    async with factory() as s:
+        conn = await MCPConnectionRepo(s).create(
+            provider_key="calendar", label="Cal", runtime_name="calendar", scopes=[])
+    conn_id = conn.id
     cfg = MCPServersConfig(servers=[])
-    mgr = MCPManager(config=cfg, session_factory=factory, oauth_flow=flow)
+    mgr = MCPManager(
+        config=cfg, session_factory=factory, oauth_flow=flow, catalog=ProviderCatalog(factory)
+    )
     await mgr.start()
     try:
         server = FlakyAuthSDKServer()
@@ -201,7 +210,7 @@ async def test_oauth_server_call_401_refreshes_token_in_place_and_retries(factor
         result = await mgr.agent_mcp_servers()[0].call_tool("list_calendars", {}, meta={"t": "1"})
 
         assert result == "retried"
-        assert flow.refreshed == ["calendar"]
+        assert flow.refreshed == [conn_id]
         # No second build and no swap: the SAME server is retried, with the
         # refreshed token applied to its holder in place.
         assert len(captured) == 1
@@ -287,14 +296,15 @@ async def test_remove_oauth_server_closes_and_drops(factory, monkeypatch):
 
 
 async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeypatch):
-    """When oauth_credentials has a valid Fastmail row, start() builds the SDK server."""
+    """When an enabled Fastmail connection has tokens, start() builds the SDK server."""
     key = generate_key().encode()
     now = datetime.now(UTC)
     async with factory() as session:
-        await OAuthCredentialsRepo(session).upsert(
-            provider_key="fastmail",
-            client_id_enc=encrypt_blob(b"cid", key),
-            client_secret_enc=None,
+        repo = MCPConnectionRepo(session)
+        conn = await repo.create(
+            provider_key="fastmail", label="Mail", runtime_name="fastmail:mail", scopes=[])
+        await repo.set_tokens(
+            conn.id,
             access_token_enc=encrypt_blob(b"AT", key),
             refresh_token_enc=encrypt_blob(b"RT", key),
             token_expires_at=now + timedelta(hours=1),
@@ -308,7 +318,9 @@ async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeyp
     )
 
     cfg = MCPServersConfig(servers=[])
-    mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=key)
+    mgr = MCPManager(
+        config=cfg, session_factory=factory, secrets_key=key, catalog=ProviderCatalog(factory)
+    )
     await mgr.start()
     try:
         assert sdk.entered
@@ -318,14 +330,15 @@ async def test_start_iterates_catalog_and_attaches_oauth_server(factory, monkeyp
 
 
 async def test_start_attaches_connected_manual_provider(factory, monkeypatch):
-    """A connected manual-mode (gmail) row must be attached at boot, not skipped."""
+    """A connected manual-mode (gmail) connection must be attached at boot, not skipped."""
     key = generate_key().encode()
     now = datetime.now(UTC)
     async with factory() as session:
-        await OAuthCredentialsRepo(session).upsert(
-            provider_key="gmail",
-            client_id_enc=encrypt_blob(b"cid", key),
-            client_secret_enc=encrypt_blob(b"sec", key),
+        repo = MCPConnectionRepo(session)
+        conn = await repo.create(
+            provider_key="gmail", label="Mail", runtime_name="gmail:mail", scopes=[])
+        await repo.set_tokens(
+            conn.id,
             access_token_enc=encrypt_blob(b"AT", key),
             refresh_token_enc=encrypt_blob(b"RT", key),
             token_expires_at=now + timedelta(hours=1),
@@ -343,7 +356,9 @@ async def test_start_attaches_connected_manual_provider(factory, monkeypatch):
     monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", fake_build)
 
     cfg = MCPServersConfig(servers=[])
-    mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=key)
+    mgr = MCPManager(
+        config=cfg, session_factory=factory, secrets_key=key, catalog=ProviderCatalog(factory)
+    )
     await mgr.start()
     try:
         assert sdk.entered
@@ -422,8 +437,15 @@ async def test_replace_oauth_server_times_out_hung_old_connection_close(factory,
 
 
 async def test_start_skips_oauth_provider_without_credentials(factory, monkeypatch):
+    """An enabled OAuth connection without tokens must NOT be attached at boot."""
+    key = generate_key().encode()
+    async with factory() as session:
+        await MCPConnectionRepo(session).create(
+            provider_key="fastmail", label="Mail", runtime_name="fastmail:mail", scopes=[])
     cfg = MCPServersConfig(servers=[])
-    mgr = MCPManager(config=cfg, session_factory=factory, secrets_key=generate_key().encode())
+    mgr = MCPManager(
+        config=cfg, session_factory=factory, secrets_key=key, catalog=ProviderCatalog(factory)
+    )
     builds = []
     monkeypatch.setattr(
         "jarvis.mcp.manager._build_streamable_http",

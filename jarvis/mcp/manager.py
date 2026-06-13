@@ -29,10 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jarvis.config.schema import MCPServerConfig, MCPServersConfig
 from jarvis.mcp.approval_policy import MCPApprovalPolicy
 from jarvis.mcp.descriptor import MCPToolDescriptor
-from jarvis.oauth.catalog import OAUTH_CATALOG, assert_no_yaml_collision
+from jarvis.oauth.catalog import ProviderCatalog, assert_no_yaml_collision
 from jarvis.oauth.crypto import decrypt_blob
-from jarvis.oauth.store import OAuthCredentialsRepo
-from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
+from jarvis.oauth.store import MCPConnectionRepo
+from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo, SettingsRepo
 
 _log = logging.getLogger(__name__)
 
@@ -78,6 +78,14 @@ def _bearer_token(headers: dict[str, str]) -> str:
     return auth[7:] if auth.startswith("Bearer ") else auth
 
 
+def _decrypt_headers(blob: bytes | None, key: bytes) -> dict[str, str]:
+    if not blob:
+        return {}
+    import json
+
+    return json.loads(decrypt_blob(blob, key).decode())
+
+
 class MCPManager:
     def __init__(
         self,
@@ -86,6 +94,7 @@ class MCPManager:
         session_factory: async_sessionmaker[AsyncSession],
         secrets_key: bytes | None = None,
         oauth_flow=None,
+        catalog: "ProviderCatalog | None" = None,
         connect_timeout: float = 60.0,
         close_timeout: float = 10.0,
     ) -> None:
@@ -93,6 +102,7 @@ class MCPManager:
         self._session_factory = session_factory
         self._secrets_key = secrets_key
         self._oauth_flow = oauth_flow
+        self._catalog = catalog
         # Hard ceiling on a single connect+list_tools so a transiently
         # unresponsive remote can never wedge the serial lifecycle loop (and
         # thereby block Disconnect/remove, which run through the same task).
@@ -109,20 +119,32 @@ class MCPManager:
         self._cmd_queue: asyncio.Queue[tuple[str, object, asyncio.Future]] | None = None
         self._loop_task: asyncio.Task | None = None
 
+    async def _collision_keys(self) -> set[str]:
+        from jarvis.oauth.catalog import SEED_PROVIDERS
+        from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
+        keys = set(SEED_PROVIDERS)
+        if self._catalog is not None:
+            async with self._session_factory() as s:
+                keys |= {p.key for p in await MCPProviderRepo(s).list_all()}
+                keys |= {c.runtime_name for c in await MCPConnectionRepo(s).list_all()}
+        return keys
+
     async def start(self) -> None:
         """Connect to every enabled server. Failures are recorded, not raised."""
-        assert_no_yaml_collision(s.name for s in self._config.servers)
+        assert_no_yaml_collision((s.name for s in self._config.servers), await self._collision_keys())
         self._cmd_queue = asyncio.Queue()
         self._loop_task = asyncio.create_task(self._lifecycle_loop(), name="mcp-lifecycle")
 
+        async with self._session_factory() as session:
+            disabled = set(await SettingsRepo(session).get("mcp.stdio_disabled") or [])
         for server_cfg in self._config.servers:
-            if not server_cfg.enabled:
+            if not server_cfg.enabled or server_cfg.name in disabled:
                 continue
             # connect failures are recorded inside the owner task, never raised.
             await self._submit("connect_cfg", server_cfg)
 
-        if self._secrets_key is not None:
-            await self._bootstrap_oauth_catalog()
+        if self._secrets_key is not None and self._catalog is not None:
+            await self._bootstrap_connections()
 
     async def stop(self) -> None:
         if self._loop_task is None:
@@ -158,20 +180,55 @@ class MCPManager:
             self._approval_policy.clear_server(server_name)
 
     async def replace_oauth_server(
-        self, provider_key: str, *, url: str, headers: dict[str, str]
+        self, provider_key: str, *, url: str, headers: dict[str, str], oauth: bool = True
     ) -> None:
         """Build a new streamable-HTTP SDK server, verify list_tools, then atomically swap.
 
         If list_tools fails the new stack is closed and the old server remains active.
         Runs entirely on the owner task so enter/exit stay task-consistent.
+
+        ``oauth`` selects bearer/oauth-retry wiring: True (default) for OAuth
+        connections that inject a live access token and refresh on 401; False for
+        http/sse connections, which carry only static headers and must NOT get a
+        bearer token holder or an oauth ``unauthorized_retry``.
         """
         await self._submit(
-            "replace", {"provider_key": provider_key, "url": url, "headers": headers}
+            "replace",
+            {"provider_key": provider_key, "url": url, "headers": headers, "oauth": oauth},
         )
 
     async def remove_oauth_server(self, provider_key: str) -> None:
         """Pop and close the stack/sdk_server entries for an OAuth provider."""
         await self._submit("remove", provider_key)
+
+    async def connect_connection(self, conn) -> None:
+        """Attach one connection (dashboard enable/add). Resolves transport from its provider."""
+        entry = await self._catalog.get(conn.provider_key)
+        if entry.kind == "oauth":
+            if not conn.access_token_enc:
+                return
+            token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
+            await self.replace_oauth_server(
+                conn.runtime_name,
+                url=entry.mcp_url,
+                headers={"Authorization": f"Bearer {token}"},
+                oauth=True,
+            )
+        else:
+            headers = _decrypt_headers(conn.headers_enc, self._secrets_key)
+            await self.replace_oauth_server(
+                conn.runtime_name,
+                url=conn.url_override or entry.mcp_url,
+                headers=headers,
+                oauth=False,
+            )
+
+    async def connect_server(self, cfg) -> None:
+        """Connect one stdio config server (dashboard enable). Thin wrapper over the owner task."""
+        await self._submit("connect_cfg", cfg)
+
+    async def disconnect(self, runtime_name: str) -> None:
+        await self.remove_oauth_server(runtime_name)
 
     def update_oauth_token(self, provider_key: str, access_token: str) -> bool:
         """Point the live connection at a new access token, in place.
@@ -187,23 +244,31 @@ class MCPManager:
         holder.set(access_token)
         return True
 
-    async def refresh_oauth_server_for_retry(self, provider_key: str) -> object:
-        """Force-refresh an OAuth provider's token and keep the live connection.
+    async def refresh_oauth_server_for_retry(self, runtime_name: str) -> object:
+        """Force-refresh a connection's token and keep the live connection.
 
         The refreshed token is applied to the existing SDK server in place; we
         return that same server so the caller retries on the connection that is
-        already open. Only if the provider isn't currently attached (no live
+        already open. Only if the connection isn't currently attached (no live
         holder) do we fall back to a full attach via the lifecycle owner task.
         """
         if self._oauth_flow is None:
             raise RuntimeError("MCPManager was not configured with an OAuthFlow")
-        headers = await self._oauth_flow.refresh(provider_key)
-        if self.update_oauth_token(provider_key, _bearer_token(headers)):
-            return self._sdk_servers.get(provider_key)
-        entry = OAUTH_CATALOG[provider_key]
+        async with self._session_factory() as session:
+            conn = await MCPConnectionRepo(session).get_by_runtime_name(runtime_name)
+        if conn is None:
+            raise LookupError(f"no MCP connection for runtime_name {runtime_name!r}")
+        headers = await self._oauth_flow.refresh(conn.id)
+        if self.update_oauth_token(runtime_name, _bearer_token(headers)):
+            return self._sdk_servers.get(runtime_name)
+        entry = await self._catalog.get(conn.provider_key)
         return await self._submit(
             "replace",
-            {"provider_key": provider_key, "url": entry.mcp_url, "headers": headers},
+            {
+                "provider_key": runtime_name,
+                "url": conn.url_override or entry.mcp_url,
+                "headers": headers,
+            },
         )
 
     # --- Owner task: the only place stacks are entered and exited ----------
@@ -249,27 +314,34 @@ class MCPManager:
             if kind == "shutdown":
                 return
 
-    async def _bootstrap_oauth_catalog(self) -> None:
-        """Attach any already-connected OAuth providers at startup."""
+    async def _bootstrap_connections(self) -> None:
+        """Attach every enabled connection at startup, keyed by runtime_name."""
         async with self._session_factory() as session:
-            rows = await OAuthCredentialsRepo(session).list_all()
-        rows_by_key = {r.provider_key: r for r in rows}
-        for key, entry in OAUTH_CATALOG.items():
-            cred = rows_by_key.get(key)
-            if cred is None or cred.status != "connected" or not cred.access_token_enc:
-                continue
-            access_token = decrypt_blob(cred.access_token_enc, self._secrets_key).decode()  # type: ignore[arg-type]
+            conns = await MCPConnectionRepo(session).list_enabled()
+        for conn in conns:
+            entry = await self._catalog.get(conn.provider_key)
             try:
-                await self.replace_oauth_server(
-                    key,
-                    url=entry.mcp_url,
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
+                if entry.kind == "oauth":
+                    if conn.status != "connected" or not conn.access_token_enc:
+                        continue  # not authorized yet / needs reauth
+                    token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
+                    await self.replace_oauth_server(
+                        conn.runtime_name,
+                        url=entry.mcp_url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        oauth=True,
+                    )
+                else:  # http / sse
+                    headers = _decrypt_headers(conn.headers_enc, self._secrets_key)
+                    url = conn.url_override or entry.mcp_url
+                    await self.replace_oauth_server(
+                        conn.runtime_name, url=url, headers=headers, oauth=False
+                    )
             except Exception as e:
-                _log.exception("failed to attach OAuth MCP %r at boot", key)
+                _log.exception("failed to attach connection %r at boot", conn.runtime_name)
                 async with self._session_factory() as session:
-                    await OAuthCredentialsRepo(session).set_status(
-                        key, status="needs_reauth", last_error=f"boot attach failed: {e}"
+                    await MCPConnectionRepo(session).set_status(
+                        conn.id, status="needs_reauth", last_error=f"boot attach failed: {e}"
                     )
 
     async def _do_connect_one(self, cfg: MCPServerConfig) -> None:
@@ -313,24 +385,28 @@ class MCPManager:
             await repo.set_status(row.id, status="error", last_error=f"{type(exc).__name__}: {exc}")
 
     async def _do_replace_oauth(
-        self, *, provider_key: str, url: str, headers: dict[str, str]
+        self, *, provider_key: str, url: str, headers: dict[str, str], oauth: bool = True
     ) -> None:
         new_stack = AsyncExitStack()
 
         async def unauthorized_retry():
             return await self.refresh_oauth_server_for_retry(provider_key)
 
-        # Fresh holder for the new connection; only promoted into
-        # self._token_holders once this server is committed as live, so a failed
-        # build never disturbs the currently-attached connection's token.
-        holder = _TokenHolder(_bearer_token(headers))
         build_kwargs = {
             "name": provider_key,
             "approval_policy": self._approval_policy,
-            "token_holder": holder,
         }
-        if self._oauth_flow is not None:
-            build_kwargs["unauthorized_retry"] = unauthorized_retry
+        if oauth:
+            # Fresh holder for the new connection; only promoted into
+            # self._token_holders once this server is committed as live, so a
+            # failed build never disturbs the currently-attached connection's
+            # token. http/sse connections get no holder (static headers only).
+            holder = _TokenHolder(_bearer_token(headers))
+            build_kwargs["token_holder"] = holder
+            if self._oauth_flow is not None:
+                build_kwargs["unauthorized_retry"] = unauthorized_retry
+        else:
+            holder = None
         new_sdk = _build_streamable_http(url, headers, **build_kwargs)
 
         try:
@@ -347,7 +423,10 @@ class MCPManager:
         old_stack = self._stacks.get(provider_key)
         self._sdk_servers[provider_key] = new_sdk
         self._stacks[provider_key] = new_stack
-        self._token_holders[provider_key] = holder
+        if holder is not None:
+            self._token_holders[provider_key] = holder
+        else:
+            self._token_holders.pop(provider_key, None)
         self._tool_names_by_server[provider_key] = tuple(t.name for t in tools)
 
         # Persist status/tools BEFORE closing the old connection. Closing an
@@ -358,7 +437,13 @@ class MCPManager:
         async with self._session_factory() as session:
             srepo = MCPServerRepo(session)
             trepo = MCPToolRepo(session)
-            row = await srepo.upsert(name=provider_key, transport="http")
+            conn = await MCPConnectionRepo(session).get_by_runtime_name(provider_key)
+            row = await srepo.upsert(
+                name=provider_key,
+                transport="http",
+                source="connection",
+                connection_id=conn.id if conn else None,
+            )
             await srepo.set_status(row.id, status="connected", last_error=None)
             await trepo.replace_for_server(row.id, tools=tools)
         self.clear_policy_cache(provider_key)

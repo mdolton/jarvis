@@ -192,7 +192,7 @@ async def test_mcp_manager_rejects_yaml_server_named_after_catalog_key(engine_an
     _, factory = engine_and_factory
     cfg = MCPServersConfig(
         servers=[
-            MCPServerConfig(name="fastmail", transport="http", url="http://localhost"),
+            MCPServerConfig(name="fastmail", transport="stdio", command=["/bin/true"]),
         ],
     )
     manager = MCPManager(config=cfg, session_factory=factory)

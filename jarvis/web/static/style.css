@@ -238,6 +238,36 @@ code {
   margin-bottom: 1.25rem;
 }
 
+.conn-row {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.5rem 0 0.5rem 0.75rem;
+  border-left: 2px solid var(--line);
+}
+
+.add-form {
+  margin: 0.5rem 0 0.75rem;
+}
+
+.add-form > summary {
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.stacked-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 480px;
+  margin-top: 0.5rem;
+}
+
+.stacked-form label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .audit-row {
   padding: 0.55rem 0;
   border-bottom: 1px solid var(--line);

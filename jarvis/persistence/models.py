@@ -239,6 +239,80 @@ class DigestTemplateRow(Base):
     )
 
 
+class MCPProviderRow(Base):
+    """Catalog entry: a secret-free service definition. stdio is NOT represented here."""
+    __tablename__ = "mcp_providers"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))  # 'oauth' | 'http' | 'sse'
+    mcp_url: Mapped[str] = mapped_column(Text)
+    builtin: Mapped[bool] = mapped_column(default=False)
+    # oauth protocol facts (invariant across accounts)
+    auth_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'dcr'|'manual'
+    oauth_metadata_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pkce: Mapped[bool] = mapped_column(default=True)
+    send_resource_indicator: Mapped[bool] = mapped_column(default=True)
+    extra_auth_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    # non-authoritative form-prefill hints
+    default_scopes: Mapped[list] = mapped_column(JSON, default=list)
+    header_names: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+    connections: Mapped[list["MCPConnectionRow"]] = relationship(
+        back_populates="provider", cascade="all, delete-orphan"
+    )
+
+
+class MCPConnectionRow(Base):
+    """One credentialed account instance of a provider -> one live MCP server."""
+    __tablename__ = "mcp_connections"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    provider_key: Mapped[str] = mapped_column(
+        ForeignKey("mcp_providers.key", ondelete="CASCADE"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(128))
+    runtime_name: Mapped[str] = mapped_column(String(255))
+    enabled: Mapped[bool] = mapped_column(default=True)
+    # oauth client credentials (per connection; encrypted)
+    client_id_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    scopes: Mapped[list] = mapped_column(JSON, default=list)
+    # oauth tokens (encrypted). access_token_enc IS NULL == registered but not authorized.
+    access_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    refresh_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    token_expires_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    scopes_granted: Mapped[list] = mapped_column(JSON, default=list)
+    # http/sse
+    url_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headers_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # oauth credential/auth status (NOT the live-runtime status, which lives on MCPServerRow)
+    status: Mapped[str] = mapped_column(String(32), default="disconnected")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+    __table_args__ = (
+        Index("ix_mcp_connections_runtime_name_unique", "runtime_name", unique=True),
+    )
+
+    provider: Mapped[MCPProviderRow] = relationship(back_populates="connections")
+
+
+class MCPPendingRow(Base):
+    __tablename__ = "mcp_pending"
+
+    state: Mapped[str] = mapped_column(String(64), primary_key=True)
+    connection_id: Mapped[UUID] = mapped_column(
+        ForeignKey("mcp_connections.id", ondelete="CASCADE"), index=True
+    )
+    code_verifier: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+
 class MCPServerRow(Base):
     __tablename__ = "mcp_servers"
 
@@ -248,6 +322,10 @@ class MCPServerRow(Base):
     status: Mapped[str] = mapped_column(String(32), default="disconnected")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="stdio")  # 'stdio' | 'connection'
+    connection_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("mcp_connections.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     tools: Mapped[list["MCPToolRow"]] = relationship(
         back_populates="server", cascade="all, delete-orphan"
@@ -277,27 +355,3 @@ class SettingRow(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[object] = mapped_column(JSON)
 
-
-class OAuthCredentialsRow(Base):
-    __tablename__ = "oauth_credentials"
-
-    provider_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    client_id_enc: Mapped[bytes] = mapped_column(LargeBinary)
-    client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    access_token_enc: Mapped[bytes] = mapped_column(LargeBinary)
-    refresh_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    token_expires_at: Mapped[datetime] = mapped_column(TZDateTime())
-    scopes_granted: Mapped[list] = mapped_column(JSON, default=list)
-    status: Mapped[str] = mapped_column(String(32), default="connected")
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    connected_at: Mapped[datetime] = mapped_column(TZDateTime())
-    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
-
-
-class OAuthPendingRow(Base):
-    __tablename__ = "oauth_pending"
-
-    state: Mapped[str] = mapped_column(String(64), primary_key=True)
-    provider_key: Mapped[str] = mapped_column(String(64))
-    code_verifier: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(TZDateTime())

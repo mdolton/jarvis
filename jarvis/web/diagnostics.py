@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from sqlalchemy import text
 
 from jarvis.core.types import AuditEventType
-from jarvis.oauth.store import OAuthCredentialsRepo
+from jarvis.oauth.store import MCPConnectionRepo
 from jarvis.persistence.repositories import AuditRepo
 
 _log = logging.getLogger(__name__)
@@ -86,11 +86,12 @@ async def _oauth_status(ctx) -> dict[str, Any]:
         return {"status": "unknown", "connected": 0, "needs_reauth": 0}
     try:
         async with ctx.session_factory() as session:
-            rows = await OAuthCredentialsRepo(session).list_all()
+            rows = await MCPConnectionRepo(session).list_all()
         needs_reauth = sum(1 for row in rows if row.status == "needs_reauth")
+        connected = sum(1 for row in rows if row.status == "connected")
         return {
             "status": "warn" if needs_reauth else "ok",
-            "connected": len(rows),
+            "connected": connected,
             "needs_reauth": needs_reauth,
         }
     except Exception:
