@@ -143,6 +143,14 @@ def upgrade() -> None:
     # Add mcp_servers.source as NOT NULL: backfill existing rows via a temporary
     # server_default, then drop the default so the final schema matches the model
     # (the model declares no server_default, so leaving one would fail `alembic check`).
+    #
+    # These MUST be two separate batch_alter_table blocks. SQLite has no real ALTER, so
+    # alembic emulates batch ops by recreating the table once per block and copying rows
+    # with `INSERT ... SELECT <old columns>` (which omits newly added columns). Coalescing
+    # the add + the default-removal into a single block would recreate the table with
+    # `source NOT NULL` and no default, so the row-copy would insert NULL into source and
+    # violate the constraint. The first block recreates with the default in place (rows get
+    # 'stdio'); the second recreates again, copying the now-populated source, and drops it.
     with op.batch_alter_table("mcp_servers") as batch:
         batch.add_column(
             sa.Column("source", sa.String(length=16), nullable=False, server_default="stdio")
@@ -158,6 +166,7 @@ def upgrade() -> None:
             ["id"],
             ondelete="SET NULL",
         )
+    with op.batch_alter_table("mcp_servers") as batch:
         batch.alter_column("source", server_default=None)
 
     # --- Data migration (existing deployments) ------------------------------------------
