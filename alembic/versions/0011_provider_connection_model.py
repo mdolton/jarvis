@@ -36,6 +36,8 @@ _SEED = [
         oauth_metadata_url="https://api.fastmail.com/.well-known/oauth-authorization-server",
         default_scopes=[],
         extra_auth_params={},
+        pkce=True,
+        send_resource_indicator=True,
     ),
     dict(
         key="gmail",
@@ -49,6 +51,8 @@ _SEED = [
             "https://www.googleapis.com/auth/gmail.compose",
         ],
         extra_auth_params={"access_type": "offline", "prompt": "consent"},
+        pkce=True,
+        send_resource_indicator=True,
     ),
     dict(
         key="calendar",
@@ -63,6 +67,8 @@ _SEED = [
             "https://www.googleapis.com/auth/calendar.events.readonly",
         ],
         extra_auth_params={"access_type": "offline", "prompt": "consent"},
+        pkce=True,
+        send_resource_indicator=True,
     ),
 ]
 _GOOGLE_PROVIDERS = {"gmail", "calendar"}
@@ -163,7 +169,8 @@ def upgrade() -> None:
                 "INSERT INTO mcp_providers (key, display_name, kind, mcp_url, builtin, auth_mode, "
                 "oauth_metadata_url, pkce, send_resource_indicator, extra_auth_params, "
                 "default_scopes, header_names, created_at, updated_at) VALUES "
-                "(:key, :display_name, :kind, :mcp_url, 1, :auth_mode, :oauth_metadata_url, 1, 1, "
+                "(:key, :display_name, :kind, :mcp_url, 1, :auth_mode, :oauth_metadata_url, "
+                ":pkce, :send_resource_indicator, "
                 ":extra_auth_params, :default_scopes, '[]', :now, :now)"
             ),
             {
@@ -173,6 +180,8 @@ def upgrade() -> None:
                 "mcp_url": p["mcp_url"],
                 "auth_mode": p["auth_mode"],
                 "oauth_metadata_url": p["oauth_metadata_url"],
+                "pkce": int(p["pkce"]),
+                "send_resource_indicator": int(p["send_resource_indicator"]),
                 "extra_auth_params": _json.dumps(p["extra_auth_params"]),
                 "default_scopes": _json.dumps(p["default_scopes"]),
                 "now": now,

@@ -121,3 +121,5 @@ def test_migration_seed_matches_catalog():
         assert p["mcp_url"] == entry.mcp_url
         assert list(p["default_scopes"]) == list(entry.default_scopes)
         assert p["auth_mode"] == entry.auth_mode.value
+        assert p["pkce"] == entry.pkce
+        assert p["send_resource_indicator"] == entry.send_resource_indicator
