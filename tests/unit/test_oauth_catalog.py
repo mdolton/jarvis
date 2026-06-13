@@ -99,3 +99,25 @@ def test_slug_label_lowercases_and_dashes():
     assert slug_label("Work Account!") == "work-account"
     assert slug_label("  Personal  ") == "personal"
     assert slug_label("a/b") == "a-b"
+
+
+def test_migration_seed_matches_catalog():
+    import importlib.util
+    import pathlib
+
+    path = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "alembic"
+        / "versions"
+        / "0011_provider_connection_model.py"
+    )
+    spec = importlib.util.spec_from_file_location("m0011", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mig_keys = {p["key"] for p in mod._SEED}
+    assert mig_keys == set(SEED_PROVIDERS)
+    for p in mod._SEED:
+        entry = SEED_PROVIDERS[p["key"]]
+        assert p["mcp_url"] == entry.mcp_url
+        assert list(p["default_scopes"]) == list(entry.default_scopes)
+        assert p["auth_mode"] == entry.auth_mode.value
