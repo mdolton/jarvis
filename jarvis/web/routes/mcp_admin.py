@@ -9,8 +9,22 @@ from jarvis.core.types import AuditEvent, AuditEventType
 from jarvis.oauth.catalog import unique_runtime_name
 from jarvis.oauth.crypto import encrypt_blob
 from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
+from jarvis.persistence.repositories import SettingsRepo
 
 router = APIRouter()
+
+_STDIO_DISABLED_KEY = "mcp.stdio_disabled"
+
+
+async def _set_stdio_disabled(ctx, name: str, disabled: bool) -> None:
+    async with ctx.session_factory() as session:
+        repo = SettingsRepo(session)
+        current = set(await repo.get(_STDIO_DISABLED_KEY) or [])
+        if disabled:
+            current.add(name)
+        else:
+            current.discard(name)
+        await repo.set(_STDIO_DISABLED_KEY, sorted(current))
 
 
 def _redirect():
@@ -200,4 +214,30 @@ async def remove_connection(request: Request, connection_id: UUID):
     async with ctx.session_factory() as session:
         await MCPConnectionRepo(session).delete(connection_id)
     await _emit(ctx, "connection.remove", runtime_name=runtime_name)
+    return _redirect()
+
+
+@router.post("/mcp/stdio/{name}/disable")
+async def disable_stdio(request: Request, name: str):
+    ctx = request.app.state.ctx
+    await _set_stdio_disabled(ctx, name, True)
+    try:
+        await ctx.mcp_manager.disconnect(name)
+    except Exception:
+        pass
+    await _emit(ctx, "stdio.disable", name=name)
+    return _redirect()
+
+
+@router.post("/mcp/stdio/{name}/enable")
+async def enable_stdio(request: Request, name: str):
+    ctx = request.app.state.ctx
+    await _set_stdio_disabled(ctx, name, False)
+    cfg = next((s for s in ctx.config.mcp_servers.servers if s.name == name), None)
+    if cfg is not None:
+        try:
+            await ctx.mcp_manager.connect_server(cfg)
+        except Exception:
+            pass
+    await _emit(ctx, "stdio.enable", name=name)
     return _redirect()

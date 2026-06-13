@@ -32,7 +32,7 @@ from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.oauth.catalog import ProviderCatalog, assert_no_yaml_collision
 from jarvis.oauth.crypto import decrypt_blob
 from jarvis.oauth.store import MCPConnectionRepo
-from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
+from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo, SettingsRepo
 
 _log = logging.getLogger(__name__)
 
@@ -135,8 +135,10 @@ class MCPManager:
         self._cmd_queue = asyncio.Queue()
         self._loop_task = asyncio.create_task(self._lifecycle_loop(), name="mcp-lifecycle")
 
+        async with self._session_factory() as session:
+            disabled = set(await SettingsRepo(session).get("mcp.stdio_disabled") or [])
         for server_cfg in self._config.servers:
-            if not server_cfg.enabled:
+            if not server_cfg.enabled or server_cfg.name in disabled:
                 continue
             # connect failures are recorded inside the owner task, never raised.
             await self._submit("connect_cfg", server_cfg)
@@ -212,6 +214,10 @@ class MCPManager:
                 url=conn.url_override or entry.mcp_url,
                 headers=headers,
             )
+
+    async def connect_server(self, cfg) -> None:
+        """Connect one stdio config server (dashboard enable). Thin wrapper over the owner task."""
+        await self._submit("connect_cfg", cfg)
 
     async def disconnect(self, runtime_name: str) -> None:
         await self.remove_oauth_server(runtime_name)

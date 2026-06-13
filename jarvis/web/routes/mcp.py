@@ -6,7 +6,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
-from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
+from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo, SettingsRepo
 
 router = APIRouter()
 
@@ -22,6 +22,7 @@ async def mcp_page(request: Request):
         server_tools = {
             srv.id: await MCPToolRepo(session).list_for_server(srv.id) for srv in servers
         }
+        disabled = set(await SettingsRepo(session).get("mcp.stdio_disabled") or [])
     runtime_by_name = {s.name: s for s in servers}
     conns_by_provider: dict[str, list] = {}
     for c in connections:
@@ -49,7 +50,17 @@ async def mcp_page(request: Request):
         }
         for p in providers
     ]
-    stdio_servers = [s for s in servers if s.source == "stdio"]
+    stdio_servers = [
+        {
+            "name": s.name,
+            "status": s.status,
+            "last_error": s.last_error,
+            "enabled": s.name not in disabled,
+            "tools": server_tools.get(s.id, []),
+        }
+        for s in servers
+        if s.source == "stdio"
+    ]
     return templates.TemplateResponse(
         request,
         "mcp.html",

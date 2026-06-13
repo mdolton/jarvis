@@ -65,6 +65,11 @@
   {% for srv in stdio_servers %}
     <div class="server-block">
       <h3>{{ srv.name }} <span class="badge {% if srv.status == 'connected' %}badge-ok{% elif srv.status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h3>
+      {% if srv.enabled %}
+        <form method="post" action="/mcp/stdio/{{ srv.name }}/disable" class="inline-form"><button type="submit">Disable</button></form>
+      {% else %}
+        <form method="post" action="/mcp/stdio/{{ srv.name }}/enable" class="inline-form"><button type="submit">Enable</button></form>
+      {% endif %}
       {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
     </div>
   {% endfor %}
