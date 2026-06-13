@@ -119,9 +119,19 @@ class MCPManager:
         self._cmd_queue: asyncio.Queue[tuple[str, object, asyncio.Future]] | None = None
         self._loop_task: asyncio.Task | None = None
 
+    async def _collision_keys(self) -> set[str]:
+        from jarvis.oauth.catalog import SEED_PROVIDERS
+        from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
+        keys = set(SEED_PROVIDERS)
+        if self._catalog is not None:
+            async with self._session_factory() as s:
+                keys |= {p.key for p in await MCPProviderRepo(s).list_all()}
+                keys |= {c.runtime_name for c in await MCPConnectionRepo(s).list_all()}
+        return keys
+
     async def start(self) -> None:
         """Connect to every enabled server. Failures are recorded, not raised."""
-        assert_no_yaml_collision(s.name for s in self._config.servers)
+        assert_no_yaml_collision((s.name for s in self._config.servers), await self._collision_keys())
         self._cmd_queue = asyncio.Queue()
         self._loop_task = asyncio.create_task(self._lifecycle_loop(), name="mcp-lifecycle")
 

@@ -99,3 +99,13 @@ class MCPServerConfig(_StrictModel):
 
 class MCPServersConfig(_StrictModel):
     servers: list[MCPServerConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _only_stdio_in_yaml(self) -> "MCPServersConfig":
+        for s in self.servers:
+            if s.transport != "stdio":
+                raise ValueError(
+                    f"mcp-servers.yaml only supports stdio servers (server {s.name!r} "
+                    f"uses {s.transport!r}); add http/sse servers via the dashboard"
+                )
+        return self
