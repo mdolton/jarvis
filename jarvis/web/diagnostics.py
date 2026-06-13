@@ -88,9 +88,10 @@ async def _oauth_status(ctx) -> dict[str, Any]:
         async with ctx.session_factory() as session:
             rows = await MCPConnectionRepo(session).list_all()
         needs_reauth = sum(1 for row in rows if row.status == "needs_reauth")
+        connected = sum(1 for row in rows if row.status == "connected")
         return {
             "status": "warn" if needs_reauth else "ok",
-            "connected": len(rows),
+            "connected": connected,
             "needs_reauth": needs_reauth,
         }
     except Exception:
