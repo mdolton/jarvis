@@ -1,11 +1,12 @@
 """Repositories for oauth_credentials and oauth_pending tables."""
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jarvis.persistence.models import MCPProviderRow, OAuthCredentialsRow, OAuthPendingRow
+from jarvis.persistence.models import MCPConnectionRow, MCPProviderRow, OAuthCredentialsRow, OAuthPendingRow
 
 
 def _utcnow() -> datetime:
@@ -47,6 +48,142 @@ class MCPProviderRepo:
     async def delete(self, key: str) -> None:
         await self._session.execute(delete(MCPProviderRow).where(MCPProviderRow.key == key))
         await self._session.commit()
+
+
+class MCPConnectionRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, connection_id: UUID) -> MCPConnectionRow | None:
+        return await self._session.get(MCPConnectionRow, connection_id)
+
+    async def get_by_runtime_name(self, runtime_name: str) -> MCPConnectionRow | None:
+        res = await self._session.execute(
+            select(MCPConnectionRow).where(MCPConnectionRow.runtime_name == runtime_name)
+        )
+        return res.scalar_one_or_none()
+
+    async def list_all(self) -> list[MCPConnectionRow]:
+        res = await self._session.execute(select(MCPConnectionRow))
+        return list(res.scalars())
+
+    async def list_for_provider(self, provider_key: str) -> list[MCPConnectionRow]:
+        res = await self._session.execute(
+            select(MCPConnectionRow).where(MCPConnectionRow.provider_key == provider_key)
+        )
+        return list(res.scalars())
+
+    async def list_enabled(self) -> list[MCPConnectionRow]:
+        res = await self._session.execute(
+            select(MCPConnectionRow).where(MCPConnectionRow.enabled.is_(True))
+        )
+        return list(res.scalars())
+
+    async def create(self, *, provider_key: str, label: str, runtime_name: str,
+                     client_id_enc: bytes | None = None, client_secret_enc: bytes | None = None,
+                     scopes: list[str] | None = None, url_override: str | None = None,
+                     headers_enc: bytes | None = None, enabled: bool = True) -> MCPConnectionRow:
+        now = _utcnow()
+        row = MCPConnectionRow(
+            provider_key=provider_key, label=label, runtime_name=runtime_name, enabled=enabled,
+            client_id_enc=client_id_enc, client_secret_enc=client_secret_enc,
+            scopes=scopes or [], url_override=url_override, headers_enc=headers_enc,
+            status="disconnected", created_at=now, updated_at=now,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def set_client(self, connection_id: UUID, *, client_id_enc: bytes,
+                         client_secret_enc: bytes | None) -> None:
+        row = await self.get(connection_id)
+        if row is None:
+            raise LookupError(connection_id)
+        row.client_id_enc = client_id_enc
+        row.client_secret_enc = client_secret_enc
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def set_tokens(self, connection_id: UUID, *, access_token_enc: bytes,
+                         refresh_token_enc: bytes | None, token_expires_at: datetime,
+                         scopes_granted: list[str]) -> None:
+        row = await self.get(connection_id)
+        if row is None:
+            raise LookupError(connection_id)
+        row.access_token_enc = access_token_enc
+        if refresh_token_enc is not None:
+            row.refresh_token_enc = refresh_token_enc
+        row.token_expires_at = token_expires_at
+        row.scopes_granted = scopes_granted
+        row.status = "connected"
+        row.last_error = None
+        row.connected_at = row.connected_at or _utcnow()
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def update_tokens(self, connection_id: UUID, *, access_token_enc: bytes,
+                            refresh_token_enc: bytes | None, token_expires_at: datetime) -> None:
+        row = await self.get(connection_id)
+        if row is None:
+            raise LookupError(connection_id)
+        row.access_token_enc = access_token_enc
+        if refresh_token_enc is not None:
+            row.refresh_token_enc = refresh_token_enc
+        row.token_expires_at = token_expires_at
+        row.status = "connected"
+        row.last_error = None
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def set_status(self, connection_id: UUID, *, status: str, last_error: str | None) -> None:
+        row = await self.get(connection_id)
+        if row is None:
+            return
+        row.status = status
+        row.last_error = last_error
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def set_enabled(self, connection_id: UUID, *, enabled: bool) -> None:
+        row = await self.get(connection_id)
+        if row is None:
+            return
+        row.enabled = enabled
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def clear_tokens(self, connection_id: UUID) -> None:
+        """Disconnect: drop tokens, keep client + scopes so reconnect is one click."""
+        row = await self.get(connection_id)
+        if row is None:
+            return
+        row.access_token_enc = None
+        row.refresh_token_enc = None
+        row.token_expires_at = None
+        row.scopes_granted = []
+        row.status = "disconnected"
+        row.last_error = None
+        row.updated_at = _utcnow()
+        await self._session.commit()
+
+    async def delete(self, connection_id: UUID) -> None:
+        await self._session.execute(
+            delete(MCPConnectionRow).where(MCPConnectionRow.id == connection_id)
+        )
+        await self._session.commit()
+
+    async def list_due_for_refresh(self, *, now: datetime, skew_seconds: int = 90
+                                   ) -> list[MCPConnectionRow]:
+        threshold = now + timedelta(seconds=skew_seconds)
+        res = await self._session.execute(
+            select(MCPConnectionRow).where(
+                MCPConnectionRow.status == "connected",
+                MCPConnectionRow.token_expires_at.is_not(None),
+                MCPConnectionRow.token_expires_at <= threshold,
+            )
+        )
+        return list(res.scalars())
 
 
 class OAuthCredentialsRepo:
