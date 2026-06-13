@@ -180,15 +180,21 @@ class MCPManager:
             self._approval_policy.clear_server(server_name)
 
     async def replace_oauth_server(
-        self, provider_key: str, *, url: str, headers: dict[str, str]
+        self, provider_key: str, *, url: str, headers: dict[str, str], oauth: bool = True
     ) -> None:
         """Build a new streamable-HTTP SDK server, verify list_tools, then atomically swap.
 
         If list_tools fails the new stack is closed and the old server remains active.
         Runs entirely on the owner task so enter/exit stay task-consistent.
+
+        ``oauth`` selects bearer/oauth-retry wiring: True (default) for OAuth
+        connections that inject a live access token and refresh on 401; False for
+        http/sse connections, which carry only static headers and must NOT get a
+        bearer token holder or an oauth ``unauthorized_retry``.
         """
         await self._submit(
-            "replace", {"provider_key": provider_key, "url": url, "headers": headers}
+            "replace",
+            {"provider_key": provider_key, "url": url, "headers": headers, "oauth": oauth},
         )
 
     async def remove_oauth_server(self, provider_key: str) -> None:
@@ -206,6 +212,7 @@ class MCPManager:
                 conn.runtime_name,
                 url=entry.mcp_url,
                 headers={"Authorization": f"Bearer {token}"},
+                oauth=True,
             )
         else:
             headers = _decrypt_headers(conn.headers_enc, self._secrets_key)
@@ -213,6 +220,7 @@ class MCPManager:
                 conn.runtime_name,
                 url=conn.url_override or entry.mcp_url,
                 headers=headers,
+                oauth=False,
             )
 
     async def connect_server(self, cfg) -> None:
@@ -321,11 +329,14 @@ class MCPManager:
                         conn.runtime_name,
                         url=entry.mcp_url,
                         headers={"Authorization": f"Bearer {token}"},
+                        oauth=True,
                     )
                 else:  # http / sse
                     headers = _decrypt_headers(conn.headers_enc, self._secrets_key)
                     url = conn.url_override or entry.mcp_url
-                    await self.replace_oauth_server(conn.runtime_name, url=url, headers=headers)
+                    await self.replace_oauth_server(
+                        conn.runtime_name, url=url, headers=headers, oauth=False
+                    )
             except Exception as e:
                 _log.exception("failed to attach connection %r at boot", conn.runtime_name)
                 async with self._session_factory() as session:
@@ -374,24 +385,28 @@ class MCPManager:
             await repo.set_status(row.id, status="error", last_error=f"{type(exc).__name__}: {exc}")
 
     async def _do_replace_oauth(
-        self, *, provider_key: str, url: str, headers: dict[str, str]
+        self, *, provider_key: str, url: str, headers: dict[str, str], oauth: bool = True
     ) -> None:
         new_stack = AsyncExitStack()
 
         async def unauthorized_retry():
             return await self.refresh_oauth_server_for_retry(provider_key)
 
-        # Fresh holder for the new connection; only promoted into
-        # self._token_holders once this server is committed as live, so a failed
-        # build never disturbs the currently-attached connection's token.
-        holder = _TokenHolder(_bearer_token(headers))
         build_kwargs = {
             "name": provider_key,
             "approval_policy": self._approval_policy,
-            "token_holder": holder,
         }
-        if self._oauth_flow is not None:
-            build_kwargs["unauthorized_retry"] = unauthorized_retry
+        if oauth:
+            # Fresh holder for the new connection; only promoted into
+            # self._token_holders once this server is committed as live, so a
+            # failed build never disturbs the currently-attached connection's
+            # token. http/sse connections get no holder (static headers only).
+            holder = _TokenHolder(_bearer_token(headers))
+            build_kwargs["token_holder"] = holder
+            if self._oauth_flow is not None:
+                build_kwargs["unauthorized_retry"] = unauthorized_retry
+        else:
+            holder = None
         new_sdk = _build_streamable_http(url, headers, **build_kwargs)
 
         try:
@@ -408,7 +423,10 @@ class MCPManager:
         old_stack = self._stacks.get(provider_key)
         self._sdk_servers[provider_key] = new_sdk
         self._stacks[provider_key] = new_stack
-        self._token_holders[provider_key] = holder
+        if holder is not None:
+            self._token_holders[provider_key] = holder
+        else:
+            self._token_holders.pop(provider_key, None)
         self._tool_names_by_server[provider_key] = tuple(t.name for t in tools)
 
         # Persist status/tools BEFORE closing the old connection. Closing an

@@ -32,6 +32,41 @@ async def factory(tmp_path):
     await engine.dispose()
 
 
+async def test_http_connection_attaches_without_bearer_injection(factory):
+    key = generate_key().encode()
+    # an http provider + a connection with static headers
+    from jarvis.oauth.store import MCPProviderRepo
+    async with factory() as s:
+        await MCPProviderRepo(s).upsert(
+            key="internal", display_name="Internal", kind="http",
+            mcp_url="http://svc.local/mcp", builtin=False, auth_mode=None,
+            oauth_metadata_url=None, pkce=True, send_resource_indicator=True,
+            extra_auth_params={}, default_scopes=[], header_names=["X-API-Key"])
+    import json
+    async with factory() as s:
+        await MCPConnectionRepo(s).create(
+            provider_key="internal", label="Prod", runtime_name="internal:prod",
+            headers_enc=encrypt_blob(json.dumps({"X-API-Key": "secret"}).encode(), key))
+
+    captured = {}
+    def fake_build(url, headers, **kwargs):
+        captured["url"] = url; captured["headers"] = headers; captured["kwargs"] = kwargs
+        return _FakeSDK()
+
+    mgr = MCPManager(config=MCPServersConfig(servers=[]), session_factory=factory,
+                     secrets_key=key, oauth_flow=object(), catalog=ProviderCatalog(factory))
+    with patch("jarvis.mcp.manager._build_streamable_http", side_effect=fake_build):
+        await mgr.start()
+    try:
+        assert captured["headers"] == {"X-API-Key": "secret"}
+        # http/sse: no bearer token holder and no oauth unauthorized_retry wired
+        assert captured["kwargs"].get("token_holder") is None
+        assert "unauthorized_retry" not in captured["kwargs"]
+        assert "internal:prod" in mgr.agent_mcp_context()
+    finally:
+        await mgr.stop()
+
+
 async def test_enabled_connection_attaches_at_start(factory):
     key = generate_key().encode()
     async with factory() as s:
