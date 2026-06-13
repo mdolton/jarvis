@@ -239,42 +239,6 @@ class DigestTemplateRow(Base):
     )
 
 
-class MCPServerRow(Base):
-    __tablename__ = "mcp_servers"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(128), unique=True)
-    transport: Mapped[str] = mapped_column(String(16))  # 'stdio' | 'http' | 'sse'
-    status: Mapped[str] = mapped_column(String(32), default="disconnected")
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_connected_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
-    source: Mapped[str] = mapped_column(String(16), default="stdio")  # 'stdio' | 'connection'
-    connection_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("mcp_connections.id", ondelete="SET NULL"), nullable=True, index=True
-    )
-
-    tools: Mapped[list["MCPToolRow"]] = relationship(
-        back_populates="server", cascade="all, delete-orphan"
-    )
-
-
-class MCPToolRow(Base):
-    __tablename__ = "mcp_tools"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    server_id: Mapped[UUID] = mapped_column(
-        ForeignKey("mcp_servers.id", ondelete="CASCADE"), index=True
-    )
-    name: Mapped[str] = mapped_column(String(128))
-    description: Mapped[str] = mapped_column(Text, default="")
-    input_schema: Mapped[dict] = mapped_column(JSON, default=dict)
-    read_only_hint: Mapped[bool | None] = mapped_column(nullable=True)
-    destructive_hint: Mapped[bool | None] = mapped_column(nullable=True)
-    policy_override: Mapped[str | None] = mapped_column(String(16), nullable=True)
-
-    server: Mapped[MCPServerRow] = relationship(back_populates="tools")
-
-
 class MCPProviderRow(Base):
     """Catalog entry: a secret-free service definition. stdio is NOT represented here."""
     __tablename__ = "mcp_providers"
@@ -310,7 +274,7 @@ class MCPConnectionRow(Base):
         ForeignKey("mcp_providers.key", ondelete="CASCADE"), index=True
     )
     label: Mapped[str] = mapped_column(String(128))
-    runtime_name: Mapped[str] = mapped_column(String(255), unique=True)
+    runtime_name: Mapped[str] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(default=True)
     # oauth client credentials (per connection; encrypted)
     client_id_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
@@ -331,7 +295,47 @@ class MCPConnectionRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime())
     updated_at: Mapped[datetime] = mapped_column(TZDateTime())
 
+    __table_args__ = (
+        Index("ix_mcp_connections_runtime_name_unique", "runtime_name", unique=True),
+    )
+
     provider: Mapped[MCPProviderRow] = relationship(back_populates="connections")
+
+
+class MCPServerRow(Base):
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    transport: Mapped[str] = mapped_column(String(16))  # 'stdio' | 'http' | 'sse'
+    status: Mapped[str] = mapped_column(String(32), default="disconnected")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_connected_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="stdio")  # 'stdio' | 'connection'
+    connection_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("mcp_connections.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    tools: Mapped[list["MCPToolRow"]] = relationship(
+        back_populates="server", cascade="all, delete-orphan"
+    )
+
+
+class MCPToolRow(Base):
+    __tablename__ = "mcp_tools"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    server_id: Mapped[UUID] = mapped_column(
+        ForeignKey("mcp_servers.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(Text, default="")
+    input_schema: Mapped[dict] = mapped_column(JSON, default=dict)
+    read_only_hint: Mapped[bool | None] = mapped_column(nullable=True)
+    destructive_hint: Mapped[bool | None] = mapped_column(nullable=True)
+    policy_override: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    server: Mapped[MCPServerRow] = relationship(back_populates="tools")
 
 
 class SettingRow(Base):

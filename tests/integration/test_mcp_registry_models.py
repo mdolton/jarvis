@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.models import MCPConnectionRow, MCPProviderRow
@@ -33,10 +34,13 @@ async def test_provider_with_connections_round_trips(factory):
         await s.commit()
 
     async with factory() as s:
-        prov = (await s.execute(select(MCPProviderRow))).scalar_one()
+        prov = (await s.execute(
+            select(MCPProviderRow).options(selectinload(MCPProviderRow.connections))
+        )).scalar_one()
         conns = (await s.execute(select(MCPConnectionRow))).scalars().all()
         assert prov.key == "calendar"
         assert prov.builtin is True
+        assert len(prov.connections) == 1
         assert len(conns) == 1
         assert conns[0].runtime_name == "calendar:work"
         assert conns[0].access_token_enc is None  # not-yet-authorized sentinel
