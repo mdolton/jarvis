@@ -46,6 +46,9 @@ async def mcp_page(request: Request):
             "display_name": p.display_name,
             "kind": p.kind,
             "builtin": p.builtin,
+            "auth_mode": p.auth_mode,
+            "mcp_url": p.mcp_url,
+            "default_scopes": p.default_scopes or [],
             "connections": conns_by_provider.get(p.key, []),
         }
         for p in providers

@@ -2,76 +2,100 @@
 {% block title %}MCP Servers{% endblock %}
 {% block content %}
 <section class="page-head"><div><h1>MCP</h1>
-  <p class="muted">Providers, account connections, server status, and tools.</p></div></section>
+  <p class="muted">Providers, account connections, stdio servers, tools, and policy.</p></div></section>
 
 <section class="section-block">
-  <h2>Providers</h2>
+  <h2>Providers &amp; connections</h2>
   {% for p in providers %}
-    <div class="provider-row">
-      <h3>{{ p.display_name }} <span class="badge">{{ p.kind }}</span></h3>
-      {% for c in p.connections %}
-        <div class="conn-row">
-          <strong>{{ c.label }}</strong>
-          <span class="badge {% if c.runtime_status == 'connected' %}badge-ok{% elif c.runtime_status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ c.runtime_status }}</span>
-          {% if p.kind == 'oauth' %}
-            {% if not c.authorized or c.auth_status == 'needs_reauth' %}
-              <a class="btn" href="/oauth/connect/{{ c.id }}">Connect</a>
-            {% else %}
-              <form method="post" action="/oauth/disconnect/{{ c.id }}" class="inline-form"><button type="submit">Disconnect</button></form>
-            {% endif %}
-          {% endif %}
-          {% if c.enabled %}
-            <form method="post" action="/mcp/connections/{{ c.id }}/disable" class="inline-form"><button type="submit">Disable</button></form>
-          {% else %}
-            <form method="post" action="/mcp/connections/{{ c.id }}/enable" class="inline-form"><button type="submit">Enable</button></form>
-          {% endif %}
-          <form method="post" action="/mcp/connections/{{ c.id }}/remove" class="inline-form"><button type="submit">Remove</button></form>
-          {% if c.last_error %}<pre>{{ c.last_error }}</pre>{% endif %}
-          {% if c.tools %}
-          <table class="ops-table">
-            <thead><tr><th>Tool</th><th>Description</th><th>Read-only</th><th>Destructive</th><th>Policy</th></tr></thead>
-            <tbody>
-            {% for t in c.tools %}
-              <tr>
-                <td><code>{{ t.name }}</code></td>
-                <td>{{ t.description or '—' }}</td>
-                <td>{{ '✓' if t.read_only_hint else '—' }}</td>
-                <td>{{ '⚠' if t.destructive_hint else '—' }}</td>
-                <td>
-                  <form method="post" action="/mcp/tools/{{ t.id }}/policy" data-policy-tool="{{ t.name }}" class="inline-form policy-form">
-                    <select name="policy_override">
-                      <option value="" {% if not t.policy_override %}selected{% endif %}>auto-detect</option>
-                      <option value="allow" {% if t.policy_override == "allow" %}selected{% endif %}>allow</option>
-                      <option value="confirm" {% if t.policy_override == "confirm" %}selected{% endif %}>confirm</option>
-                      <option value="deny" {% if t.policy_override == "deny" %}selected{% endif %}>deny</option>
-                    </select>
-                    <button type="submit">Save</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-          {% endif %}
-        </div>
-      {% endfor %}
+  <div class="provider-row">
+    <h3>{{ p.display_name }} <span class="badge">{{ p.kind }}</span>
+      {% if p.builtin %}<span class="badge">built-in</span>{% endif %}</h3>
+    {% for c in p.connections %}
+    <div class="conn-row">
+      <strong>{{ c.label }}</strong>
+      <span class="badge {% if c.runtime_status=='connected' %}badge-ok{% elif c.runtime_status=='error' %}badge-err{% else %}badge-warn{% endif %}">{{ c.runtime_status }}</span>
+      {% if p.kind == 'oauth' %}
+        {% if not c.authorized or c.auth_status == 'needs_reauth' %}
+          <a class="btn" href="/oauth/connect/{{ c.id }}">Connect</a>
+        {% else %}
+          <form method="post" action="/oauth/disconnect/{{ c.id }}" class="inline-form"><button type="submit">Disconnect</button></form>
+        {% endif %}
+      {% endif %}
+      {% if c.enabled %}
+        <form method="post" action="/mcp/connections/{{ c.id }}/disable" class="inline-form"><button type="submit">Disable</button></form>
+      {% else %}
+        <form method="post" action="/mcp/connections/{{ c.id }}/enable" class="inline-form"><button type="submit">Enable</button></form>
+      {% endif %}
+      <form method="post" action="/mcp/connections/{{ c.id }}/remove" class="inline-form"><button type="submit">Remove</button></form>
+      {% if c.last_error %}<pre>{{ c.last_error }}</pre>{% endif %}
+      {% if c.tools %}
+      <table class="ops-table">
+        <thead><tr><th>Tool</th><th>Description</th><th>Read-only</th><th>Destructive</th><th>Policy</th></tr></thead>
+        <tbody>
+        {% for t in c.tools %}
+          <tr><td><code>{{ t.name }}</code></td><td>{{ t.description or '—' }}</td>
+          <td>{{ '✓' if t.read_only_hint else '—' }}</td><td>{{ '⚠' if t.destructive_hint else '—' }}</td>
+          <td><form method="post" action="/mcp/tools/{{ t.id }}/policy" data-policy-tool="{{ t.name }}" class="inline-form policy-form">
+            <select name="policy_override">
+              <option value="" {% if not t.policy_override %}selected{% endif %}>auto-detect</option>
+              <option value="allow" {% if t.policy_override=='allow' %}selected{% endif %}>allow</option>
+              <option value="confirm" {% if t.policy_override=='confirm' %}selected{% endif %}>confirm</option>
+              <option value="deny" {% if t.policy_override=='deny' %}selected{% endif %}>deny</option>
+            </select><button type="submit">Save</button></form></td></tr>
+        {% endfor %}
+        </tbody></table>
+      {% endif %}
     </div>
+    {% endfor %}
+
+    <details class="add-form"><summary>Add connection</summary>
+    <form method="post" action="/mcp/connections/add" class="stacked-form">
+      <input type="hidden" name="provider_key" value="{{ p.key }}">
+      <label>Label <input name="label" required placeholder="Personal"></label>
+      {% if p.kind == 'oauth' %}
+        {% if p.auth_mode == 'manual' %}
+          <label>Client ID <input name="client_id"></label>
+          <label>Client secret <input name="client_secret" type="password"></label>
+        {% endif %}
+        <label>Scopes (space-separated) <input name="scopes" value="{{ p.default_scopes|join(' ') }}"></label>
+      {% else %}
+        <label>URL override <input name="url_override" placeholder="{{ p.mcp_url }}"></label>
+        <label>Headers (one per line, "Name: value")<textarea name="headers"></textarea></label>
+      {% endif %}
+      <button type="submit">Add connection</button>
+    </form></details>
+
+    {% if not p.builtin %}
+    <form method="post" action="/mcp/providers/{{ p.key }}/remove" class="inline-form"><button type="submit">Remove provider</button></form>
+    {% endif %}
+  </div>
   {% endfor %}
-  {% if not providers %}<p class="muted">No providers.</p>{% endif %}
+
+  <details class="add-form"><summary>Add provider</summary>
+  <form method="post" action="/mcp/providers/add" class="stacked-form">
+    <label>Key <input name="key" required placeholder="notion"></label>
+    <label>Display name <input name="display_name" required></label>
+    <label>Kind <select name="kind"><option>oauth</option><option>http</option><option>sse</option></select></label>
+    <label>MCP URL <input name="mcp_url" required placeholder="https://mcp.example.com/mcp"></label>
+    <label>Auth mode (oauth) <select name="auth_mode"><option>dcr</option><option>manual</option></select></label>
+    <label>OAuth metadata URL (oauth) <input name="oauth_metadata_url"></label>
+    <label>Default scopes (space-separated) <input name="default_scopes"></label>
+    <button type="submit">Add provider</button>
+  </form></details>
 </section>
 
 <section class="section-block">
   <h2>stdio servers <span class="muted">(file-managed)</span></h2>
   {% for srv in stdio_servers %}
-    <div class="server-block">
-      <h3>{{ srv.name }} <span class="badge {% if srv.status == 'connected' %}badge-ok{% elif srv.status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h3>
-      {% if srv.enabled %}
-        <form method="post" action="/mcp/stdio/{{ srv.name }}/disable" class="inline-form"><button type="submit">Disable</button></form>
-      {% else %}
-        <form method="post" action="/mcp/stdio/{{ srv.name }}/enable" class="inline-form"><button type="submit">Enable</button></form>
-      {% endif %}
-      {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
-    </div>
+  <div class="server-block">
+    <h3>{{ srv.name }} <span class="badge {% if srv.status=='connected' %}badge-ok{% elif srv.status=='error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h3>
+    {% if srv.enabled %}
+      <form method="post" action="/mcp/stdio/{{ srv.name }}/disable" class="inline-form"><button type="submit">Disable</button></form>
+    {% else %}
+      <form method="post" action="/mcp/stdio/{{ srv.name }}/enable" class="inline-form"><button type="submit">Enable</button></form>
+    {% endif %}
+    {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
+  </div>
   {% endfor %}
   {% if not stdio_servers %}<p class="muted">No stdio servers configured.</p>{% endif %}
 </section>
