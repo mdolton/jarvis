@@ -5,8 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from jarvis.oauth.catalog import OAUTH_CATALOG
-from jarvis.oauth.store import OAuthCredentialsRepo
+from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
 
 router = APIRouter()
@@ -16,37 +15,49 @@ router = APIRouter()
 async def mcp_page(request: Request):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
-
     async with ctx.session_factory() as session:
+        providers = await MCPProviderRepo(session).list_all()
+        connections = await MCPConnectionRepo(session).list_all()
         servers = await MCPServerRepo(session).list_all()
-        server_tools = {}
-        for srv in servers:
-            server_tools[srv.id] = await MCPToolRepo(session).list_for_server(srv.id)
-        creds_by_key = {r.provider_key: r for r in await OAuthCredentialsRepo(session).list_all()}
-
-    oauth_cards = []
-    for key, entry in OAUTH_CATALOG.items():
-        cred = creds_by_key.get(key)
-        if cred is None or not cred.access_token_enc:
-            state = "disconnected"
-        elif cred.status == "needs_reauth":
-            state = "needs_reauth"
-        else:
-            state = "connected"
-        oauth_cards.append(
+        server_tools = {
+            srv.id: await MCPToolRepo(session).list_for_server(srv.id) for srv in servers
+        }
+    runtime_by_name = {s.name: s for s in servers}
+    conns_by_provider: dict[str, list] = {}
+    for c in connections:
+        rt = runtime_by_name.get(c.runtime_name)
+        conns_by_provider.setdefault(c.provider_key, []).append(
             {
-                "key": key,
-                "display_name": entry.display_name,
-                "state": state,
-                "last_error": cred.last_error if cred else None,
-                "updated_at": cred.updated_at if cred else None,
+                "id": str(c.id),
+                "label": c.label,
+                "runtime_name": c.runtime_name,
+                "enabled": c.enabled,
+                "auth_status": c.status,
+                "last_error": c.last_error,
+                "authorized": c.access_token_enc is not None,
+                "runtime_status": rt.status if rt else "disconnected",
+                "tools": server_tools.get(rt.id, []) if rt else [],
             }
         )
-
+    providers_view = [
+        {
+            "key": p.key,
+            "display_name": p.display_name,
+            "kind": p.kind,
+            "builtin": p.builtin,
+            "connections": conns_by_provider.get(p.key, []),
+        }
+        for p in providers
+    ]
+    stdio_servers = [s for s in servers if s.source == "stdio"]
     return templates.TemplateResponse(
         request,
         "mcp.html",
-        {"servers": servers, "server_tools": server_tools, "oauth_cards": oauth_cards},
+        {
+            "providers": providers_view,
+            "stdio_servers": stdio_servers,
+            "server_tools": server_tools,
+        },
     )
 
 

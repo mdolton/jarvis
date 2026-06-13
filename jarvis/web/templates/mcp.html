@@ -1,55 +1,32 @@
 {% extends "base.html" %}
 {% block title %}MCP Servers{% endblock %}
 {% block content %}
-<section class="page-head">
-  <div>
-    <h1>MCP</h1>
-    <p class="muted">Provider auth, server status, tool inventory, and execution policy.</p>
-  </div>
-</section>
+<section class="page-head"><div><h1>MCP</h1>
+  <p class="muted">Providers, account connections, server status, and tools.</p></div></section>
 
 <section class="section-block">
-  <h2>OAuth Providers</h2>
-  {% for card in oauth_cards %}
+  <h2>Providers</h2>
+  {% for p in providers %}
     <div class="provider-row">
-      <h2>{{ card.display_name }}
-        {% if card.state == "connected" %}
-          <span class="badge badge-ok">Connected</span>
-        {% elif card.state == "needs_reauth" %}
-          <span class="badge badge-warn">Re-authorization required</span>
-        {% else %}
-          <span class="badge">Not connected</span>
-        {% endif %}
-      </h2>
-      {% if card.state == "disconnected" %}
-        <p><a class="btn" href="/oauth/connect/{{ card.key }}">Connect</a></p>
-      {% elif card.state == "connected" %}
-        {% if card.updated_at %}<p class="muted">Last refreshed: {{ card.updated_at.strftime('%Y-%m-%d %H:%M') }}</p>{% endif %}
-        <form method="post" action="/oauth/disconnect/{{ card.key }}" class="inline-form">
-          <button type="submit">Disconnect</button>
-        </form>
-      {% else %}
-        {% if card.last_error %}<pre>{{ card.last_error }}</pre>{% endif %}
-        <p><a class="btn" href="/oauth/connect/{{ card.key }}">Reconnect</a></p>
-      {% endif %}
-    </div>
-  {% endfor %}
-</section>
-
-<section class="section-block">
-<h2>MCP Servers</h2>
-{% for srv in servers %}
-<div class="server-block">
-    <h2>{{ srv.name }} <span class="badge {% if srv.status == 'connected' %}badge-ok{% elif srv.status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h2>
-    <p class="muted">Transport: {{ srv.transport }}{% if srv.last_connected_at %} — Last connected: {{ srv.last_connected_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</p>
-    {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
-    {% set tools = server_tools.get(srv.id, []) %}
-    {% if tools %}
-    <table class="ops-table">
-        <thead><tr><th>Tool</th><th>Description</th><th>Read-only</th><th>Destructive</th><th>Policy</th></tr></thead>
-        <tbody>
-        {% for t in tools %}
-            <tr>
+      <h3>{{ p.display_name }} <span class="badge">{{ p.kind }}</span></h3>
+      {% for c in p.connections %}
+        <div class="conn-row">
+          <strong>{{ c.label }}</strong>
+          <span class="badge {% if c.runtime_status == 'connected' %}badge-ok{% elif c.runtime_status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ c.runtime_status }}</span>
+          {% if p.kind == 'oauth' %}
+            {% if not c.authorized or c.auth_status == 'needs_reauth' %}
+              <a class="btn" href="/oauth/connect/{{ c.id }}">Connect</a>
+            {% else %}
+              <form method="post" action="/oauth/disconnect/{{ c.id }}" class="inline-form"><button type="submit">Disconnect</button></form>
+            {% endif %}
+          {% endif %}
+          {% if c.last_error %}<pre>{{ c.last_error }}</pre>{% endif %}
+          {% if c.tools %}
+          <table class="ops-table">
+            <thead><tr><th>Tool</th><th>Description</th><th>Read-only</th><th>Destructive</th><th>Policy</th></tr></thead>
+            <tbody>
+            {% for t in c.tools %}
+              <tr>
                 <td><code>{{ t.name }}</code></td>
                 <td>{{ t.description or '—' }}</td>
                 <td>{{ '✓' if t.read_only_hint else '—' }}</td>
@@ -65,17 +42,26 @@
                     <button type="submit">Save</button>
                   </form>
                 </td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p class="muted">No tools discovered.</p>
-    {% endif %}
-</div>
-{% endfor %}
-{% if not servers %}
-<p class="muted">No MCP servers configured.</p>
-{% endif %}
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+  {% if not providers %}<p class="muted">No providers.</p>{% endif %}
+</section>
+
+<section class="section-block">
+  <h2>stdio servers <span class="muted">(file-managed)</span></h2>
+  {% for srv in stdio_servers %}
+    <div class="server-block">
+      <h3>{{ srv.name }} <span class="badge {% if srv.status == 'connected' %}badge-ok{% elif srv.status == 'error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h3>
+      {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
+    </div>
+  {% endfor %}
+  {% if not stdio_servers %}<p class="muted">No stdio servers configured.</p>{% endif %}
 </section>
 {% endblock %}

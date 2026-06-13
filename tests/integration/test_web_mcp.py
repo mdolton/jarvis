@@ -1,13 +1,13 @@
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from jarvis.mcp.descriptor import MCPToolDescriptor
-from jarvis.oauth.store import OAuthCredentialsRepo
+from jarvis.oauth.catalog import ProviderCatalog, seed_built_in_providers
+from jarvis.oauth.store import MCPConnectionRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo
 from jarvis.web.app import create_app
@@ -17,6 +17,34 @@ from jarvis.web.app import create_app
 class _SlottedCtx:
     session_factory: object
     mcp_manager: object
+    catalog: object
+
+
+async def _seed_gmail_connection_with_tool(factory):
+    """Seed a gmail provider + connection + connection-backed runtime server + tool.
+
+    The tool table only renders under a *connection* in the Phase-1 template, so
+    the policy test needs a connection (not a stdio server) to back the tool.
+    """
+    async with factory() as s:
+        await seed_built_in_providers(s)
+    async with factory() as s:
+        conn = await MCPConnectionRepo(s).create(
+            provider_key="gmail", label="Default", runtime_name="gmail:default"
+        )
+    async with factory() as s:
+        server = await MCPServerRepo(s).upsert(
+            name="gmail:default",
+            transport="http",
+            source="connection",
+            connection_id=conn.id,
+        )
+        await MCPServerRepo(s).set_status(server.id, status="connected", last_error=None)
+        await MCPToolRepo(s).replace_for_server(
+            server.id,
+            tools=[MCPToolDescriptor(name="list_events", input_schema={}, read_only_hint=True)],
+        )
+    return conn
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -26,17 +54,17 @@ async def client(tmp_path):
         await conn.run_sync(Base.metadata.create_all)
     factory = session_factory(engine)
 
-    # Seed an MCP server + tool.
+    # Seed a stdio MCP server (renders in the stdio section).
     async with factory() as s:
         server = await MCPServerRepo(s).upsert(name="gcal", transport="stdio")
         await MCPServerRepo(s).set_status(server.id, status="connected", last_error=None)
-        await MCPToolRepo(s).replace_for_server(
-            server.id,
-            tools=[MCPToolDescriptor(name="list_events", input_schema={}, read_only_hint=True)],
-        )
+
+    # Seed a gmail connection-backed server + tool (renders the policy form).
+    await _seed_gmail_connection_with_tool(factory)
 
     ctx = MagicMock()
     ctx.session_factory = factory
+    ctx.catalog = ProviderCatalog(factory)
 
     app = create_app(app_context=ctx)
     yield TestClient(app)
@@ -97,13 +125,16 @@ async def client_with_slotted_ctx(tmp_path):
     async with factory() as s:
         server = await MCPServerRepo(s).upsert(name="gcal", transport="stdio")
         await MCPServerRepo(s).set_status(server.id, status="connected", last_error=None)
-        await MCPToolRepo(s).replace_for_server(
-            server.id,
-            tools=[MCPToolDescriptor(name="list_events", input_schema={}, read_only_hint=True)],
-        )
+    await _seed_gmail_connection_with_tool(factory)
 
     mcp_manager = MagicMock()
-    app = create_app(app_context=_SlottedCtx(session_factory=factory, mcp_manager=mcp_manager))
+    app = create_app(
+        app_context=_SlottedCtx(
+            session_factory=factory,
+            mcp_manager=mcp_manager,
+            catalog=ProviderCatalog(factory),
+        )
+    )
     yield TestClient(app), mcp_manager
     await engine.dispose()
 
@@ -128,56 +159,68 @@ def test_mcp_tool_policy_update_clears_runtime_policy_cache_for_slotted_context(
 
 
 @pytest_asyncio.fixture(loop_scope="function")
-async def client_no_oauth(tmp_path):
-    """Like `client` but with no oauth_credentials rows seeded."""
+async def client_with_providers(tmp_path):
+    """Seeds built-in providers but no connections."""
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = session_factory(engine)
+    async with factory() as s:
+        await seed_built_in_providers(s)
     ctx = MagicMock()
     ctx.session_factory = factory
+    ctx.catalog = ProviderCatalog(factory)
     app = create_app(app_context=ctx)
     yield TestClient(app), factory
     await engine.dispose()
 
 
-def test_mcp_page_lists_oauth_providers_disconnected_by_default(client_no_oauth):
-    client, _ = client_no_oauth
+def test_mcp_page_lists_providers(client_with_providers):
+    client, _ = client_with_providers
     resp = client.get("/mcp")
     assert resp.status_code == 200
-    assert "Fastmail" in resp.text
-    assert 'href="/oauth/connect/fastmail"' in resp.text
+    assert "Gmail" in resp.text
+    assert "Google Calendar" in resp.text
 
 
 @pytest_asyncio.fixture(loop_scope="function")
-async def client_with_connected_oauth(tmp_path):
+async def client_with_connection(tmp_path):
+    """A gmail connection that is authorized (has tokens) -> Disconnect shown."""
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = session_factory(engine)
-    now = datetime.now(UTC)
     async with factory() as s:
-        await OAuthCredentialsRepo(s).upsert(
-            provider_key="fastmail",
-            client_id_enc=b"cid",
-            client_secret_enc=None,
+        await seed_built_in_providers(s)
+    async with factory() as s:
+        conn = await MCPConnectionRepo(s).create(
+            provider_key="gmail", label="Default", runtime_name="gmail:default"
+        )
+    cid = conn.id
+    async with factory() as s:
+        from datetime import UTC, datetime, timedelta
+
+        await MCPConnectionRepo(s).set_tokens(
+            cid,
             access_token_enc=b"at",
             refresh_token_enc=b"rt",
-            token_expires_at=now + timedelta(hours=1),
+            token_expires_at=datetime.now(UTC) + timedelta(hours=1),
             scopes_granted=[],
         )
     ctx = MagicMock()
     ctx.session_factory = factory
+    ctx.catalog = ProviderCatalog(factory)
     app = create_app(app_context=ctx)
-    yield TestClient(app)
+    yield TestClient(app), cid
     await engine.dispose()
 
 
-def test_mcp_page_shows_connected_pill_when_credentials_present(client_with_connected_oauth):
-    resp = client_with_connected_oauth.get("/mcp")
+def test_mcp_page_shows_disconnect_when_connection_authorized(client_with_connection):
+    client, cid = client_with_connection
+    resp = client.get("/mcp")
     assert resp.status_code == 200
-    assert "Connected" in resp.text
     assert "Disconnect" in resp.text
+    assert f"/oauth/disconnect/{cid}" in resp.text
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -186,29 +229,38 @@ async def client_with_needs_reauth(tmp_path):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = session_factory(engine)
-    now = datetime.now(UTC)
     async with factory() as s:
-        repo = OAuthCredentialsRepo(s)
-        await repo.upsert(
-            provider_key="fastmail",
-            client_id_enc=b"cid",
-            client_secret_enc=None,
+        await seed_built_in_providers(s)
+    async with factory() as s:
+        conn = await MCPConnectionRepo(s).create(
+            provider_key="gmail", label="Default", runtime_name="gmail:default"
+        )
+    cid = conn.id
+    async with factory() as s:
+        from datetime import UTC, datetime, timedelta
+
+        await MCPConnectionRepo(s).set_tokens(
+            cid,
             access_token_enc=b"at",
             refresh_token_enc=b"rt",
-            token_expires_at=now,
+            token_expires_at=datetime.now(UTC) + timedelta(hours=1),
             scopes_granted=[],
         )
-        await repo.set_status("fastmail", status="needs_reauth", last_error="invalid_grant")
+    async with factory() as s:
+        await MCPConnectionRepo(s).set_status(
+            cid, status="needs_reauth", last_error="invalid_grant"
+        )
     ctx = MagicMock()
     ctx.session_factory = factory
+    ctx.catalog = ProviderCatalog(factory)
     app = create_app(app_context=ctx)
-    yield TestClient(app)
+    yield TestClient(app), cid
     await engine.dispose()
 
 
-def test_mcp_page_shows_needs_reauth_banner(client_with_needs_reauth):
-    resp = client_with_needs_reauth.get("/mcp")
+def test_mcp_page_shows_reconnect_on_needs_reauth(client_with_needs_reauth):
+    client, cid = client_with_needs_reauth
+    resp = client.get("/mcp")
     assert resp.status_code == 200
-    assert "Re-authorization" in resp.text
     assert "invalid_grant" in resp.text
-    assert 'href="/oauth/connect/fastmail"' in resp.text  # Reconnect link
+    assert f"/oauth/connect/{cid}" in resp.text  # Connect link shown for needs_reauth

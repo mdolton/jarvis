@@ -1,13 +1,14 @@
-"""OAuth connect / callback / disconnect routes."""
+"""OAuth connect / callback / disconnect routes (keyed on connection_id)."""
 
 import asyncio
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from jarvis.oauth.catalog import OAUTH_CATALOG
 from jarvis.oauth.flow import OAuthCallbackError, OAuthDiscoveryError
+from jarvis.oauth.store import MCPConnectionRepo
 
 router = APIRouter(prefix="/oauth")
 _log = logging.getLogger(__name__)
@@ -30,10 +31,10 @@ async def oauth_callback(request: Request):
         state = qp.get("state")
         if state:
             try:
-                from jarvis.oauth.store import OAuthPendingRepo
+                from jarvis.oauth.store import MCPPendingRepo
 
                 async with ctx.session_factory() as session:
-                    await OAuthPendingRepo(session).delete(state)
+                    await MCPPendingRepo(session).delete(state)
             except Exception:
                 _log.exception("failed to sweep pending row on errored callback")
         # Only access_denied means the user explicitly declined. Everything else
@@ -68,26 +69,26 @@ async def oauth_callback(request: Request):
         )
 
     # Attach the SDK server with fresh headers.
-    headers = await ctx.oauth_flow.current_headers(result.provider_key)
-    entry = OAUTH_CATALOG[result.provider_key]
+    headers = await ctx.oauth_flow.current_headers(result.connection_id)
+    entry = await ctx.catalog.get(result.provider_key)
     if ctx.mcp_manager is not None:
         try:
             await asyncio.wait_for(
                 ctx.mcp_manager.replace_oauth_server(
-                    result.provider_key, url=entry.mcp_url, headers=headers
+                    result.runtime_name, url=entry.mcp_url, headers=headers
                 ),
                 timeout=POST_CALLBACK_ATTACH_TIMEOUT,
             )
         except Exception as e:
-            _log.exception("post-callback MCP attach failed for %s", result.provider_key)
-            # Tokens are stored but the server never came up. Don't leave the card
-            # claiming "connected" with no tools — flag it so the dashboard tells
-            # the truth and the user can retry.
-            from jarvis.oauth.store import OAuthCredentialsRepo
-
+            _log.exception(
+                "post-callback MCP attach failed for %s", result.runtime_name
+            )
+            # Tokens are stored but the server never came up. Don't leave the
+            # connection claiming "connected" with no tools — flag it so the
+            # dashboard tells the truth and the user can retry.
             async with ctx.session_factory() as session:
-                await OAuthCredentialsRepo(session).set_status(
-                    result.provider_key,
+                await MCPConnectionRepo(session).set_status(
+                    result.connection_id,
                     status="needs_reauth",
                     last_error=f"MCP attach failed: {e}",
                 )
@@ -96,7 +97,7 @@ async def oauth_callback(request: Request):
                 "oauth_callback.html",
                 {
                     "outcome": "error",
-                    "provider": result.provider_key,
+                    "provider": entry.display_name,
                     "message": f"connected, but MCP attach failed: {e}",
                 },
                 status_code=500,
@@ -109,36 +110,58 @@ async def oauth_callback(request: Request):
     )
 
 
-@router.get("/connect/{provider}")
-async def oauth_connect(provider: str, request: Request):
-    if provider not in OAUTH_CATALOG:
-        raise HTTPException(status_code=404, detail=f"unknown provider {provider!r}")
-    ctx = request.app.state.ctx
+@router.get("/connect/{connection_id}")
+async def oauth_connect(connection_id: str, request: Request):
     try:
-        consent_url = await ctx.oauth_flow.start_authorization(provider)
+        cid = UUID(connection_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}")
+    ctx = request.app.state.ctx
+    async with ctx.session_factory() as session:
+        conn = await MCPConnectionRepo(session).get(cid)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}")
+    try:
+        consent_url = await ctx.oauth_flow.start_authorization(cid)
     except OAuthDiscoveryError as e:
         templates = request.app.state.templates
         return templates.TemplateResponse(
             request,
             "oauth_callback.html",
-            {"outcome": "error", "message": str(e), "provider": provider},
+            {"outcome": "error", "message": str(e), "provider": conn.provider_key},
             status_code=502,
         )
     return RedirectResponse(consent_url, status_code=302)
 
 
-@router.post("/disconnect/{provider}")
-async def oauth_disconnect(provider: str, request: Request):
-    if provider not in OAUTH_CATALOG:
-        raise HTTPException(status_code=404, detail=f"unknown provider {provider!r}")
+@router.post("/disconnect/{connection_id}")
+async def oauth_disconnect(connection_id: str, request: Request):
+    try:
+        cid = UUID(connection_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}")
     ctx = request.app.state.ctx
+    async with ctx.session_factory() as session:
+        conn = await MCPConnectionRepo(session).get(cid)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}")
     if ctx.mcp_manager is not None:
         # The user clicked Disconnect — always honor it locally. A slow or failing
         # MCP teardown (e.g. an unresponsive remote) must not block revocation,
         # so bound it and fall through to revoke regardless of the outcome.
         try:
-            await asyncio.wait_for(ctx.mcp_manager.remove_oauth_server(provider), timeout=10.0)
+            await asyncio.wait_for(
+                ctx.mcp_manager.remove_oauth_server(conn.runtime_name), timeout=10.0
+            )
         except Exception:
-            _log.exception("MCP teardown failed during disconnect of %s; revoking anyway", provider)
-    await ctx.oauth_flow.revoke(provider)
+            _log.exception(
+                "MCP teardown failed during disconnect of %s; revoking anyway",
+                conn.runtime_name,
+            )
+    try:
+        await ctx.oauth_flow.revoke(cid)
+    except Exception:
+        _log.exception("revoke failed during disconnect of %s; clearing anyway", cid)
+    async with ctx.session_factory() as session:
+        await MCPConnectionRepo(session).clear_tokens(cid)
     return RedirectResponse("/mcp", status_code=303)
