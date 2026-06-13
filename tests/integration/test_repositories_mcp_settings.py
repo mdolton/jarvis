@@ -36,6 +36,38 @@ async def test_mcp_server_status_update(session):
     assert listed[0].status == "connected"
 
 
+async def test_delete_stdio_absent_from_prunes_orphans_keeps_configured_and_connections(session):
+    repo = MCPServerRepo(session)
+    # Configured stdio server still present in yaml -> kept.
+    await repo.upsert(name="ynab_live", transport="stdio")
+    # Orphans left behind by old data model / removed-from-yaml servers -> pruned.
+    await repo.upsert(name="gmail", transport="http")
+    await repo.upsert(name="calendar", transport="http")
+    await repo.upsert(name="ynab", transport="stdio")
+    # Connection-backed row -> never touched, even though absent from yaml names.
+    await repo.upsert(name="gmail:default", transport="http", source="connection")
+
+    pruned = await repo.delete_stdio_absent_from(["ynab_live"])
+
+    assert pruned == 3
+    remaining = {s.name for s in await repo.list_all()}
+    assert remaining == {"ynab_live", "gmail:default"}
+
+
+async def test_delete_stdio_absent_from_cascades_tools(session):
+    srepo = MCPServerRepo(session)
+    trepo = MCPToolRepo(session)
+    orphan = await srepo.upsert(name="ynab", transport="stdio")
+    await trepo.replace_for_server(
+        orphan.id,
+        tools=[MCPToolDescriptor(name="t", description="", input_schema={})],
+    )
+
+    await srepo.delete_stdio_absent_from([])
+
+    assert await trepo.list_for_server(orphan.id) == []
+
+
 async def test_mcp_tool_replace_for_server(session):
     srepo = MCPServerRepo(session)
     trepo = MCPToolRepo(session)

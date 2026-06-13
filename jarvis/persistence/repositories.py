@@ -1,6 +1,7 @@
 """Repositories — the only way core modules touch the database."""
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -944,6 +945,25 @@ class MCPServerRepo:
     async def list_all(self) -> list[MCPServerRow]:
         result = await self._session.execute(select(MCPServerRow))
         return list(result.scalars())
+
+    async def delete_stdio_absent_from(self, names: Iterable[str]) -> int:
+        """Prune config (``source='stdio'``) server rows whose name is not in `names`.
+
+        Reconciles the table against the current yaml config: rows for servers that
+        were removed from the config — or left mislabeled as stdio by the 0011
+        migration (old per-provider OAuth/HTTP rows) — are deleted. Connection-backed
+        rows (``source='connection'``) are never touched. Deleting via the ORM cascades
+        to each server's tools. Returns the number of rows removed.
+        """
+        keep = set(names)
+        result = await self._session.execute(
+            select(MCPServerRow).where(MCPServerRow.source == "stdio")
+        )
+        stale = [row for row in result.scalars() if row.name not in keep]
+        for row in stale:
+            await self._session.delete(row)
+        await self._session.commit()
+        return len(stale)
 
 
 class MCPToolRepo:

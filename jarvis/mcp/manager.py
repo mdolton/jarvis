@@ -135,6 +135,17 @@ class MCPManager:
         self._cmd_queue = asyncio.Queue()
         self._loop_task = asyncio.create_task(self._lifecycle_loop(), name="mcp-lifecycle")
 
+        # Reconcile config-backed server rows against the current yaml: drop any
+        # stdio-source row no longer in the config. This prunes servers removed from
+        # the yaml and the orphans the 0011 migration mislabeled as stdio (old
+        # per-provider OAuth/HTTP rows, now superseded by provider/connection rows).
+        async with self._session_factory() as session:
+            pruned = await MCPServerRepo(session).delete_stdio_absent_from(
+                s.name for s in self._config.servers
+            )
+        if pruned:
+            _log.info("pruned %d orphaned config MCP server row(s) absent from yaml", pruned)
+
         async with self._session_factory() as session:
             disabled = set(await SettingsRepo(session).get("mcp.stdio_disabled") or [])
         for server_cfg in self._config.servers:
