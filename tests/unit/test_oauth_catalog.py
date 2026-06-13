@@ -46,8 +46,6 @@ def test_gmail_entry_present():
     assert entry.oauth_metadata_url == (
         "https://accounts.google.com/.well-known/openid-configuration"
     )
-    assert entry.client_id_env == "GOOGLE_OAUTH_CLIENT_ID"
-    assert entry.client_secret_env == "GOOGLE_OAUTH_CLIENT_SECRET"
     assert entry.default_scopes == (
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
@@ -64,9 +62,6 @@ def test_calendar_entry_present():
     assert entry.oauth_metadata_url == (
         "https://accounts.google.com/.well-known/openid-configuration"
     )
-    # Reuses the shared Google OAuth client credentials.
-    assert entry.client_id_env == "GOOGLE_OAUTH_CLIENT_ID"
-    assert entry.client_secret_env == "GOOGLE_OAUTH_CLIENT_SECRET"
     assert entry.default_scopes == (
         "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
         "https://www.googleapis.com/auth/calendar.events.freebusy",
@@ -78,8 +73,6 @@ def test_calendar_entry_present():
 
 def test_provider_entry_defaults_for_manual_fields():
     entry = SEED_PROVIDERS["fastmail"]
-    assert entry.client_id_env is None
-    assert entry.client_secret_env is None
     assert entry.send_resource_indicator is True
 
 

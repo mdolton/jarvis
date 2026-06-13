@@ -23,14 +23,9 @@ class ProviderEntry:
     mcp_url: str
     auth_mode: AuthMode
     oauth_metadata_url: str | None = None
-    authorization_endpoint: str | None = None
-    token_endpoint: str | None = None
     extra_auth_params: dict[str, str] = field(default_factory=dict)
     default_scopes: tuple[str, ...] = ()
     pkce: bool = True
-    # MANUAL mode: env vars holding operator-created client credentials.
-    client_id_env: str | None = None
-    client_secret_env: str | None = None
     # RFC 8707 resource indicator. Default on; flip off if a provider rejects it.
     send_resource_indicator: bool = True
     kind: str = "oauth"
@@ -59,8 +54,6 @@ SEED_PROVIDERS: dict[str, ProviderEntry] = {
             "https://www.googleapis.com/auth/gmail.compose",
         ),
         extra_auth_params={"access_type": "offline", "prompt": "consent"},
-        client_id_env="GOOGLE_OAUTH_CLIENT_ID",
-        client_secret_env="GOOGLE_OAUTH_CLIENT_SECRET",
     ),
     "calendar": ProviderEntry(
         key="calendar",
@@ -77,10 +70,6 @@ SEED_PROVIDERS: dict[str, ProviderEntry] = {
             "https://www.googleapis.com/auth/calendar.events.readonly",
         ),
         extra_auth_params={"access_type": "offline", "prompt": "consent"},
-        # Reuses the same Google Cloud OAuth client as Gmail; one Web-application
-        # client can request any scopes, so no separate credentials are needed.
-        client_id_env="GOOGLE_OAUTH_CLIENT_ID",
-        client_secret_env="GOOGLE_OAUTH_CLIENT_SECRET",
     ),
 }
 
