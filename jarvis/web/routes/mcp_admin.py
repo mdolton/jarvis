@@ -173,7 +173,10 @@ async def disable_connection(request: Request, connection_id: UUID):
         if conn is None:
             raise HTTPException(404)
         await repo.set_enabled(connection_id, enabled=False)
-    await ctx.mcp_manager.disconnect(conn.runtime_name)
+    try:
+        await ctx.mcp_manager.disconnect(conn.runtime_name)
+    except Exception:
+        pass
     await _emit(ctx, "connection.disable", runtime_name=conn.runtime_name)
     return _redirect()
 

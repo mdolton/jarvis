@@ -5,7 +5,7 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from jarvis.oauth.catalog import ProviderCatalog, seed_built_in_providers
-from jarvis.oauth.crypto import generate_key
+from jarvis.oauth.crypto import decrypt_blob, generate_key
 from jarvis.oauth.store import MCPConnectionRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.web.app import create_app
@@ -60,3 +60,32 @@ def test_remove_provider_refused_when_connections_exist(client):
 def test_builtin_provider_cannot_be_removed(client):
     resp = client.post("/mcp/providers/calendar/remove", follow_redirects=False)
     assert resp.status_code == 400
+
+
+def test_edit_credentials_updates_all_connections(client):
+    secrets_key = client.app.state.ctx.config.secrets_key
+
+    async def seed():
+        async with client._factory() as s:
+            repo = MCPConnectionRepo(s)
+            await repo.create(provider_key="gmail", label="Work", runtime_name="gmail:work")
+            await repo.create(provider_key="gmail", label="Personal", runtime_name="gmail:personal")
+
+    asyncio.get_event_loop().run_until_complete(seed())
+
+    resp = client.post(
+        "/mcp/providers/gmail/edit-credentials",
+        data={"client_id": "APP-CID", "client_secret": "APP-SEC"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    async def check():
+        async with client._factory() as s:
+            conns = await MCPConnectionRepo(s).list_for_provider("gmail")
+        assert len(conns) == 2
+        for conn in conns:
+            assert conn.client_id_enc is not None
+            assert decrypt_blob(conn.client_id_enc, secrets_key) == b"APP-CID"
+
+    asyncio.get_event_loop().run_until_complete(check())
