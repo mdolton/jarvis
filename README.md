@@ -138,24 +138,32 @@ All config lives in the `config/` directory:
 |------|---------|
 | `jarvis.yaml` | LLM endpoint, timezone, concurrency, log level |
 | `channels.yaml` | Discord bot token and allowed user IDs |
-| `mcp-servers.yaml` | MCP server definitions (stdio, HTTP, SSE) |
+| `mcp-servers.yaml` | Local **stdio** MCP server definitions (HTTP/SSE & OAuth servers are managed in the dashboard) |
 
 Environment variables in YAML files are expanded via `${VAR}` syntax. Secrets should go in `.env` (never committed) and be referenced in YAML.
 
 ## MCP Servers
 
-Jarvis gains capabilities by connecting to [MCP](https://modelcontextprotocol.io/) servers. Configure them in `mcp-servers.yaml`:
+Jarvis gains capabilities by connecting to [MCP](https://modelcontextprotocol.io/) servers, configured two ways:
 
-```yaml
-servers:
-  - name: filesystem
-    transport: stdio
-    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+- **Local stdio servers** live in `mcp-servers.yaml`. They launch a command on the
+  Jarvis host, so they stay in version-controlled config rather than the web UI:
 
-  - name: calendar
-    transport: http
-    url: http://localhost:3000/mcp
-```
+  ```yaml
+  servers:
+    - name: filesystem
+      transport: stdio
+      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+  ```
+
+  You can enable/disable a file-declared stdio server from the dashboard without
+  editing the file (the toggle is persisted), but stdio servers can only be
+  **created** by editing `mcp-servers.yaml` — this keeps arbitrary local-command
+  execution off the web surface.
+
+- **Remote (HTTP/SSE) and OAuth servers** are added and managed entirely from the
+  `/mcp` dashboard and stored in the database. See
+  [MCP providers & connections](#mcp-providers--connections) below.
 
 MCP tools can be marked `allow`, `confirm`, or `deny` from the dashboard.
 Read-like tools auto-run by default; side-effecting tools pause in the Action
@@ -236,7 +244,7 @@ Available at `http://localhost:8080` when running:
 - **Memory** — approved preferences, recall summaries, evidence snippets, and recall debugging
 - **Schedules** — create, run, enable/disable, delete schedules
 - **Templates** — create, edit, clone, and apply reusable digest templates for schedules
-- **MCP** — OAuth providers, connected servers, discovered tools, and per-tool policy overrides
+- **MCP** — manage providers and per-account connections (add/remove, enable/disable, connect/disconnect), browse discovered tools, and set per-tool policy overrides
 - **Actions** — approve or reject MCP tool calls that require confirmation before execution
 - **Audit** — full event log with live SSE tailing
 - **Settings** — read-only config view
@@ -251,20 +259,27 @@ Single Python async process running in Docker:
 - **Persistence**: SQLite (WAL mode) + Alembic migrations
 - **Audit**: Buffered async logger capturing every LLM call, tool call, and agent decision
 
-## OAuth-protected MCP servers
+## MCP providers & connections
 
-Jarvis connects to OAuth-protected HTTP MCP servers from the `/mcp` dashboard. Three
-providers ship in the catalog:
+The `/mcp` dashboard manages remote MCP servers with a **provider / connection** model:
 
-- **Fastmail** — Dynamic Client Registration (DCR); no manual client setup.
-- **Gmail** — Google's official Gmail MCP server (`https://gmailmcp.googleapis.com/mcp/v1`).
-  Google does not support DCR, so you create the OAuth client by hand and supply its
-  credentials via environment variables.
-- **Google Calendar** — Google's official Calendar MCP server
-  (`https://calendarmcp.googleapis.com/mcp/v1`). Manual-mode like Gmail, and reuses the
-  same Google OAuth client credentials.
+- A **provider** is a reusable, secret-free definition of a service — its MCP URL,
+  transport, and (for OAuth) its auth-server details. The catalog lives in the
+  database and ships with three built-in providers: **Fastmail**, **Gmail**, and
+  **Google Calendar**. You can add your own OAuth (DCR or manual) or HTTP/SSE
+  providers from the dashboard.
+- A **connection** is one credentialed instance of a provider — i.e. one account.
+  A single provider can have **multiple connections** (e.g. a personal and a work
+  Google account), each with its own credentials, scopes, tokens, and live MCP
+  server. Connections are added, enabled/disabled, connected/disconnected, and
+  removed from the dashboard.
 
-### One-time setup (all providers)
+All secrets — OAuth client IDs/secrets, access/refresh tokens, and HTTP headers —
+are encrypted at rest with a Fernet key and stored on the **connection**. The
+provider catalog holds no secrets, and credentials no longer need to live
+permanently in your environment.
+
+### One-time setup (all OAuth providers)
 
 1. Generate a Fernet secrets key:
    ```bash
@@ -276,47 +291,65 @@ providers ship in the catalog:
    JARVIS_BASE_URL=https://jarvis.moltonlava.online   # or http://localhost:8080 locally
    ```
 
-### Gmail-specific setup
+### Fastmail
 
-In Google Cloud Console:
+Fastmail supports Dynamic Client Registration, so there's no manual client setup:
+open `/mcp`, **Add connection** to the **Fastmail** provider, then click **Connect**.
 
-1. Enable the **Gmail API** and request access to the **Gmail MCP server** (early access).
-2. Configure the **OAuth consent screen** with scopes
-   `https://www.googleapis.com/auth/gmail.readonly` and
-   `https://www.googleapis.com/auth/gmail.compose`. While the app is unverified, add your
-   Google account as a **test user**.
+### Gmail & Google Calendar
+
+Google doesn't support DCR, so you create an OAuth client by hand and supply its
+`client_id`/`client_secret` to the connection. Gmail and Calendar share a single
+Google Cloud OAuth client (one Web-application client can request any scopes), so
+you set it up once and reuse it for both. In Google Cloud Console:
+
+1. Enable the APIs and request early access:
+   - **Gmail API** + the **Gmail MCP server** (early access), and/or
+   - **Google Calendar API** (`calendar-json.googleapis.com`) + the **Google Calendar
+     MCP API** (`calendarmcp.googleapis.com`, part of the Google Workspace Developer
+     Preview Program — enroll your project there first).
+2. Configure the **OAuth consent screen** with the scopes you want:
+   - Gmail: `https://www.googleapis.com/auth/gmail.readonly`,
+     `https://www.googleapis.com/auth/gmail.compose`
+   - Calendar: `https://www.googleapis.com/auth/calendar.calendarlist.readonly`,
+     `https://www.googleapis.com/auth/calendar.events.freebusy`,
+     `https://www.googleapis.com/auth/calendar.events.readonly`
+
+   While the app is unverified, add your Google account as a **test user**.
 3. Create an **OAuth client ID** of type **Web application**:
-   - **Authorized redirect URI:** `https://jarvis.moltonlava.online/oauth/callback`
-     (must equal `${JARVIS_BASE_URL}/oauth/callback` exactly).
+   - **Authorized redirect URI:** `${JARVIS_BASE_URL}/oauth/callback`
+     (e.g. `https://jarvis.moltonlava.online/oauth/callback`) — must match exactly.
    - **Authorized JavaScript origins:** leave empty — Jarvis uses a server-side code flow.
 
-Then add the client credentials to Jarvis's environment:
-```
-GOOGLE_OAUTH_CLIENT_ID=<from Google Cloud Console>
-GOOGLE_OAUTH_CLIENT_SECRET=<from Google Cloud Console>
-```
+Then connect, supplying the client credentials one of two ways:
 
-Restart Jarvis, open `/mcp`, and click **Connect** on the Gmail card. Jarvis stores the
-encrypted tokens and refreshes them automatically; if a refresh permanently fails the card
-shows **Needs re-auth** with a Reconnect button.
+- **From the dashboard (recommended):** open `/mcp`, **Add connection** to the
+  **Gmail** (or **Google Calendar**) provider, paste the `client_id`/`client_secret`
+  and adjust scopes in the form, then click **Connect**. Add a second connection for
+  another account whenever you like.
+- **From the environment (convenience):** set
+  ```
+  GOOGLE_OAUTH_CLIENT_ID=<from Google Cloud Console>
+  GOOGLE_OAUTH_CLIENT_SECRET=<from Google Cloud Console>
+  ```
+  These are imported **once** into a default Gmail and Calendar connection on first
+  startup; afterwards the credentials live encrypted in the database and the env vars
+  are no longer read.
 
-### Google Calendar-specific setup
+Jarvis stores the encrypted tokens and refreshes them automatically. Re-consent on a
+connection grants any newly-added scopes; if a refresh permanently fails the
+connection shows **Needs re-auth** with a Reconnect button.
 
-Calendar reuses the same Google Cloud OAuth client as Gmail (one Web-application client can
-request any scopes), so there are **no extra environment variables** — just expand the
-existing client's project. In Google Cloud Console:
+### Adding other providers
 
-1. Enable the **Google Calendar API** (`calendar-json.googleapis.com`) and the **Google
-   Calendar MCP API** (`calendarmcp.googleapis.com`). The MCP API is part of the Google
-   Workspace Developer Preview Program (early access) — enroll your project there first.
-2. Add the Calendar scopes to the **OAuth consent screen**:
-   `https://www.googleapis.com/auth/calendar.calendarlist.readonly`,
-   `https://www.googleapis.com/auth/calendar.events.freebusy`, and
-   `https://www.googleapis.com/auth/calendar.events.readonly`. The existing Web-application
-   client and its redirect URI (`${JARVIS_BASE_URL}/oauth/callback`) are reused unchanged.
+Use **Add provider** on `/mcp` to register any other MCP service:
 
-Restart Jarvis, open `/mcp`, and click **Connect** on the Google Calendar card. Re-consent
-grants the new scopes; tokens are stored encrypted and refreshed automatically.
+- **OAuth (DCR)** — supply the MCP URL and its OAuth metadata URL; Jarvis registers a
+  client automatically per connection.
+- **OAuth (manual)** — for providers without DCR; enter the client credentials on each
+  connection, as with Gmail/Calendar.
+- **HTTP / SSE** — supply the URL and any auth headers (e.g. a bearer token) on the
+  connection; headers are encrypted at rest.
 
 ## License
 

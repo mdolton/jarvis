@@ -1,5 +1,9 @@
-# MCP server configuration.
+# Local stdio MCP servers only.
 # Copy this to mcp-servers.yaml and edit.
+#
+# HTTP/SSE and OAuth MCP servers are NOT configured here — add them from the
+# /mcp dashboard (they're stored in the database). This file is limited to
+# stdio servers, which launch a local command on the Jarvis host.
 
 servers: []
 
@@ -8,11 +12,6 @@ servers: []
 #   - name: filesystem
 #     transport: stdio
 #     command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
-#
-# Example HTTP server:
-# servers:
-#   - name: remote-api
-#     transport: http
-#     url: http://localhost:3000/mcp
-#     headers:
-#       Authorization: "Bearer ${MCP_API_TOKEN}"
+#     # optional environment for the spawned process:
+#     # env:
+#     #   SOME_TOKEN: "${SOME_TOKEN}"
