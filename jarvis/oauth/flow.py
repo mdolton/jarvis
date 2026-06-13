@@ -6,18 +6,18 @@ from __future__ import annotations
 
 import base64
 import logging
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
+from uuid import UUID
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from jarvis.oauth.catalog import OAUTH_CATALOG, AuthMode, ProviderEntry
+from jarvis.oauth.catalog import AuthMode, ProviderCatalog, ProviderEntry
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob
 from jarvis.oauth.pkce import generate_code_challenge, generate_code_verifier, generate_state
-from jarvis.oauth.store import OAuthCredentialsRepo, OAuthPendingRepo
+from jarvis.oauth.store import MCPConnectionRepo, MCPPendingRepo
 
 _log = logging.getLogger(__name__)
 
@@ -50,7 +50,9 @@ class RegisteredClient:
 
 @dataclass(frozen=True, slots=True)
 class CallbackResult:
+    connection_id: UUID
     provider_key: str
+    runtime_name: str
     scopes_granted: list[str]
 
 
@@ -72,11 +74,13 @@ class OAuthFlow:
         session_factory: async_sessionmaker[AsyncSession] | None,
         base_url: str,
         secrets_key: bytes,
+        catalog: ProviderCatalog | None = None,
     ) -> None:
         self._http = http_client
         self._session_factory = session_factory
         self._base_url = base_url.rstrip("/")
         self._secrets_key = secrets_key
+        self._catalog = catalog
 
     @property
     def redirect_uri(self) -> str:
@@ -113,68 +117,64 @@ class OAuthFlow:
             )
         return metadata
 
-    async def start_authorization(self, provider_key: str) -> str:
+    async def start_authorization(self, connection_id: UUID) -> str:
         """Compose discover + register-if-needed + PKCE + state insert + URL build.
 
         Returns the provider's authorization URL that the user should be redirected to.
-        For MANUAL-mode providers the client credentials are sourced from env vars
-        instead of DCR; everything downstream (PKCE, state, consent URL) is identical.
+        The service *definition* (endpoints, scopes-default, auth_mode) comes from the
+        ProviderCatalog; the *credentials* (client_id/secret) come from the connection
+        row itself, so two connections on the same provider authorize independently.
 
-        Intermediate state: after this call, an oauth_credentials row exists with
-        access_token_enc=b"" — a sentinel meaning "registered but not authorized."
-        MCPManager bootstrap checks for this and skips SDK build until tokens land
-        (i.e., until handle_callback exchanges the code and writes real tokens).
+        For MANUAL-mode providers the client credentials must already be present on the
+        connection. For DCR providers a client is registered on first use and persisted
+        back onto the connection. No placeholder credentials row is written — the
+        connection row already exists; only a pending row is inserted.
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for start_authorization")
-        entry = OAUTH_CATALOG[provider_key]
+
+        async with self._session_factory() as session:
+            conn = await MCPConnectionRepo(session).get(connection_id)
+        if conn is None:
+            raise OAuthDiscoveryError(f"unknown connection {connection_id}")
+
+        entry = await self._catalog.get(conn.provider_key)
         metadata = await self.discover(entry)
 
-        # Get-or-register the DCR client.
-        async with self._session_factory() as session:
-            existing = await OAuthCredentialsRepo(session).get(provider_key)
-
-        if existing is None or not existing.client_id_enc:
+        # Resolve client credentials from the CONNECTION.
+        if not conn.client_id_enc:
             if entry.auth_mode is AuthMode.MANUAL:
-                client = self._resolve_manual_client(entry)
-            else:
-                client = await self.register_client(entry, metadata)
-            # Persist client_id (and optional secret). access_token is empty until callback.
-            async with self._session_factory() as session:
-                cid_enc = encrypt_blob(client.client_id.encode(), self._secrets_key)
-                sec_enc = (
-                    encrypt_blob(client.client_secret.encode(), self._secrets_key)
-                    if client.client_secret
-                    else None
+                raise OAuthDiscoveryError(
+                    f"{conn.provider_key}: manual provider requires "
+                    "client_id/secret on the connection"
                 )
-                await OAuthCredentialsRepo(session).upsert(
-                    provider_key=provider_key,
-                    client_id_enc=cid_enc,
-                    client_secret_enc=sec_enc,
-                    # Sentinel: "registered but not authorized" — no real access token yet.
-                    # bootstrap iteration in MCPManager will check access_token_enc == b""
-                    # and skip building the SDK until handle_callback writes real tokens.
-                    access_token_enc=b"",
-                    refresh_token_enc=None,
-                    token_expires_at=datetime.now(UTC),
-                    scopes_granted=[],
+            # DCR: register a client and persist it back onto the connection.
+            client = await self.register_client(entry, metadata)
+            async with self._session_factory() as session:
+                await MCPConnectionRepo(session).set_client(
+                    connection_id,
+                    client_id_enc=encrypt_blob(client.client_id.encode(), self._secrets_key),
+                    client_secret_enc=(
+                        encrypt_blob(client.client_secret.encode(), self._secrets_key)
+                        if client.client_secret
+                        else None
+                    ),
                 )
             client_id = client.client_id
         else:
-            # Client already registered — skip DCR, recover client_id from encrypted storage.
-            # A second call to start_authorization (e.g. user clicks Connect twice) reaches
-            # this branch: we generate fresh PKCE/state and insert another pending row.
-            # Both pending rows remain valid until their TTLs expire.
-            client_id = decrypt_blob(existing.client_id_enc, self._secrets_key).decode()
+            client_id = decrypt_blob(conn.client_id_enc, self._secrets_key).decode()
+
+        # Effective scopes: connection scopes if set, else everything the provider advertises.
+        effective_scopes = list(conn.scopes) if conn.scopes else metadata.scopes_supported
 
         verifier = generate_code_verifier()
         challenge = generate_code_challenge(verifier)
         state = generate_state()
 
         async with self._session_factory() as session:
-            await OAuthPendingRepo(session).insert(
+            await MCPPendingRepo(session).insert(
                 state=state,
-                provider_key=provider_key,
+                connection_id=connection_id,
                 code_verifier=verifier,
                 now=datetime.now(UTC),
             )
@@ -187,8 +187,6 @@ class OAuthFlow:
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
-        # Effective scopes: catalog override if present, else everything the provider advertises.
-        effective_scopes = list(entry.scopes) if entry.scopes else metadata.scopes_supported
         if effective_scopes:
             params["scope"] = " ".join(effective_scopes)
         params.update(entry.extra_auth_params)
@@ -211,10 +209,11 @@ class OAuthFlow:
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
         }
-        # Effective scopes: catalog override if present, else everything the provider advertises.
-        effective_scopes = list(entry.scopes) if entry.scopes else metadata.scopes_supported
-        if effective_scopes:
-            body["scope"] = " ".join(effective_scopes)
+        # Registration scope is advisory; the binding scopes go on the authorization
+        # request. Use the provider default_scopes, falling back to what's advertised.
+        reg_scopes = list(entry.default_scopes) or metadata.scopes_supported
+        if reg_scopes:
+            body["scope"] = " ".join(reg_scopes)
         resp = await self._http.post(metadata.registration_endpoint, json=body)
         if resp.status_code >= 400:
             raise OAuthDiscoveryError(
@@ -225,26 +224,6 @@ class OAuthFlow:
             client_id=data["client_id"],
             client_secret=data.get("client_secret"),
         )
-
-    def _resolve_manual_client(self, entry: ProviderEntry) -> RegisteredClient:
-        """Read operator-supplied client_id/secret from the environment.
-
-        Manual-mode providers (e.g. Google) don't support DCR; the operator
-        creates the OAuth client by hand and supplies its credentials via env.
-        """
-        if not entry.client_id_env:
-            raise OAuthDiscoveryError(
-                f"{entry.key}: manual-mode provider has no client_id_env configured"
-            )
-        client_id = os.environ.get(entry.client_id_env)
-        if not client_id:
-            raise OAuthDiscoveryError(
-                f"{entry.key}: environment variable {entry.client_id_env} is not set"
-            )
-        client_secret = (
-            os.environ.get(entry.client_secret_env) if entry.client_secret_env else None
-        )
-        return RegisteredClient(client_id=client_id, client_secret=client_secret)
 
     async def handle_callback(self, *, state: str, code: str) -> CallbackResult:
         """Exchange authorization code for tokens and persist them.
@@ -259,26 +238,26 @@ class OAuthFlow:
 
         # --- CSRF defense: state MUST exist before we do anything else ---
         async with self._session_factory() as session:
-            pending = await OAuthPendingRepo(session).get(state)
+            pending = await MCPPendingRepo(session).get(state)
         if pending is None:
             raise OAuthCallbackError(f"unknown or expired state {state!r}")
 
-        provider_key = pending.provider_key
-        entry = OAUTH_CATALOG[provider_key]
-        metadata = await self.discover(entry)
-
-        # Recover registered client credentials from encrypted storage.
+        connection_id = pending.connection_id
         async with self._session_factory() as session:
-            cred = await OAuthCredentialsRepo(session).get(provider_key)
-        if cred is None or not cred.client_id_enc:
+            conn = await MCPConnectionRepo(session).get(connection_id)
+        if conn is None or not conn.client_id_enc:
             raise OAuthCallbackError(
-                f"{provider_key}: no registered client; cannot complete callback"
+                f"{connection_id}: no registered client; cannot complete callback"
             )
 
-        client_id = decrypt_blob(cred.client_id_enc, self._secrets_key).decode()
+        entry = await self._catalog.get(conn.provider_key)
+        metadata = await self.discover(entry)
+
+        # Recover registered client credentials from the connection.
+        client_id = decrypt_blob(conn.client_id_enc, self._secrets_key).decode()
         client_secret = (
-            decrypt_blob(cred.client_secret_enc, self._secrets_key).decode()
-            if cred.client_secret_enc
+            decrypt_blob(conn.client_secret_enc, self._secrets_key).decode()
+            if conn.client_secret_enc
             else None
         )
 
@@ -326,12 +305,10 @@ class OAuthFlow:
         # Write-time uses the raw expires_in; 90s skew buffer is applied at refresh-time.
         expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
 
-        # Persist new tokens and delete the pending row atomically within the same session.
+        # Persist new tokens and delete the pending row.
         async with self._session_factory() as session:
-            await OAuthCredentialsRepo(session).upsert(
-                provider_key=provider_key,
-                client_id_enc=cred.client_id_enc,
-                client_secret_enc=cred.client_secret_enc,
+            await MCPConnectionRepo(session).set_tokens(
+                connection_id,
                 access_token_enc=encrypt_blob(access_token.encode(), self._secrets_key),
                 refresh_token_enc=(
                     encrypt_blob(refresh_token.encode(), self._secrets_key)
@@ -341,11 +318,16 @@ class OAuthFlow:
                 token_expires_at=expires_at,
                 scopes_granted=scopes_granted,
             )
-            await OAuthPendingRepo(session).delete(state)
+            await MCPPendingRepo(session).delete(state)
 
-        return CallbackResult(provider_key=provider_key, scopes_granted=scopes_granted)
+        return CallbackResult(
+            connection_id=connection_id,
+            provider_key=conn.provider_key,
+            runtime_name=conn.runtime_name,
+            scopes_granted=scopes_granted,
+        )
 
-    async def refresh(self, provider_key: str) -> dict[str, str]:
+    async def refresh(self, connection_id: UUID) -> dict[str, str]:
         """Refresh tokens. Returns new headers dict for MCPServerStreamableHttp.
 
         Raises OAuthRefreshTransientError on network/5xx (caller may retry).
@@ -354,24 +336,26 @@ class OAuthFlow:
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for refresh")
-        entry = OAUTH_CATALOG[provider_key]
-        metadata = await self.discover(entry)
 
         async with self._session_factory() as session:
-            cred = await OAuthCredentialsRepo(session).get(provider_key)
-        if cred is None:
-            raise OAuthRefreshPermanentError(f"{provider_key}: no credentials row")
-        if not cred.refresh_token_enc:
-            await self._mark_needs_reauth(provider_key, "no refresh_token on file")
-            raise OAuthRefreshPermanentError(f"{provider_key}: no refresh_token on file")
+            conn = await MCPConnectionRepo(session).get(connection_id)
+        if conn is None:
+            raise OAuthRefreshPermanentError(f"{connection_id}: no connection row")
 
-        client_id = decrypt_blob(cred.client_id_enc, self._secrets_key).decode()
+        entry = await self._catalog.get(conn.provider_key)
+        metadata = await self.discover(entry)
+
+        if not conn.refresh_token_enc:
+            await self._mark_needs_reauth(connection_id, "no refresh_token on file")
+            raise OAuthRefreshPermanentError(f"{connection_id}: no refresh_token on file")
+
+        client_id = decrypt_blob(conn.client_id_enc, self._secrets_key).decode()
         client_secret = (
-            decrypt_blob(cred.client_secret_enc, self._secrets_key).decode()
-            if cred.client_secret_enc
+            decrypt_blob(conn.client_secret_enc, self._secrets_key).decode()
+            if conn.client_secret_enc
             else None
         )
-        refresh_token = decrypt_blob(cred.refresh_token_enc, self._secrets_key).decode()
+        refresh_token = decrypt_blob(conn.refresh_token_enc, self._secrets_key).decode()
 
         form: dict[str, str] = {
             "grant_type": "refresh_token",
@@ -399,9 +383,9 @@ class OAuthFlow:
                 err = resp.json().get("error", "")
             except Exception:
                 err = resp.text[:120]
-            await self._mark_needs_reauth(provider_key, f"refresh failed: {err}")
+            await self._mark_needs_reauth(connection_id, f"refresh failed: {err}")
             raise OAuthRefreshPermanentError(
-                f"{provider_key}: refresh permanently failed: {err}"
+                f"{connection_id}: refresh permanently failed: {err}"
             )
 
         data = resp.json()
@@ -411,8 +395,8 @@ class OAuthFlow:
         expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
 
         async with self._session_factory() as session:
-            await OAuthCredentialsRepo(session).update_tokens(
-                provider_key,
+            await MCPConnectionRepo(session).update_tokens(
+                connection_id,
                 access_token_enc=encrypt_blob(access_token.encode(), self._secrets_key),
                 refresh_token_enc=(
                     encrypt_blob(new_refresh.encode(), self._secrets_key)
@@ -424,30 +408,31 @@ class OAuthFlow:
 
         return {"Authorization": f"Bearer {access_token}"}
 
-    async def revoke(self, provider_key: str) -> None:
-        """Best-effort RFC 7009 token revocation followed by local credential deletion.
+    async def revoke(self, connection_id: UUID) -> None:
+        """Best-effort RFC 7009 token revocation against the provider.
 
-        Network errors and non-200 responses are logged but not raised — the user
-        clicked Disconnect and we always honor that locally.
+        Network errors and non-200 responses are logged but not raised. This does
+        NOT mutate or delete the connection row — the caller is responsible for
+        clearing/deleting it after revocation.
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for revoke")
-        entry = OAUTH_CATALOG[provider_key]
 
         async with self._session_factory() as session:
-            cred = await OAuthCredentialsRepo(session).get(provider_key)
-        if cred is None:
+            conn = await MCPConnectionRepo(session).get(connection_id)
+        if conn is None:
             return  # nothing to revoke
 
         # Best-effort revocation against the provider.
         try:
+            entry = await self._catalog.get(conn.provider_key)
             metadata = await self.discover(entry)
-            if metadata.revocation_endpoint and cred.access_token_enc:
-                access_token = decrypt_blob(cred.access_token_enc, self._secrets_key).decode()
-                client_id = decrypt_blob(cred.client_id_enc, self._secrets_key).decode()
+            if metadata.revocation_endpoint and conn.access_token_enc:
+                access_token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
+                client_id = decrypt_blob(conn.client_id_enc, self._secrets_key).decode()
                 client_secret = (
-                    decrypt_blob(cred.client_secret_enc, self._secrets_key).decode()
-                    if cred.client_secret_enc
+                    decrypt_blob(conn.client_secret_enc, self._secrets_key).decode()
+                    if conn.client_secret_enc
                     else None
                 )
                 form: dict[str, str] = {
@@ -468,37 +453,30 @@ class OAuthFlow:
                         _log.warning(
                             "revocation endpoint returned %s for %s",
                             resp.status_code,
-                            provider_key,
+                            connection_id,
                         )
                 except httpx.HTTPError as e:
-                    _log.warning("revocation HTTP error for %s: %s", provider_key, e)
+                    _log.warning("revocation HTTP error for %s: %s", connection_id, e)
         except Exception:
-            _log.exception(
-                "revocation pre-step failed for %s; proceeding with local cleanup",
-                provider_key,
-            )
+            _log.exception("revocation pre-step failed for %s", connection_id)
 
-        # Always delete local credentials regardless of remote outcome.
-        async with self._session_factory() as session:
-            await OAuthCredentialsRepo(session).delete(provider_key)
-
-    async def current_headers(self, provider_key: str) -> dict[str, str]:
-        """Return ``{"Authorization": "Bearer <access_token>"}`` for an active provider.
+    async def current_headers(self, connection_id: UUID) -> dict[str, str]:
+        """Return ``{"Authorization": "Bearer <access_token>"}`` for an active connection.
 
         Does NOT refresh — that is the scheduler's responsibility.
-        Raises ``LookupError`` if no credentials row exists or the access token is absent.
+        Raises ``LookupError`` if no connection row exists or the access token is absent.
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for current_headers")
         async with self._session_factory() as session:
-            cred = await OAuthCredentialsRepo(session).get(provider_key)
-        if cred is None or not cred.access_token_enc:
-            raise LookupError(f"{provider_key}: no active credentials")
-        access_token = decrypt_blob(cred.access_token_enc, self._secrets_key).decode()
+            conn = await MCPConnectionRepo(session).get(connection_id)
+        if conn is None or not conn.access_token_enc:
+            raise LookupError(f"{connection_id}: no active credentials")
+        access_token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
         return {"Authorization": f"Bearer {access_token}"}
 
-    async def _mark_needs_reauth(self, provider_key: str, reason: str) -> None:
+    async def _mark_needs_reauth(self, connection_id: UUID, reason: str) -> None:
         async with self._session_factory() as session:
-            await OAuthCredentialsRepo(session).set_status(
-                provider_key, status="needs_reauth", last_error=reason
+            await MCPConnectionRepo(session).set_status(
+                connection_id, status="needs_reauth", last_error=reason
             )
