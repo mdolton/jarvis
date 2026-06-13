@@ -5,11 +5,48 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jarvis.persistence.models import OAuthCredentialsRow, OAuthPendingRow
+from jarvis.persistence.models import MCPProviderRow, OAuthCredentialsRow, OAuthPendingRow
 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class MCPProviderRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, key: str) -> MCPProviderRow | None:
+        res = await self._session.execute(
+            select(MCPProviderRow).where(MCPProviderRow.key == key)
+        )
+        return res.scalar_one_or_none()
+
+    async def list_all(self) -> list[MCPProviderRow]:
+        res = await self._session.execute(select(MCPProviderRow))
+        return list(res.scalars())
+
+    async def upsert(self, *, key: str, display_name: str, kind: str, mcp_url: str,
+                     builtin: bool, auth_mode: str | None, oauth_metadata_url: str | None,
+                     pkce: bool, send_resource_indicator: bool, extra_auth_params: dict,
+                     default_scopes: list[str], header_names: list[str]) -> MCPProviderRow:
+        now = _utcnow()
+        row = await self.get(key)
+        if row is None:
+            row = MCPProviderRow(key=key, created_at=now)
+            self._session.add(row)
+        row.display_name = display_name; row.kind = kind; row.mcp_url = mcp_url
+        row.builtin = builtin; row.auth_mode = auth_mode
+        row.oauth_metadata_url = oauth_metadata_url; row.pkce = pkce
+        row.send_resource_indicator = send_resource_indicator
+        row.extra_auth_params = extra_auth_params; row.default_scopes = default_scopes
+        row.header_names = header_names; row.updated_at = now
+        await self._session.commit()
+        return row
+
+    async def delete(self, key: str) -> None:
+        await self._session.execute(delete(MCPProviderRow).where(MCPProviderRow.key == key))
+        await self._session.commit()
 
 
 class OAuthCredentialsRepo:

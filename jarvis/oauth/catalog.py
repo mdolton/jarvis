@@ -8,6 +8,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 
 class AuthMode(StrEnum):
     DCR = "dcr"          # RFC 7591 dynamic client registration
@@ -90,6 +92,53 @@ SEED_PROVIDERS: dict[str, ProviderEntry] = {
 # Transitional alias — importers are migrated to SEED_PROVIDERS / ProviderCatalog in
 # later tasks; this alias is removed once the last importer is migrated.
 OAUTH_CATALOG = SEED_PROVIDERS
+
+
+class ProviderCatalog:
+    """Runtime, DB-backed view of the provider catalog. Reconstructs ProviderEntry rows."""
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._factory = session_factory
+
+    @staticmethod
+    def _to_entry(row) -> ProviderEntry:
+        return ProviderEntry(
+            key=row.key, display_name=row.display_name, kind=row.kind, mcp_url=row.mcp_url,
+            auth_mode=AuthMode(row.auth_mode) if row.auth_mode else AuthMode.DCR,
+            oauth_metadata_url=row.oauth_metadata_url, pkce=row.pkce,
+            send_resource_indicator=row.send_resource_indicator,
+            extra_auth_params=dict(row.extra_auth_params or {}),
+            default_scopes=tuple(row.default_scopes or ()),
+            header_names=tuple(row.header_names or ()),
+        )
+
+    async def get(self, key: str) -> ProviderEntry:
+        from jarvis.oauth.store import MCPProviderRepo
+        async with self._factory() as s:
+            row = await MCPProviderRepo(s).get(key)
+        if row is None:
+            raise KeyError(key)
+        return self._to_entry(row)
+
+    async def list(self) -> list[ProviderEntry]:
+        from jarvis.oauth.store import MCPProviderRepo
+        async with self._factory() as s:
+            rows = await MCPProviderRepo(s).list_all()
+        return [self._to_entry(r) for r in rows]
+
+
+async def seed_built_in_providers(session) -> None:
+    """Idempotently upsert SEED_PROVIDERS as builtin rows. Definition-only, no secrets."""
+    from jarvis.oauth.store import MCPProviderRepo
+    repo = MCPProviderRepo(session)
+    for entry in SEED_PROVIDERS.values():
+        await repo.upsert(
+            key=entry.key, display_name=entry.display_name, kind=entry.kind,
+            mcp_url=entry.mcp_url, builtin=True,
+            auth_mode=entry.auth_mode.value, oauth_metadata_url=entry.oauth_metadata_url,
+            pkce=entry.pkce, send_resource_indicator=entry.send_resource_indicator,
+            extra_auth_params=dict(entry.extra_auth_params),
+            default_scopes=list(entry.default_scopes), header_names=list(entry.header_names),
+        )
 
 
 def slug_label(label: str) -> str:
