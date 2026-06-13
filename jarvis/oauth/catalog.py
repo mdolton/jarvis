@@ -36,11 +36,6 @@ class ProviderEntry:
     kind: str = "oauth"
     header_names: tuple[str, ...] = ()
 
-    @property
-    def scopes(self) -> tuple[str, ...]:
-        """Backward-compatible alias for default_scopes."""
-        return self.default_scopes
-
 
 SEED_PROVIDERS: dict[str, ProviderEntry] = {
     "fastmail": ProviderEntry(
@@ -88,10 +83,6 @@ SEED_PROVIDERS: dict[str, ProviderEntry] = {
         client_secret_env="GOOGLE_OAUTH_CLIENT_SECRET",
     ),
 }
-
-# Transitional alias — importers are migrated to SEED_PROVIDERS / ProviderCatalog in
-# later tasks; this alias is removed once the last importer is migrated.
-OAUTH_CATALOG = SEED_PROVIDERS
 
 
 class ProviderCatalog:

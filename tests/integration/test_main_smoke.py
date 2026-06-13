@@ -267,6 +267,7 @@ async def test_app_context_shutdown_drains_memory_tasks_before_closing_clients()
         scheduler=FakeScheduler(),
         web_app=FastAPI(),
         oauth_flow=object(),
+        catalog=object(),
         oauth_http=FakeStopper("oauth"),
         llm_client=FakeStopper("llm"),
         model_catalog=object(),

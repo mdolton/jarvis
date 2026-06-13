@@ -355,27 +355,3 @@ class SettingRow(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[object] = mapped_column(JSON)
 
-
-class OAuthCredentialsRow(Base):
-    __tablename__ = "oauth_credentials"
-
-    provider_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    client_id_enc: Mapped[bytes] = mapped_column(LargeBinary)
-    client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    access_token_enc: Mapped[bytes] = mapped_column(LargeBinary)
-    refresh_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    token_expires_at: Mapped[datetime] = mapped_column(TZDateTime())
-    scopes_granted: Mapped[list] = mapped_column(JSON, default=list)
-    status: Mapped[str] = mapped_column(String(32), default="connected")
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    connected_at: Mapped[datetime] = mapped_column(TZDateTime())
-    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
-
-
-class OAuthPendingRow(Base):
-    __tablename__ = "oauth_pending"
-
-    state: Mapped[str] = mapped_column(String(64), primary_key=True)
-    provider_key: Mapped[str] = mapped_column(String(64))
-    code_verifier: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(TZDateTime())

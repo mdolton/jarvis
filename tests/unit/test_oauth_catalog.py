@@ -3,15 +3,16 @@
 import pytest
 
 from jarvis.oauth.catalog import (
-    OAUTH_CATALOG,
+    SEED_PROVIDERS,
     AuthMode,
     ProviderEntry,
     assert_no_yaml_collision,
+    slug_label,
 )
 
 
 def test_fastmail_entry_present():
-    entry = OAUTH_CATALOG["fastmail"]
+    entry = SEED_PROVIDERS["fastmail"]
     assert isinstance(entry, ProviderEntry)
     assert entry.auth_mode == AuthMode.DCR
     assert entry.mcp_url == "https://api.fastmail.com/mcp"
@@ -19,7 +20,7 @@ def test_fastmail_entry_present():
 
 
 def test_provider_entry_is_frozen():
-    entry = OAUTH_CATALOG["fastmail"]
+    entry = SEED_PROVIDERS["fastmail"]
     with pytest.raises(AttributeError):  # FrozenInstanceError is a subclass of AttributeError
         entry.mcp_url = "x"  # type: ignore[misc]
 
@@ -38,7 +39,7 @@ def test_assert_no_yaml_collision_empty_list_ok():
 
 
 def test_gmail_entry_present():
-    entry = OAUTH_CATALOG["gmail"]
+    entry = SEED_PROVIDERS["gmail"]
     assert isinstance(entry, ProviderEntry)
     assert entry.auth_mode == AuthMode.MANUAL
     assert entry.mcp_url == "https://gmailmcp.googleapis.com/mcp/v1"
@@ -47,7 +48,7 @@ def test_gmail_entry_present():
     )
     assert entry.client_id_env == "GOOGLE_OAUTH_CLIENT_ID"
     assert entry.client_secret_env == "GOOGLE_OAUTH_CLIENT_SECRET"
-    assert entry.scopes == (
+    assert entry.default_scopes == (
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
     )
@@ -56,7 +57,7 @@ def test_gmail_entry_present():
 
 
 def test_calendar_entry_present():
-    entry = OAUTH_CATALOG["calendar"]
+    entry = SEED_PROVIDERS["calendar"]
     assert isinstance(entry, ProviderEntry)
     assert entry.auth_mode == AuthMode.MANUAL
     assert entry.mcp_url == "https://calendarmcp.googleapis.com/mcp/v1"
@@ -66,7 +67,7 @@ def test_calendar_entry_present():
     # Reuses the shared Google OAuth client credentials.
     assert entry.client_id_env == "GOOGLE_OAUTH_CLIENT_ID"
     assert entry.client_secret_env == "GOOGLE_OAUTH_CLIENT_SECRET"
-    assert entry.scopes == (
+    assert entry.default_scopes == (
         "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
         "https://www.googleapis.com/auth/calendar.events.freebusy",
         "https://www.googleapis.com/auth/calendar.events.readonly",
@@ -76,20 +77,15 @@ def test_calendar_entry_present():
 
 
 def test_provider_entry_defaults_for_manual_fields():
-    entry = OAUTH_CATALOG["fastmail"]
+    entry = SEED_PROVIDERS["fastmail"]
     assert entry.client_id_env is None
     assert entry.client_secret_env is None
     assert entry.send_resource_indicator is True
 
 
 def test_fastmail_entry_still_present():
-    entry = OAUTH_CATALOG["fastmail"]
+    entry = SEED_PROVIDERS["fastmail"]
     assert entry.auth_mode == AuthMode.DCR
-
-
-# --- New tests for SEED_PROVIDERS / slug_label ---
-
-from jarvis.oauth.catalog import SEED_PROVIDERS, slug_label
 
 
 def test_seed_providers_have_kind_and_default_scopes():
