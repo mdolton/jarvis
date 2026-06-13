@@ -85,3 +85,21 @@ def test_provider_entry_defaults_for_manual_fields():
 def test_fastmail_entry_still_present():
     entry = OAUTH_CATALOG["fastmail"]
     assert entry.auth_mode == AuthMode.DCR
+
+
+# --- New tests for SEED_PROVIDERS / slug_label ---
+
+from jarvis.oauth.catalog import SEED_PROVIDERS, slug_label
+
+
+def test_seed_providers_have_kind_and_default_scopes():
+    cal = SEED_PROVIDERS["calendar"]
+    assert cal.kind == "oauth"
+    assert cal.default_scopes  # documented scope set
+    assert cal.display_name == "Google Calendar"
+
+
+def test_slug_label_lowercases_and_dashes():
+    assert slug_label("Work Account!") == "work-account"
+    assert slug_label("  Personal  ") == "personal"
+    assert slug_label("a/b") == "a-b"

@@ -3,6 +3,7 @@
 Adding a provider is a typed PR with tests, never a config edit.
 """
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -23,23 +24,31 @@ class ProviderEntry:
     authorization_endpoint: str | None = None
     token_endpoint: str | None = None
     extra_auth_params: dict[str, str] = field(default_factory=dict)
-    scopes: tuple[str, ...] = ()
+    default_scopes: tuple[str, ...] = ()
     pkce: bool = True
     # MANUAL mode: env vars holding operator-created client credentials.
     client_id_env: str | None = None
     client_secret_env: str | None = None
     # RFC 8707 resource indicator. Default on; flip off if a provider rejects it.
     send_resource_indicator: bool = True
+    kind: str = "oauth"
+    header_names: tuple[str, ...] = ()
+
+    @property
+    def scopes(self) -> tuple[str, ...]:
+        """Backward-compatible alias for default_scopes."""
+        return self.default_scopes
 
 
-OAUTH_CATALOG: dict[str, ProviderEntry] = {
+SEED_PROVIDERS: dict[str, ProviderEntry] = {
     "fastmail": ProviderEntry(
         key="fastmail",
         display_name="Fastmail",
         mcp_url="https://api.fastmail.com/mcp",
         auth_mode=AuthMode.DCR,
         oauth_metadata_url="https://api.fastmail.com/.well-known/oauth-authorization-server",
-        scopes=(),
+        kind="oauth",
+        default_scopes=(),
     ),
     "gmail": ProviderEntry(
         key="gmail",
@@ -47,7 +56,8 @@ OAUTH_CATALOG: dict[str, ProviderEntry] = {
         mcp_url="https://gmailmcp.googleapis.com/mcp/v1",
         auth_mode=AuthMode.MANUAL,
         oauth_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        scopes=(
+        kind="oauth",
+        default_scopes=(
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/gmail.compose",
         ),
@@ -61,9 +71,10 @@ OAUTH_CATALOG: dict[str, ProviderEntry] = {
         mcp_url="https://calendarmcp.googleapis.com/mcp/v1",
         auth_mode=AuthMode.MANUAL,
         oauth_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        kind="oauth",
         # Read-only scopes documented for the Calendar MCP server. See
         # developers.google.com/workspace/calendar/api/guides/configure-mcp-server
-        scopes=(
+        default_scopes=(
             "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
             "https://www.googleapis.com/auth/calendar.events.freebusy",
             "https://www.googleapis.com/auth/calendar.events.readonly",
@@ -76,15 +87,22 @@ OAUTH_CATALOG: dict[str, ProviderEntry] = {
     ),
 }
 
+# Transitional alias — importers are migrated to SEED_PROVIDERS / ProviderCatalog in
+# later tasks; this alias is removed once the last importer is migrated.
+OAUTH_CATALOG = SEED_PROVIDERS
 
-def assert_no_yaml_collision(yaml_server_names: Iterable[str]) -> None:
-    """Raise ValueError if any YAML-defined MCP server name matches a catalog key."""
-    catalog_keys = set(OAUTH_CATALOG)
-    yaml_set = set(yaml_server_names)
-    overlap = catalog_keys & yaml_set
+
+def slug_label(label: str) -> str:
+    """Stable connection slug: lowercase, non-alphanumeric runs -> single dash."""
+    return re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")
+
+
+def assert_no_yaml_collision(yaml_server_names: Iterable[str], catalog_keys: Iterable[str] | None = None) -> None:
+    """Raise if any stdio YAML server name collides with a provider/catalog key."""
+    keys = set(catalog_keys) if catalog_keys is not None else set(SEED_PROVIDERS)
+    overlap = keys & set(yaml_server_names)
     if overlap:
         joined = ", ".join(sorted(overlap))
         raise ValueError(
-            f"YAML MCP server name(s) collide with built-in OAuth catalog keys: {joined}. "
-            f"Rename the YAML server(s)."
+            f"stdio MCP server name(s) collide with provider keys: {joined}. Rename the stdio server(s)."
         )
