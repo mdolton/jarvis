@@ -36,12 +36,18 @@ class MCPProviderRepo:
         if row is None:
             row = MCPProviderRow(key=key, created_at=now)
             self._session.add(row)
-        row.display_name = display_name; row.kind = kind; row.mcp_url = mcp_url
-        row.builtin = builtin; row.auth_mode = auth_mode
-        row.oauth_metadata_url = oauth_metadata_url; row.pkce = pkce
+        row.display_name = display_name
+        row.kind = kind
+        row.mcp_url = mcp_url
+        row.builtin = builtin
+        row.auth_mode = auth_mode
+        row.oauth_metadata_url = oauth_metadata_url
+        row.pkce = pkce
         row.send_resource_indicator = send_resource_indicator
-        row.extra_auth_params = extra_auth_params; row.default_scopes = default_scopes
-        row.header_names = header_names; row.updated_at = now
+        row.extra_auth_params = extra_auth_params
+        row.default_scopes = default_scopes
+        row.header_names = header_names
+        row.updated_at = now
         await self._session.commit()
         return row
 

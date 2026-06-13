@@ -4,7 +4,6 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import pytest_asyncio
 
 from jarvis.oauth.catalog import seed_built_in_providers

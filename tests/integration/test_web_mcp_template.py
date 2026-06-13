@@ -19,11 +19,17 @@ async def client(tmp_path):
     factory = session_factory(engine)
     async with factory() as s:
         await seed_built_in_providers(s)
-        await MCPConnectionRepo(s).create(provider_key="gmail", label="Personal", runtime_name="gmail:personal")
+        await MCPConnectionRepo(s).create(
+            provider_key="gmail", label="Personal", runtime_name="gmail:personal"
+        )
         await MCPServerRepo(s).upsert(name="fs", transport="stdio")
-    ctx = MagicMock(); ctx.session_factory = factory; ctx.catalog = ProviderCatalog(factory)
-    ctx.config = MagicMock(); ctx.config.secrets_key = generate_key().encode()
-    ctx.audit = MagicMock(); ctx.audit.emit = AsyncMock()
+    ctx = MagicMock()
+    ctx.session_factory = factory
+    ctx.catalog = ProviderCatalog(factory)
+    ctx.config = MagicMock()
+    ctx.config.secrets_key = generate_key().encode()
+    ctx.audit = MagicMock()
+    ctx.audit.emit = AsyncMock()
     ctx.mcp_manager = MagicMock()
     app = create_app(app_context=ctx)
     yield TestClient(app)

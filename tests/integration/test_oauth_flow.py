@@ -6,8 +6,8 @@ ProviderCatalog, the *credentials/scopes/tokens* from the connection row.
 
 from urllib.parse import parse_qs, urlparse
 
-import pytest
 import httpx
+import pytest
 
 from jarvis.oauth.catalog import SEED_PROVIDERS, ProviderCatalog, seed_built_in_providers
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob, generate_key

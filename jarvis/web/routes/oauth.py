@@ -115,7 +115,7 @@ async def oauth_connect(connection_id: str, request: Request):
     try:
         cid = UUID(connection_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}")
+        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}") from None
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
         conn = await MCPConnectionRepo(session).get(cid)
@@ -139,7 +139,7 @@ async def oauth_disconnect(connection_id: str, request: Request):
     try:
         cid = UUID(connection_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}")
+        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}") from None
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
         conn = await MCPConnectionRepo(session).get(cid)

@@ -125,7 +125,7 @@ async def add_connection(
     try:
         entry = await ctx.catalog.get(provider_key)
     except KeyError:
-        raise HTTPException(404, f"unknown provider {provider_key!r}")
+        raise HTTPException(404, f"unknown provider {provider_key!r}") from None
     async with ctx.session_factory() as session:
         existing = {c.runtime_name for c in await MCPConnectionRepo(session).list_all()}
     rt = unique_runtime_name(existing, provider_key, label)

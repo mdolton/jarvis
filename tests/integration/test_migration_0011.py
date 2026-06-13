@@ -79,7 +79,7 @@ def test_0011_migrates_existing_oauth_credentials_to_connection(tmp_path):
     rows = cur.fetchall()
     conn.close()
     assert len(rows) == 1
-    pk, label, rt, cid_enc, at_enc, status = rows[0]
+    pk, _label, rt, cid_enc, at_enc, status = rows[0]
     assert pk == "gmail" and rt == "gmail:default" and status == "connected"
     assert f.decrypt(cid_enc) == b"CID" and f.decrypt(at_enc) == b"AT"
 
