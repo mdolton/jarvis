@@ -907,16 +907,20 @@ class MCPServerRepo:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def upsert(self, *, name: str, transport: str) -> MCPServerRow:
+    async def upsert(self, *, name: str, transport: str, source: str = "stdio",
+                     connection_id: "UUID | None" = None) -> MCPServerRow:
         result = await self._session.execute(select(MCPServerRow).where(MCPServerRow.name == name))
         existing = result.scalar_one_or_none()
         if existing:
             existing.transport = transport
+            existing.source = source
+            existing.connection_id = connection_id
             await self._session.commit()
             await self._session.refresh(existing)
             return existing
 
-        row = MCPServerRow(name=name, transport=transport, status="disconnected")
+        row = MCPServerRow(name=name, transport=transport, status="disconnected",
+                           source=source, connection_id=connection_id)
         self._session.add(row)
         await self._session.commit()
         await self._session.refresh(row)
