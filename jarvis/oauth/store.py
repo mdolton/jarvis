@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jarvis.persistence.models import MCPConnectionRow, MCPProviderRow, OAuthCredentialsRow, OAuthPendingRow
+from jarvis.persistence.models import MCPConnectionRow, MCPPendingRow, MCPProviderRow, OAuthCredentialsRow, OAuthPendingRow
 
 
 def _utcnow() -> datetime:
@@ -326,3 +326,33 @@ class OAuthPendingRepo:
         )
         await self._session.commit()
         return result.rowcount or 0
+
+
+class MCPPendingRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def insert(self, *, state: str, connection_id: UUID, code_verifier: str,
+                     now: datetime) -> None:
+        self._session.add(MCPPendingRow(
+            state=state, connection_id=connection_id, code_verifier=code_verifier, created_at=now,
+        ))
+        await self._session.commit()
+
+    async def get(self, state: str) -> MCPPendingRow | None:
+        res = await self._session.execute(
+            select(MCPPendingRow).where(MCPPendingRow.state == state)
+        )
+        return res.scalar_one_or_none()
+
+    async def delete(self, state: str) -> None:
+        await self._session.execute(delete(MCPPendingRow).where(MCPPendingRow.state == state))
+        await self._session.commit()
+
+    async def sweep_expired(self, *, now: datetime, ttl_seconds: int = 600) -> int:
+        cutoff = now - timedelta(seconds=ttl_seconds)
+        res = await self._session.execute(
+            delete(MCPPendingRow).where(MCPPendingRow.created_at < cutoff)
+        )
+        await self._session.commit()
+        return res.rowcount or 0

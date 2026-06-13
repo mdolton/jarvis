@@ -302,6 +302,17 @@ class MCPConnectionRow(Base):
     provider: Mapped[MCPProviderRow] = relationship(back_populates="connections")
 
 
+class MCPPendingRow(Base):
+    __tablename__ = "mcp_pending"
+
+    state: Mapped[str] = mapped_column(String(64), primary_key=True)
+    connection_id: Mapped[UUID] = mapped_column(
+        ForeignKey("mcp_connections.id", ondelete="CASCADE"), index=True
+    )
+    code_verifier: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+
 class MCPServerRow(Base):
     __tablename__ = "mcp_servers"
 
