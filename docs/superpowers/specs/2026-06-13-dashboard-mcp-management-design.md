@@ -254,13 +254,13 @@ Existing patterns: stubbed `httpx` (`MockTransport`) and in-memory DB.
 - Routes: each CRUD path (add/edit/enable/disable/remove provider, connection, and
   stdio toggle), including stdio-creation refusal.
 
-## Open questions (resolve during planning)
+## Resolved decisions
 
-1. **Removing a provider that still has connections** — refuse with a message
-   ("remove its connections first") vs. cascade-delete connections (disconnect +
-   revoke each). Leaning refuse for safety.
-2. **`headers_enc` encryption granularity** — encrypt the whole header JSON blob
-   (simpler) vs. per-value. Leaning whole-blob, consistent with token encryption.
+1. **Removing a provider that still has connections** — refuse with a clear
+   message ("remove its connections first"); the operator deletes connections
+   before the provider. No cascade.
+2. **`headers_enc` encryption granularity** — encrypt the whole header JSON blob,
+   consistent with token encryption.
 
 ## Out of scope
 
