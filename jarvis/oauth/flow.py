@@ -132,6 +132,8 @@ class OAuthFlow:
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for start_authorization")
+        if self._catalog is None:
+            raise RuntimeError("OAuthFlow needs a catalog for start_authorization")
 
         async with self._session_factory() as session:
             conn = await MCPConnectionRepo(session).get(connection_id)
@@ -235,6 +237,8 @@ class OAuthFlow:
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for handle_callback")
+        if self._catalog is None:
+            raise RuntimeError("OAuthFlow needs a catalog for handle_callback")
 
         # --- CSRF defense: state MUST exist before we do anything else ---
         async with self._session_factory() as session:
@@ -336,6 +340,8 @@ class OAuthFlow:
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for refresh")
+        if self._catalog is None:
+            raise RuntimeError("OAuthFlow needs a catalog for refresh")
 
         async with self._session_factory() as session:
             conn = await MCPConnectionRepo(session).get(connection_id)
@@ -417,6 +423,8 @@ class OAuthFlow:
         """
         if self._session_factory is None:
             raise RuntimeError("OAuthFlow needs a session_factory for revoke")
+        if self._catalog is None:
+            raise RuntimeError("OAuthFlow needs a catalog for revoke")
 
         async with self._session_factory() as session:
             conn = await MCPConnectionRepo(session).get(connection_id)
