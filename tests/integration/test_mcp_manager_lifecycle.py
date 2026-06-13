@@ -16,7 +16,7 @@ import contextlib
 
 import pytest
 
-from jarvis.config.schema import MCPServersConfig
+from jarvis.config.schema import MCPServerConfig, MCPServersConfig
 from jarvis.mcp.manager import MCPManager
 from jarvis.persistence.db import Base, create_engine, session_factory
 from jarvis.persistence.repositories import MCPServerRepo
@@ -73,6 +73,32 @@ async def factory(tmp_path):
     f = session_factory(engine)
     yield f
     await engine.dispose()
+
+
+async def test_start_prunes_orphan_stdio_rows_absent_from_config(factory):
+    """On start, stdio-source rows not in the yaml config are pruned (removed-from-
+    yaml servers + the OAuth/HTTP orphans the 0011 migration mislabeled as stdio),
+    while configured servers and connection-backed rows survive."""
+    async with factory() as s:
+        repo = MCPServerRepo(s)
+        await repo.upsert(name="gmail", transport="http")  # migration orphan
+        await repo.upsert(name="calendar", transport="http")  # migration orphan
+        await repo.upsert(name="ynab", transport="stdio")  # removed from yaml
+        await repo.upsert(name="keepme", transport="stdio")  # still configured
+        await repo.upsert(name="gmail:default", transport="http", source="connection")
+
+    # `keepme` is disabled so start() won't try to spawn it, but it stays in config.
+    cfg = MCPServersConfig(
+        servers=[MCPServerConfig(name="keepme", transport="stdio", enabled=False, command=["x"])]
+    )
+    mgr = MCPManager(config=cfg, session_factory=factory)
+    await mgr.start()
+    try:
+        async with factory() as s:
+            remaining = {row.name for row in await MCPServerRepo(s).list_all()}
+        assert remaining == {"keepme", "gmail:default"}
+    finally:
+        await mgr.stop()
 
 
 async def test_replace_closes_old_server_on_same_task_that_opened_it(factory, monkeypatch):
