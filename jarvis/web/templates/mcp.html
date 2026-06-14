@@ -76,10 +76,12 @@
     <label>Key <input name="key" required placeholder="notion"></label>
     <label>Display name <input name="display_name" required></label>
     <label>Kind <select name="kind"><option>oauth</option><option>http</option><option>sse</option></select></label>
-    <label>MCP URL <input name="mcp_url" required placeholder="https://mcp.example.com/mcp"></label>
-    <label>Auth mode (oauth) <select name="auth_mode"><option>dcr</option><option>manual</option></select></label>
-    <label>OAuth metadata URL (oauth) <input name="oauth_metadata_url"></label>
-    <label>Default scopes (space-separated) <input name="default_scopes"></label>
+    <label>MCP URL <input id="mcp_url" name="mcp_url" required placeholder="https://mcp.example.com/mcp"></label>
+    <button type="button" hx-post="/mcp/providers/discover" hx-include="#mcp_url" hx-target="#discovery-result">Discover OAuth settings</button>
+    <div id="discovery-result" class="muted"></div>
+    <label>Auth mode (oauth) <select id="auth_mode" name="auth_mode"><option>dcr</option><option>manual</option></select></label>
+    <label>OAuth metadata URL (oauth) <input id="oauth_metadata_url" name="oauth_metadata_url"></label>
+    <label>Default scopes (space-separated) <input id="default_scopes" name="default_scopes"></label>
     <button type="submit">Add provider</button>
   </form></details>
 </section>

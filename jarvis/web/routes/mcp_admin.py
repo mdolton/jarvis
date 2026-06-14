@@ -3,11 +3,12 @@ import json
 from uuid import UUID
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.core.types import AuditEvent, AuditEventType
 from jarvis.oauth.catalog import unique_runtime_name
 from jarvis.oauth.crypto import encrypt_blob
+from jarvis.oauth.discovery import DiscoveryResult, discover_provider
 from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
 from jarvis.persistence.repositories import SettingsRepo
 
@@ -71,6 +72,19 @@ async def add_provider(
         )
     await _emit(ctx, "provider.add", provider_key=key, kind=kind)
     return _redirect()
+
+
+@router.post("/mcp/providers/discover", response_class=HTMLResponse)
+async def discover_provider_endpoint(request: Request, mcp_url: str = Form(...)):
+    """Probe an MCP URL for OAuth metadata; return an HTMX fragment that prefills
+    the Add Provider form. Never fails the request — discovery is best-effort."""
+    ctx = request.app.state.ctx
+    templates = request.app.state.templates
+    if not mcp_url.strip():
+        result = DiscoveryResult(notes=["No URL provided."])
+    else:
+        result = await discover_provider(mcp_url, ctx.oauth_http)
+    return templates.TemplateResponse(request, "_provider_discovery.html", {"r": result})
 
 
 @router.post("/mcp/providers/{provider_key}/edit-credentials")
