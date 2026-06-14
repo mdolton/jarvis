@@ -43,7 +43,7 @@ def _origin(url: str) -> str:
 
 async def _get_json(http: httpx.AsyncClient, url: str, notes: list[str]) -> dict | None:
     try:
-        resp = await http.get(url)
+        resp = await http.get(url, follow_redirects=True)
     except httpx.HTTPError as e:
         notes.append(f"GET {url} failed: {e}")
         return None
@@ -74,7 +74,7 @@ async def _resource_metadata_hint(
     http: httpx.AsyncClient, mcp_url: str, notes: list[str]
 ) -> str | None:
     try:
-        resp = await http.get(mcp_url)
+        resp = await http.get(mcp_url, follow_redirects=True)
     except httpx.HTTPError as e:
         notes.append(f"Unauthenticated GET {mcp_url} failed: {e}")
         return None
@@ -134,6 +134,11 @@ async def discover_provider(mcp_url: str, http: httpx.AsyncClient) -> DiscoveryR
     mcp_url = mcp_url.strip()
     if not mcp_url:
         raise ValueError("mcp_url is required")
+    # NOTE: This issues GETs to operator-supplied URLs and to authorization-server
+    # hosts taken from the remote PRM document (no host allow-listing). That is safe
+    # only because discovery is operator-initiated from the authenticated dashboard.
+    # Do NOT expose this on an unauthenticated or agent-callable path without SSRF
+    # controls.
     notes: list[str] = []
 
     as_bases = await _find_authorization_servers(http, mcp_url, notes)

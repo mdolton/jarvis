@@ -140,3 +140,21 @@ async def test_scopes_supported_as_string_is_ignored():
     r = await discover_provider("https://mcp.example.com", make_client(handler))
     assert r.auth_mode == "dcr"
     assert r.scopes_supported == []  # malformed string scopes ignored, not split into chars
+
+
+async def test_follows_redirect_on_well_known():
+    def handler(req):
+        p = req.url.path
+        if p == "/.well-known/oauth-protected-resource":
+            return httpx.Response(
+                302, headers={"Location": "https://cdn.example.com/prm.json"}
+            )
+        if req.url.host == "cdn.example.com" and p == "/prm.json":
+            return httpx.Response(200, json={"authorization_servers": ["https://as.example.com"]})
+        if req.url.host == "as.example.com" and p == "/.well-known/oauth-authorization-server":
+            return httpx.Response(200, json=AS_META_DCR)
+        return httpx.Response(404)
+
+    r = await discover_provider("https://mcp.example.com", make_client(handler))
+    assert r.oauth_metadata_url == "https://as.example.com/.well-known/oauth-authorization-server"
+    assert r.auth_mode == "dcr"
