@@ -35,7 +35,7 @@ The Docker entrypoint runs `alembic upgrade head` then `python -m jarvis serve`.
 - `jarvis/main.py`, `cli.py` — bootstrap (`AppContext`) and Typer CLI (`invoke`, `check-config`, `serve`).
 - `jarvis/persistence/` — `db.py` (async engine, `TZDateTime`), `models.py` (all ORM rows), `repositories.py` (typed repos — **the only way to touch the DB**).
 - `jarvis/mcp/manager.py` — MCP server lifecycle (connect/replace/stop, tool discovery).
-- `jarvis/oauth/` — `flow.py` (DCR, authz, token refresh), `store.py` (`MCPProviderRepo`, `MCPConnectionRepo`), `catalog.py` (built-in provider seed), `crypto.py` (Fernet).
+- `jarvis/oauth/` — `flow.py` (DCR, authz, token refresh), `store.py` (`MCPProviderRepo`, `MCPConnectionRepo`), `catalog.py` (built-in provider seed), `crypto.py` (Fernet), `discovery.py` (auto-detect OAuth metadata from an MCP URL).
 - `jarvis/scheduler/` — APScheduler wrapper + `oauth_jobs.py` (background token refresh).
 - `jarvis/agents/` — Agents-SDK runner, LLM client, model catalog/selection.
 - `jarvis/channels/` — Discord adapter + slash commands.
@@ -77,6 +77,12 @@ The Docker entrypoint runs `alembic upgrade head` then `python -m jarvis serve`.
   by `test_migration_seed_matches_catalog`): Fastmail (DCR), Gmail and Google Calendar (manual auth).
 - **Gmail tool 403s** are usually external, not a code bug: `gmailmcp.googleapis.com` is behind an
   early-access allowlist and the failure can mean the wrong Google account is connected.
+- **OAuth provider discovery**: `oauth/discovery.py` `discover_provider(mcp_url, http)` derives the
+  `oauth_metadata_url`, `auth_mode` (`dcr` if the AS advertises `registration_endpoint`, else `manual`),
+  and scopes from just the MCP URL — RFC 9728 protected-resource metadata (MCP path → origin) →
+  `WWW-Authenticate` hint → AS-at-origin fallback, then RFC 8414 / OIDC metadata. It never raises on a
+  miss (returns a `DiscoveryResult` with a `notes` trace); the `/mcp/providers/discover` HTMX route
+  prefills the Add Provider form via out-of-band swaps. Operator-initiated only (no SSRF allow-listing).
 
 ## Workflow
 
