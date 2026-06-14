@@ -222,7 +222,9 @@ def upgrade() -> None:
                     "NULL, NULL, :status, :err, :conn_at, :now, :now)"
                 ),
                 {
-                    "id": str(uuid.uuid4()),
+                    # .hex (32-char, no dashes) is how SQLAlchemy's Uuid type stores
+                    # UUIDs on SQLite. str(uuid) (dashed) would break every PK lookup.
+                    "id": uuid.uuid4().hex,
                     "pk": m["provider_key"],
                     "rt": f"{m['provider_key']}:default",
                     "cid": m["client_id_enc"],
@@ -263,7 +265,7 @@ def upgrade() -> None:
                         "(:id, :pk, 'Default', :rt, 1, :cid, :sec, '[]', '[]', 'disconnected', "
                         ":now, :now)"
                     ),
-                    {"id": str(uuid.uuid4()), "pk": pkey, "rt": rt, "cid": cid_enc, "sec": sec_enc, "now": now},
+                    {"id": uuid.uuid4().hex, "pk": pkey, "rt": rt, "cid": cid_enc, "sec": sec_enc, "now": now},
                 )
             elif existing._mapping["client_id_enc"] is None:
                 bind.execute(
