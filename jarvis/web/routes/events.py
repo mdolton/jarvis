@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from jarvis.web.time_format import format_server_local
+from jarvis.web.time_format import configured_timezone, format_server_local
 
 router = APIRouter()
 
@@ -15,6 +15,7 @@ router = APIRouter()
 @router.get("/events/stream")
 async def events_stream(request: Request):
     ctx = request.app.state.ctx
+    timezone = configured_timezone(ctx)
 
     async def _generate():
         last_seen = datetime.now(UTC)
@@ -48,6 +49,7 @@ async def events_stream(request: Request):
                             "created_at": format_server_local(
                                 row.created_at,
                                 "%Y-%m-%d %H:%M:%S",
+                                timezone=timezone,
                             ),
                         },
                         default=str,
