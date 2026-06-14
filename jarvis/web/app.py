@@ -5,13 +5,22 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 
 from jarvis.web.security import SameOriginUnsafeMethodMiddleware
-from jarvis.web.time_format import format_server_local
+from jarvis.web.time_format import configured_timezone, format_server_local
 
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
+
+
+@pass_context
+def _localtime_filter(context, value, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    request = context.get("request")
+    ctx = getattr(getattr(request, "app", None), "state", None)
+    app_context = getattr(ctx, "ctx", None)
+    return format_server_local(value, fmt, timezone=configured_timezone(app_context))
 
 
 def create_app(*, app_context=None) -> FastAPI:
@@ -26,7 +35,7 @@ def create_app(*, app_context=None) -> FastAPI:
 
     # Templates.
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-    templates.env.filters["localtime"] = format_server_local
+    templates.env.filters["localtime"] = _localtime_filter
     app.state.templates = templates
 
     # Static files.

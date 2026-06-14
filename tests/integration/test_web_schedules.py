@@ -207,7 +207,7 @@ def test_schedules_page_links_error_status_to_error_log(client_and_factory):
     assert f'href="/errors#event-{error_id}"' in resp.text
 
 
-def test_schedules_page_renders_last_run_in_server_local_time(client_and_factory, monkeypatch):
+def test_schedules_page_renders_last_run_in_configured_timezone(client_and_factory, monkeypatch):
     import os
     import time
 
@@ -239,7 +239,8 @@ def test_schedules_page_renders_last_run_in_server_local_time(client_and_factory
 
     anyio.run(_create_schedule)
     old_tz = os.environ.get("TZ")
-    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    client.app.state.ctx.config.jarvis.timezone = "America/Los_Angeles"
+    monkeypatch.setenv("TZ", "UTC")
     if hasattr(time, "tzset"):
         time.tzset()
 

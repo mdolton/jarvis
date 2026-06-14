@@ -30,10 +30,12 @@ async def client(tmp_path):
             ]
         )
 
+    from types import SimpleNamespace
     from unittest.mock import MagicMock
 
     ctx = MagicMock()
     ctx.session_factory = factory
+    ctx.config = SimpleNamespace(jarvis=SimpleNamespace(timezone="UTC"))
 
     app = create_app(app_context=ctx)
     yield TestClient(app)
@@ -47,12 +49,13 @@ def test_audit_page_renders_events(client):
     assert "llm.request" in resp.text
 
 
-def test_audit_page_renders_dates_in_server_local_time(client, monkeypatch):
+def test_audit_page_renders_dates_in_configured_timezone(client, monkeypatch):
     import os
     import time
 
     old_tz = os.environ.get("TZ")
-    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    client.app.state.ctx.config.jarvis.timezone = "America/Los_Angeles"
+    monkeypatch.setenv("TZ", "UTC")
     if hasattr(time, "tzset"):
         time.tzset()
 
