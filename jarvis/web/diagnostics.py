@@ -6,9 +6,9 @@ from unittest.mock import Mock
 
 from sqlalchemy import text
 
-from jarvis.core.types import AuditEventType
 from jarvis.oauth.store import MCPConnectionRepo
 from jarvis.persistence.repositories import AuditRepo
+from jarvis.web.error_log import ERROR_AUDIT_TYPES
 
 _log = logging.getLogger(__name__)
 
@@ -57,7 +57,9 @@ def _scheduler_status(ctx) -> dict[str, Any]:
 
 
 def _discord_status(ctx) -> dict[str, Any]:
-    adapters = [a for a in getattr(ctx, "channel_adapters", []) if getattr(a, "kind", "") == "discord"]
+    adapters = [
+        a for a in getattr(ctx, "channel_adapters", []) if getattr(a, "kind", "") == "discord"
+    ]
     if not adapters:
         return {"status": "warn", "configured": False, "ready": False}
     adapter = adapters[0]
@@ -102,16 +104,9 @@ async def _oauth_status(ctx) -> dict[str, Any]:
 async def _audit_status(ctx) -> dict[str, Any]:
     if _maybe_mock_missing(ctx, "audit"):
         return {"status": "unknown", "recent_errors": 0}
-    error_types = [
-        AuditEventType.LLM_ERROR,
-        AuditEventType.TOOL_ERROR,
-        AuditEventType.CONFIG_RELOAD_FAILED,
-        AuditEventType.OAUTH_DISCOVERY_FAILED,
-        AuditEventType.OAUTH_REFRESH_PERMANENTLY_FAILED,
-    ]
     try:
         async with ctx.session_factory() as session:
-            rows = await AuditRepo(session).recent(types=error_types, limit=5)
+            rows = await AuditRepo(session).recent(types=ERROR_AUDIT_TYPES, limit=5)
         return {"status": "warn" if rows else "ok", "recent_errors": len(rows)}
     except Exception:
         _log.exception("diagnostics: audit check failed")

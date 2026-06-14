@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from jarvis.web.security import SameOriginUnsafeMethodMiddleware
+from jarvis.web.time_format import format_server_local
 
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
@@ -25,6 +26,7 @@ def create_app(*, app_context=None) -> FastAPI:
 
     # Templates.
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    templates.env.filters["localtime"] = format_server_local
     app.state.templates = templates
 
     # Static files.
@@ -69,9 +71,11 @@ def create_app(*, app_context=None) -> FastAPI:
     app.include_router(mcp_admin_router)
 
     from jarvis.web.routes.audit import router as audit_router
+    from jarvis.web.routes.errors import router as errors_router
     from jarvis.web.routes.events import router as events_router
 
     app.include_router(audit_router)
+    app.include_router(errors_router)
     app.include_router(events_router)
 
     from jarvis.web.routes.settings import router as settings_router

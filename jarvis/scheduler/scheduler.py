@@ -52,6 +52,7 @@ class Scheduler:
         oauth_flow=None,
         mcp_manager=None,
         memory_service: Any = None,
+        base_url: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -59,6 +60,7 @@ class Scheduler:
         self._model_catalog = model_catalog
         self._oauth_flow = oauth_flow
         self._oauth_mcp_manager = mcp_manager
+        self._base_url = base_url.rstrip("/") if base_url else None
 
         self._output_router = ScheduledOutputRouter(discord_adapter=discord_adapter)
 
@@ -203,17 +205,36 @@ class Scheduler:
             )
 
             async with self._session_factory() as session:
-                await ScheduleRepo(session).record_run(
-                    schedule_id, at=fired_at, status="success"
-                )
-        except Exception:
+                await ScheduleRepo(session).record_run(schedule_id, at=fired_at, status="success")
+        except Exception as exc:
             _log.exception("scheduled run failed for %s", schedule_id)
+            error_event = AuditEvent(
+                type=AuditEventType.SCHEDULE_ERROR,
+                payload={
+                    "schedule_id": str(schedule_id),
+                    "schedule_name": schedule_name,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            await self._audit.emit(error_event)
             async with self._session_factory() as session:
                 await ScheduleRepo(session).record_run(
                     schedule_id, at=datetime.now(UTC), status="error"
                 )
             if notify_on_error and discord_user_id:
+                details_url = self._error_log_url(error_event.id)
+                text = f"Scheduled task `{schedule_name}` failed."
+                if details_url:
+                    text = f"{text} Error: {details_url}"
+                else:
+                    text = f"{text} Check the error log for details."
                 await self._output_router.send_error(
-                    text=f"Scheduled task `{schedule_name}` failed. Check the audit log for details.",
+                    text=text,
                     discord_user_id=discord_user_id,
                 )
+
+    def _error_log_url(self, event_id: UUID) -> str | None:
+        if not self._base_url:
+            return None
+        return f"{self._base_url}/errors#event-{event_id}"

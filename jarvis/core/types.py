@@ -29,6 +29,7 @@ class TriggerKind(StrEnum):
 class AuditEventType(StrEnum):
     TRIGGER_RECEIVED = "trigger.received"
     SCHEDULE_FIRED = "schedule.fired"
+    SCHEDULE_ERROR = "schedule.error"
     LLM_REQUEST = "llm.request"
     LLM_RESPONSE = "llm.response"
     LLM_ERROR = "llm.error"

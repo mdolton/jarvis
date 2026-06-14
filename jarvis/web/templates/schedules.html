@@ -80,8 +80,12 @@
             </td>
             <td class="muted">
                 {% if s.last_run_at %}
-                    {{ s.last_run_at.strftime('%Y-%m-%d %H:%M') }}
-                    <span class="badge {% if s.last_run_status == 'success' %}badge-ok{% else %}badge-err{% endif %}">{{ s.last_run_status }}</span>
+                    {{ s.last_run_at|localtime }}
+                    {% if s.last_run_status == 'error' and schedule_error_links.get(s.id|string) %}
+                        <a class="badge badge-err" href="{{ schedule_error_links.get(s.id|string) }}">{{ s.last_run_status }}</a>
+                    {% else %}
+                        <span class="badge {% if s.last_run_status == 'success' %}badge-ok{% else %}badge-err{% endif %}">{{ s.last_run_status }}</span>
+                    {% endif %}
                 {% else %}
                     never
                 {% endif %}

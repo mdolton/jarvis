@@ -31,7 +31,7 @@
         </td>
     </tr>
     <tr><th>Trigger</th><td>{% if action.trigger_id %}<code>{{ action.trigger_id }}</code>{% else %}n/a{% endif %}</td></tr>
-    <tr><th>Created</th><td>{{ action.created_at.strftime('%Y-%m-%d %H:%M') }}</td></tr>
+    <tr><th>Created</th><td>{{ action.created_at|localtime }}</td></tr>
 </table>
 </section>
 
@@ -45,8 +45,8 @@
 <table class="status-table">
     <tr><th>Decision</th><td>{{ action.decision or "n/a" }}</td></tr>
     <tr><th>Reason</th><td>{{ action.decision_reason or "n/a" }}</td></tr>
-    <tr><th>Decided</th><td>{% if action.decided_at %}{{ action.decided_at.strftime('%Y-%m-%d %H:%M') }}{% else %}n/a{% endif %}</td></tr>
-    <tr><th>Completed</th><td>{% if action.completed_at %}{{ action.completed_at.strftime('%Y-%m-%d %H:%M') }}{% else %}n/a{% endif %}</td></tr>
+    <tr><th>Decided</th><td>{% if action.decided_at %}{{ action.decided_at|localtime }}{% else %}n/a{% endif %}</td></tr>
+    <tr><th>Completed</th><td>{% if action.completed_at %}{{ action.completed_at|localtime }}{% else %}n/a{% endif %}</td></tr>
     <tr><th>Error</th><td>{{ action.error or "n/a" }}</td></tr>
 </table>
 

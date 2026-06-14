@@ -32,7 +32,7 @@
                     <div class="muted">{{ preference.id }}</div>
                 </td>
                 <td>{{ preference.source }}</td>
-                <td class="muted">{{ preference.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td class="muted">{{ preference.updated_at|localtime }}</td>
                 <td class="actions">
                     {% if preference.status == 'pending' %}
                     <form class="inline-form" method="post" action="/memory/preferences/{{ preference.id }}/approve">

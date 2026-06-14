@@ -5,15 +5,14 @@ from uuid import UUID
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from jarvis.persistence.repositories import DigestTemplateRepo, ScheduleRepo
+from jarvis.core.types import AuditEventType
+from jarvis.persistence.repositories import AuditRepo, DigestTemplateRepo, ScheduleRepo
 
 router = APIRouter()
 
 
 @router.get("/schedules", response_class=HTMLResponse)
-async def schedule_list(
-    request: Request, template_id: str | None = Query(default=None)
-):
+async def schedule_list(request: Request, template_id: str | None = Query(default=None)):
     ctx = request.app.state.ctx
     templates = request.app.state.templates
     catalog = await ctx.model_catalog.list_models()
@@ -30,11 +29,16 @@ async def schedule_list(
         template_repo = DigestTemplateRepo(session)
         schedules = await schedule_repo.list_all()
         digest_templates = await template_repo.list_enabled()
+        schedule_error_events = await AuditRepo(session).recent(
+            types=[AuditEventType.SCHEDULE_ERROR],
+            limit=500,
+        )
         if parsed_template_id is not None:
             selected_template = await template_repo.get(parsed_template_id)
             if selected_template is None or not selected_template.enabled:
                 selected_template = None
                 template_warning = "Template not found or disabled."
+    schedule_error_links = _schedule_error_links(schedule_error_events)
     available = set(catalog.models) if catalog.ok else None
     return templates.TemplateResponse(
         request,
@@ -48,6 +52,7 @@ async def schedule_list(
             "selected_template": selected_template,
             "template_warning": template_warning,
             "default_timezone": ctx.config.jarvis.timezone,
+            "schedule_error_links": schedule_error_links,
         },
     )
 
@@ -115,3 +120,13 @@ def _default_discord_user_id(ctx) -> str | None:
     if len(discord.allowed_user_ids) == 1:
         return discord.allowed_user_ids[0]
     return None
+
+
+def _schedule_error_links(events) -> dict[str, str]:
+    links: dict[str, str] = {}
+    for event in events:
+        schedule_id = event.payload.get("schedule_id")
+        if not schedule_id or schedule_id in links:
+            continue
+        links[schedule_id] = f"/errors#event-{event.id}"
+    return links

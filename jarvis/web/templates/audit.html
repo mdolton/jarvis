@@ -21,7 +21,7 @@
 {% for ev in events %}
     <div class="audit-row">
         <span class="audit-type">{{ ev.type }}</span>
-        <span class="muted">{{ ev.created_at.strftime('%H:%M:%S') if ev.created_at else '' }}</span>
+        <span class="muted">{{ ev.created_at|localtime('%Y-%m-%d %H:%M:%S') }}</span>
         <pre>{{ ev.payload }}</pre>
     </div>
 {% endfor %}

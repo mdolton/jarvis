@@ -230,6 +230,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         oauth_flow=oauth_flow,
         mcp_manager=mcp_manager,
         memory_service=memory_service,
+        base_url=cfg.base_url,
     )
     await scheduler.start()
 
