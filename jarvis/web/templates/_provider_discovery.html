@@ -1,0 +1,12 @@
+{% if r.oauth_metadata_url %}
+<p class="badge-ok">Detected <strong>{{ r.auth_mode }}</strong> &middot; <code>{{ r.oauth_metadata_url }}</code></p>
+<input id="oauth_metadata_url" name="oauth_metadata_url" value="{{ r.oauth_metadata_url }}" hx-swap-oob="true">
+<select id="auth_mode" name="auth_mode" hx-swap-oob="true">
+  <option {% if r.auth_mode == 'dcr' %}selected{% endif %}>dcr</option>
+  <option {% if r.auth_mode == 'manual' %}selected{% endif %}>manual</option>
+</select>
+<input id="default_scopes" name="default_scopes" value="{{ r.scopes_supported | join(' ') }}" hx-swap-oob="true">
+{% else %}
+<p class="badge-err">Couldn't auto-detect — fill the OAuth fields manually.</p>
+{% endif %}
+{% if r.notes %}<details><summary>Discovery log</summary><pre>{{ r.notes | join('\n') }}</pre></details>{% endif %}
