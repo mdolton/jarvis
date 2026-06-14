@@ -124,3 +124,19 @@ async def test_total_miss_returns_notes_no_metadata():
 async def test_empty_mcp_url_raises():
     with pytest.raises(ValueError):
         await discover_provider("  ", make_client(lambda req: httpx.Response(404)))
+
+
+async def test_scopes_supported_as_string_is_ignored():
+    meta = {**AS_META_DCR, "scopes_supported": "read write"}
+
+    def handler(req):
+        p = req.url.path
+        if p == "/.well-known/oauth-protected-resource":
+            return httpx.Response(200, json={"authorization_servers": ["https://as.example.com"]})
+        if req.url.host == "as.example.com" and p == "/.well-known/oauth-authorization-server":
+            return httpx.Response(200, json=meta)
+        return httpx.Response(404)
+
+    r = await discover_provider("https://mcp.example.com", make_client(handler))
+    assert r.auth_mode == "dcr"
+    assert r.scopes_supported == []  # malformed string scopes ignored, not split into chars

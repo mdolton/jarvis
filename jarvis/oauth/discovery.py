@@ -61,9 +61,13 @@ def _servers_from_prm(data: dict | None) -> list[str]:
     if not data:
         return []
     servers = data.get("authorization_servers")
-    if isinstance(servers, list) and servers:
-        return [str(s).rstrip("/") for s in servers]
-    return []
+    if not isinstance(servers, list):
+        return []
+    return [
+        str(s).rstrip("/")
+        for s in servers
+        if isinstance(s, str) and s.startswith(("https://", "http://"))
+    ]
 
 
 async def _resource_metadata_hint(
@@ -78,6 +82,9 @@ async def _resource_metadata_hint(
     if match:
         notes.append("401 WWW-Authenticate advertised resource_metadata.")
         return match.group(1)
+    notes.append(
+        f"GET {mcp_url} -> no resource_metadata in WWW-Authenticate (status {resp.status_code})."
+    )
     return None
 
 
@@ -135,7 +142,8 @@ async def discover_provider(mcp_url: str, http: httpx.AsyncClient) -> DiscoveryR
         meta_url, meta = await _fetch_as_metadata(http, base, notes)
         if meta is not None:
             auth_mode = "dcr" if meta.get("registration_endpoint") else "manual"
-            scopes = [str(s) for s in (meta.get("scopes_supported") or [])]
+            raw_scopes = meta.get("scopes_supported")
+            scopes = [str(s) for s in raw_scopes] if isinstance(raw_scopes, list) else []
             notes.append(f"Resolved metadata at {meta_url} (auth_mode={auth_mode}).")
             return DiscoveryResult(
                 oauth_metadata_url=meta_url,
