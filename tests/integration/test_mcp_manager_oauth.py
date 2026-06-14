@@ -4,13 +4,17 @@ import contextlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from agents import Agent
 from agents.exceptions import UserError
+from agents.mcp import MCPUtil
+from agents.run_context import RunContextWrapper
+from mcp.types import Tool
 
 from jarvis.config.schema import MCPServersConfig
 from jarvis.mcp.manager import MCPManager, _apply_runtime_policy_guard
 from jarvis.oauth.catalog import ProviderCatalog, seed_built_in_providers
 from jarvis.oauth.crypto import encrypt_blob, generate_key
-from jarvis.oauth.store import MCPConnectionRepo
+from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 
 
@@ -18,6 +22,7 @@ class FakeSDKServer:
     """Duck-typed agents.mcp server used as a fake in tests."""
 
     def __init__(self, *, list_tools_returns=None, list_tools_raises=None):
+        self.name = "fake"
         self._list_returns = list_tools_returns or []
         self._list_raises = list_tools_raises
         self.entered = False
@@ -30,10 +35,16 @@ class FakeSDKServer:
     async def __aexit__(self, *exc):
         self.exited = True
 
-    async def list_tools(self):
+    async def list_tools(self, *args, **kwargs):
         if self._list_raises:
             raise self._list_raises
         return self._list_returns
+
+    def _get_failure_error_function(self, agent_failure_error_function):
+        return agent_failure_error_function
+
+    def _get_needs_approval_for_tool(self, tool, agent):
+        return False
 
 
 class UnauthorizedOnceSDKServer(FakeSDKServer):
@@ -54,6 +65,16 @@ class CallableSDKServer(FakeSDKServer):
     async def call_tool(self, tool_name, arguments, meta=None):
         self.calls.append((tool_name, arguments, meta))
         return "retried"
+
+
+class RecordingToolSDKServer(FakeSDKServer):
+    def __init__(self, tool_name: str):
+        super().__init__(list_tools_returns=[Tool(name=tool_name, inputSchema={})])
+        self.calls = []
+
+    async def call_tool(self, tool_name, arguments, meta=None):
+        self.calls.append((tool_name, arguments, meta))
+        return "ok"
 
 
 class FlakyAuthSDKServer(FakeSDKServer):
@@ -161,6 +182,80 @@ async def test_replace_oauth_server_swaps_sdk_object(factory, monkeypatch):
         import asyncio
         await asyncio.sleep(0)
         assert first.exited
+    finally:
+        await mgr.stop()
+
+
+async def test_connection_tools_are_namespaced_by_label_and_provider(factory, monkeypatch):
+    key = generate_key().encode()
+    async with factory() as session:
+        providers = MCPProviderRepo(session)
+        for provider_key in ("cardtool", "ynab"):
+            await providers.upsert(
+                key=provider_key,
+                display_name=provider_key.title(),
+                kind="http",
+                mcp_url=f"https://{provider_key}.example/mcp",
+                builtin=False,
+                auth_mode=None,
+                oauth_metadata_url=None,
+                pkce=True,
+                send_resource_indicator=True,
+                extra_auth_params={},
+                default_scopes=[],
+                header_names=[],
+            )
+        repo = MCPConnectionRepo(session)
+        await repo.create(
+            provider_key="cardtool",
+            label="Personal",
+            runtime_name="cardtool:personal",
+        )
+        await repo.create(
+            provider_key="ynab",
+            label="Personal",
+            runtime_name="ynab:personal",
+        )
+
+    cardtool = RecordingToolSDKServer("list_categories")
+    ynab = RecordingToolSDKServer("list_categories")
+
+    def fake_build(url, headers, *, name, approval_policy=None, **_):
+        return {"cardtool:personal": cardtool, "ynab:personal": ynab}[name]
+
+    monkeypatch.setattr("jarvis.mcp.manager._build_streamable_http", fake_build)
+
+    mgr = MCPManager(
+        config=MCPServersConfig(servers=[]),
+        session_factory=factory,
+        secrets_key=key,
+        catalog=ProviderCatalog(factory),
+    )
+    await mgr.start()
+    try:
+        servers = mgr.agent_mcp_servers()
+        tools = await MCPUtil.get_all_function_tools(
+            servers,
+            convert_schemas_to_strict=False,
+            run_context=RunContextWrapper(context=None),
+            agent=Agent(name="test"),
+        )
+
+        assert {tool.name for tool in tools} == {
+            "personal__cardtool__list_categories",
+            "personal__ynab__list_categories",
+        }
+        assert "personal.cardtool" in mgr.agent_mcp_context()
+        assert "personal.ynab" in mgr.agent_mcp_context()
+
+        result = await servers[0].call_tool(
+            "personal__cardtool__list_categories",
+            {"account": "checking"},
+        )
+
+        assert result == "ok"
+        assert cardtool.calls == [("list_categories", {"account": "checking"}, None)]
+        assert ynab.calls == []
     finally:
         await mgr.stop()
 

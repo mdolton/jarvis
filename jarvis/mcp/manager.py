@@ -16,7 +16,10 @@ through one task makes enter and exit always happen on the same task.
 """
 
 import asyncio
+import copy
+import hashlib
 import logging
+import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
@@ -47,6 +50,111 @@ _OAUTH_TOOL_CALL_TIMEOUT_SEC = 35.0
 _REMOTE_HTTP_TIMEOUT_SEC = 30
 _REMOTE_MAX_RETRY_ATTEMPTS = 2
 _REMOTE_RETRY_BACKOFF_BASE = 1.0
+_MAX_FUNCTION_TOOL_NAME_LEN = 64
+
+
+def _identifier_segment(value: str) -> str:
+    segment = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    return segment or "default"
+
+
+def _tool_namespace_for_runtime_name(runtime_name: str) -> str:
+    if ":" not in runtime_name:
+        return _identifier_segment(runtime_name)
+    provider_key, label_slug = runtime_name.split(":", 1)
+    return f"{_identifier_segment(label_slug)}.{_identifier_segment(provider_key)}"
+
+
+def _shorten_tool_name(name: str, *, digest_source: str) -> str:
+    if len(name) <= _MAX_FUNCTION_TOOL_NAME_LEN:
+        return name
+    digest = hashlib.sha1(digest_source.encode()).hexdigest()[:10]
+    prefix_len = _MAX_FUNCTION_TOOL_NAME_LEN - len(digest) - 2
+    prefix = name[:prefix_len].rstrip("_") or "tool"
+    return f"{prefix}__{digest}"
+
+
+def _tool_wire_name(namespace: str, tool_name: str, *, force_digest: bool = False) -> str:
+    segments = [_identifier_segment(part) for part in namespace.split(".")]
+    segments.append(_identifier_segment(tool_name))
+    base = "__".join(segment for segment in segments if segment)
+    if force_digest:
+        digest = hashlib.sha1(f"{namespace}\0{tool_name}".encode()).hexdigest()[:10]
+        base = f"{base}__{digest}"
+    return _shorten_tool_name(base, digest_source=f"{namespace}\0{tool_name}")
+
+
+def _tool_wire_names(namespace: str, raw_tool_names: list[str]) -> dict[str, str]:
+    raw_to_wire: dict[str, str] = {}
+    wire_to_raw: dict[str, str] = {}
+    for raw_name in raw_tool_names:
+        wire_name = _tool_wire_name(namespace, raw_name)
+        if wire_name in wire_to_raw and wire_to_raw[wire_name] != raw_name:
+            wire_name = _tool_wire_name(namespace, raw_name, force_digest=True)
+        raw_to_wire[raw_name] = wire_name
+        wire_to_raw[wire_name] = raw_name
+    return raw_to_wire
+
+
+def _copy_tool_with_name(tool, name: str):
+    model_copy = getattr(tool, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update={"name": name})
+    copied = copy.copy(tool)
+    copied.name = name
+    return copied
+
+
+class _NamespacedMCPServer:
+    """Expose one MCP server's tools under a connection-specific function prefix."""
+
+    def __init__(self, inner: object, *, namespace: str) -> None:
+        self._inner = inner
+        self._namespace = namespace
+        self._raw_by_wire: dict[str, str] = {}
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def __eq__(self, other: object) -> bool:
+        return other is self or other is self._inner
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    @property
+    def namespace(self) -> str:
+        return self._namespace
+
+    @property
+    def cached_tools(self):
+        tools = getattr(self._inner, "cached_tools", None)
+        if not tools:
+            return tools
+        return self._namespaced_tools(tools)
+
+    async def list_tools(self, run_context=None, agent=None):
+        tools = await self._inner.list_tools(run_context, agent)
+        return self._namespaced_tools(tools)
+
+    async def call_tool(self, tool_name: str, arguments: dict | None, meta: dict | None = None):
+        raw_tool_name = self._raw_by_wire.get(tool_name, tool_name)
+        return await self._inner.call_tool(raw_tool_name, arguments, meta=meta)
+
+    def _get_needs_approval_for_tool(self, tool, agent):
+        raw_name = self._raw_by_wire.get(tool.name)
+        raw_tool = _copy_tool_with_name(tool, raw_name) if raw_name is not None else tool
+        return self._inner._get_needs_approval_for_tool(raw_tool, agent)
+
+    def _get_failure_error_function(self, agent_failure_error_function):
+        return self._inner._get_failure_error_function(agent_failure_error_function)
+
+    def _namespaced_tools(self, tools):
+        raw_names = [tool.name for tool in tools]
+        raw_to_wire = _tool_wire_names(self._namespace, raw_names)
+        self._raw_by_wire = {wire: raw for raw, wire in raw_to_wire.items()}
+        return [_copy_tool_with_name(tool, raw_to_wire[tool.name]) for tool in tools]
 
 
 class _TokenHolder:
@@ -112,6 +220,7 @@ class MCPManager:
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
         self._tool_names_by_server: dict[str, tuple[str, ...]] = {}
+        self._tool_namespaces_by_server: dict[str, str] = {}
         # Live access token per OAuth provider. Refreshing updates the holder in
         # place; the running connection reads it on every request.
         self._token_holders: dict[str, _TokenHolder] = {}
@@ -178,10 +287,16 @@ class MCPManager:
         lines = ["Current MCP servers:"]
         for name in sorted(self._sdk_servers):
             tools = self._tool_names_by_server.get(name, ())
+            namespace = self._tool_namespaces_by_server.get(
+                name, _tool_namespace_for_runtime_name(name)
+            )
             if tools:
-                lines.append(f"- {name}: {', '.join(tools)}")
+                exposed = ", ".join(
+                    f"{_tool_wire_name(namespace, tool)} (raw: {tool})" for tool in tools
+                )
+                lines.append(f"- {name} (namespace {namespace}): {exposed}")
             else:
-                lines.append(f"- {name}")
+                lines.append(f"- {name} (namespace {namespace})")
         return "\n".join(lines)
 
     def clear_policy_cache(self, server_name: str | None = None) -> None:
@@ -191,7 +306,13 @@ class MCPManager:
             self._approval_policy.clear_server(server_name)
 
     async def replace_oauth_server(
-        self, provider_key: str, *, url: str, headers: dict[str, str], oauth: bool = True
+        self,
+        provider_key: str,
+        *,
+        url: str,
+        headers: dict[str, str],
+        oauth: bool = True,
+        tool_namespace: str | None = None,
     ) -> None:
         """Build a new streamable-HTTP SDK server, verify list_tools, then atomically swap.
 
@@ -205,7 +326,13 @@ class MCPManager:
         """
         await self._submit(
             "replace",
-            {"provider_key": provider_key, "url": url, "headers": headers, "oauth": oauth},
+            {
+                "provider_key": provider_key,
+                "url": url,
+                "headers": headers,
+                "oauth": oauth,
+                "tool_namespace": tool_namespace or _tool_namespace_for_runtime_name(provider_key),
+            },
         )
 
     async def remove_oauth_server(self, provider_key: str) -> None:
@@ -224,6 +351,7 @@ class MCPManager:
                 url=entry.mcp_url,
                 headers={"Authorization": f"Bearer {token}"},
                 oauth=True,
+                tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
             )
         else:
             headers = _decrypt_headers(conn.headers_enc, self._secrets_key)
@@ -232,6 +360,7 @@ class MCPManager:
                 url=conn.url_override or entry.mcp_url,
                 headers=headers,
                 oauth=False,
+                tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
             )
 
     async def connect_server(self, cfg) -> None:
@@ -279,6 +408,7 @@ class MCPManager:
                 "provider_key": runtime_name,
                 "url": conn.url_override or entry.mcp_url,
                 "headers": headers,
+                "tool_namespace": _tool_namespace_for_runtime_name(runtime_name),
             },
         )
 
@@ -341,12 +471,17 @@ class MCPManager:
                         url=entry.mcp_url,
                         headers={"Authorization": f"Bearer {token}"},
                         oauth=True,
+                        tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
                     )
                 else:  # http / sse
                     headers = _decrypt_headers(conn.headers_enc, self._secrets_key)
                     url = conn.url_override or entry.mcp_url
                     await self.replace_oauth_server(
-                        conn.runtime_name, url=url, headers=headers, oauth=False
+                        conn.runtime_name,
+                        url=url,
+                        headers=headers,
+                        oauth=False,
+                        tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
                     )
             except Exception as e:
                 _log.exception("failed to attach connection %r at boot", conn.runtime_name)
@@ -376,7 +511,11 @@ class MCPManager:
                 raise
 
             self._stacks[cfg.name] = stack
-            self._sdk_servers[cfg.name] = sdk_server
+            self._tool_namespaces_by_server[cfg.name] = _tool_namespace_for_runtime_name(cfg.name)
+            self._sdk_servers[cfg.name] = _NamespacedMCPServer(
+                sdk_server,
+                namespace=self._tool_namespaces_by_server[cfg.name],
+            )
             self._tool_names_by_server[cfg.name] = tuple(t.name for t in tools)
 
             async with self._session_factory() as session:
@@ -396,8 +535,15 @@ class MCPManager:
             await repo.set_status(row.id, status="error", last_error=f"{type(exc).__name__}: {exc}")
 
     async def _do_replace_oauth(
-        self, *, provider_key: str, url: str, headers: dict[str, str], oauth: bool = True
+        self,
+        *,
+        provider_key: str,
+        url: str,
+        headers: dict[str, str],
+        oauth: bool = True,
+        tool_namespace: str | None = None,
     ) -> None:
+        tool_namespace = tool_namespace or _tool_namespace_for_runtime_name(provider_key)
         new_stack = AsyncExitStack()
 
         async def unauthorized_retry():
@@ -432,7 +578,11 @@ class MCPManager:
             raise
 
         old_stack = self._stacks.get(provider_key)
-        self._sdk_servers[provider_key] = new_sdk
+        self._tool_namespaces_by_server[provider_key] = tool_namespace
+        self._sdk_servers[provider_key] = _NamespacedMCPServer(
+            new_sdk,
+            namespace=tool_namespace,
+        )
         self._stacks[provider_key] = new_stack
         if holder is not None:
             self._token_holders[provider_key] = holder
@@ -468,6 +618,7 @@ class MCPManager:
     async def _do_remove_oauth(self, provider_key: str) -> None:
         self._sdk_servers.pop(provider_key, None)
         self._tool_names_by_server.pop(provider_key, None)
+        self._tool_namespaces_by_server.pop(provider_key, None)
         self._token_holders.pop(provider_key, None)
         stack = self._stacks.pop(provider_key, None)
         self.clear_policy_cache(provider_key)
@@ -481,6 +632,7 @@ class MCPManager:
         self._sdk_servers.clear()
         self._token_holders.clear()
         self._tool_names_by_server.clear()
+        self._tool_namespaces_by_server.clear()
 
 
 def _build_streamable_http(
