@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from jarvis.core.types import AuditEvent, AuditEventType
 from jarvis.oauth.catalog import unique_runtime_name
 from jarvis.oauth.crypto import encrypt_blob
-from jarvis.oauth.discovery import discover_provider
+from jarvis.oauth.discovery import DiscoveryResult, discover_provider
 from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
 from jarvis.persistence.repositories import SettingsRepo
 
@@ -80,7 +80,10 @@ async def discover_provider_endpoint(request: Request, mcp_url: str = Form(...))
     the Add Provider form. Never fails the request — discovery is best-effort."""
     ctx = request.app.state.ctx
     templates = request.app.state.templates
-    result = await discover_provider(mcp_url, ctx.oauth_http)
+    if not mcp_url.strip():
+        result = DiscoveryResult(notes=["No URL provided."])
+    else:
+        result = await discover_provider(mcp_url, ctx.oauth_http)
     return templates.TemplateResponse(request, "_provider_discovery.html", {"r": result})
 
 

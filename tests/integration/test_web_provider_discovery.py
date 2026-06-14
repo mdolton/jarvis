@@ -29,7 +29,7 @@ async def client(tmp_path):
 
     def handler(req):
         p = req.url.path
-        if p == "/.well-known/oauth-protected-resource":
+        if req.url.host == "mcp.example.com" and p == "/.well-known/oauth-protected-resource":
             return httpx.Response(200, json={"authorization_servers": ["https://as.example.com"]})
         if req.url.host == "as.example.com" and p == "/.well-known/oauth-authorization-server":
             return httpx.Response(200, json=AS_META)
@@ -55,3 +55,16 @@ def test_discover_route_returns_fragment_with_metadata(client):
     # OOB swap targets the form input by id.
     assert 'id="oauth_metadata_url"' in body
     assert 'hx-swap-oob="true"' in body
+
+
+def test_discover_route_returns_fragment_on_failure(client):
+    resp = client.post("/mcp/providers/discover", data={"mcp_url": "https://unknown.example.com"})
+    assert resp.status_code == 200
+    assert "badge-err" in resp.text
+    assert 'id="oauth_metadata_url"' not in resp.text
+
+
+def test_discover_route_blank_url_does_not_500(client):
+    resp = client.post("/mcp/providers/discover", data={"mcp_url": "   "})
+    assert resp.status_code == 200
+    assert "badge-err" in resp.text
