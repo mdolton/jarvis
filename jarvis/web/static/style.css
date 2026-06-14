@@ -134,6 +134,7 @@ tr:last-child td { border-bottom: 0; }
   font-size: 0.75rem;
   font-weight: 700;
   white-space: nowrap;
+  text-decoration: none;
 }
 
 .badge-ok { background: var(--ok-bg); color: var(--ok-fg); border-color: #285940; }
@@ -272,6 +273,24 @@ code {
   padding: 0.55rem 0;
   border-bottom: 1px solid var(--line);
   font-size: 0.85rem;
+}
+
+.error-row:target {
+  padding-left: 0.65rem;
+  border-left: 3px solid var(--err-fg);
+  background: rgba(240, 138, 143, 0.06);
+}
+
+.row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+}
+
+.row-head a {
+  text-decoration: none;
 }
 
 .audit-type { font-weight: 700; color: var(--accent); }

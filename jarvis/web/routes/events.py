@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from jarvis.web.time_format import format_server_local
+
 router = APIRouter()
 
 
@@ -43,7 +45,10 @@ async def events_stream(request: Request):
                         {
                             "type": row.type,
                             "payload": row.payload,
-                            "created_at": row.created_at.isoformat() if row.created_at else None,
+                            "created_at": format_server_local(
+                                row.created_at,
+                                "%Y-%m-%d %H:%M:%S",
+                            ),
                         },
                         default=str,
                     )

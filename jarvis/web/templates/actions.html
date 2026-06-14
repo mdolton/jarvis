@@ -25,7 +25,7 @@
             <td>{{ action.channel_kind }} / {{ action.channel_ref }}</td>
             <td><code>{{ action.server_name }}.{{ action.tool_name }}</code></td>
             <td class="muted">{{ item.arguments_preview }}</td>
-            <td class="muted">{{ action.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td class="muted">{{ action.created_at|localtime }}</td>
             <td>{{ action.decision or "n/a" }}</td>
             <td><a href="/actions/{{ action.id }}">View</a></td>
         </tr>

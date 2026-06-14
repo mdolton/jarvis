@@ -12,7 +12,7 @@
             <td>{{ conv.channel_kind }}</td>
             <td>{{ conv.channel_ref }}</td>
             <td><span class="badge {% if conv.status == 'open' %}badge-ok{% else %}badge-warn{% endif %}">{{ conv.status }}</span></td>
-            <td class="muted">{{ conv.last_activity_at.strftime('%Y-%m-%d %H:%M') if conv.last_activity_at else 'n/a' }}</td>
+            <td class="muted">{{ conv.last_activity_at|localtime if conv.last_activity_at else 'n/a' }}</td>
             <td><a href="/conversations/{{ conv.id }}">View</a></td>
         </tr>
     {% endfor %}

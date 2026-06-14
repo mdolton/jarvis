@@ -3,7 +3,7 @@
 {% block content %}
 {% if conversation %}
 <h1>Conversation <span class="muted">{{ conversation.channel_kind }} / {{ conversation.channel_ref }}</span></h1>
-<p class="muted">Started {{ conversation.started_at.strftime('%Y-%m-%d %H:%M') }} — {{ conversation.status }}</p>
+<p class="muted">Started {{ conversation.started_at|localtime }} — {{ conversation.status }}</p>
 
 <section class="section-block">
     <h2>Recalled memories</h2>

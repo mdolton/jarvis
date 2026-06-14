@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Error Log{% endblock %}
+{% block content %}
+<section class="page-head">
+    <div>
+        <h1>Error Log</h1>
+        <p class="muted">Recent audit events that need operator attention.</p>
+    </div>
+    <a class="btn" href="/audit">Full audit</a>
+</section>
+
+<section class="section-block">
+{% if events %}
+    <div id="error-events">
+    {% for ev in events %}
+        <div class="audit-row error-row" id="event-{{ ev.id }}">
+            <div class="row-head">
+                <span class="audit-type">{{ ev.type }}</span>
+                <a class="muted" href="#event-{{ ev.id }}">{{ ev.created_at|localtime('%Y-%m-%d %H:%M:%S') }}</a>
+            </div>
+            <pre>{{ ev.payload }}</pre>
+        </div>
+    {% endfor %}
+    </div>
+{% else %}
+    <p class="muted">No recent errors.</p>
+{% endif %}
+</section>
+{% endblock %}

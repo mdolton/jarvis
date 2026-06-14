@@ -161,6 +161,104 @@ def test_run_schedule_now_calls_scheduler(client_and_factory):
     client.app.state.ctx.scheduler.fire_now.assert_awaited_once_with(schedule_id)
 
 
+def test_schedules_page_links_error_status_to_error_log(client_and_factory):
+    client, factory = client_and_factory
+
+    async def _create_failed_schedule():
+        from datetime import UTC, datetime
+
+        from jarvis.core.types import AuditEvent, AuditEventType
+        from jarvis.persistence.repositories import AuditRepo, ScheduleRepo
+
+        async with factory() as session:
+            schedule = await ScheduleRepo(session).create(
+                name="failing-brief",
+                description="",
+                cron_expr="0 8 * * *",
+                timezone="UTC",
+                prompt="do it",
+                output_mode="dashboard_only",
+                notify_on_error=True,
+                enabled=True,
+            )
+            await ScheduleRepo(session).record_run(
+                schedule.id,
+                at=datetime.now(UTC),
+                status="error",
+            )
+            error = AuditEvent(
+                type=AuditEventType.SCHEDULE_ERROR,
+                payload={
+                    "schedule_id": str(schedule.id),
+                    "schedule_name": schedule.name,
+                    "error": "Calendar timed out",
+                },
+            )
+            await AuditRepo(session).write_many([error])
+            return error.id
+
+    import anyio
+
+    error_id = anyio.run(_create_failed_schedule)
+    resp = client.get("/schedules")
+
+    assert resp.status_code == 200
+    assert "failing-brief" in resp.text
+    assert f'href="/errors#event-{error_id}"' in resp.text
+
+
+def test_schedules_page_renders_last_run_in_server_local_time(client_and_factory, monkeypatch):
+    import os
+    import time
+
+    client, factory = client_and_factory
+
+    async def _create_schedule():
+        from datetime import UTC, datetime
+
+        from jarvis.persistence.repositories import ScheduleRepo
+
+        async with factory() as session:
+            schedule = await ScheduleRepo(session).create(
+                name="timezone-brief",
+                description="",
+                cron_expr="0 8 * * *",
+                timezone="UTC",
+                prompt="do it",
+                output_mode="dashboard_only",
+                notify_on_error=True,
+                enabled=True,
+            )
+            await ScheduleRepo(session).record_run(
+                schedule.id,
+                at=datetime(2026, 1, 2, 15, 4, 5, tzinfo=UTC),
+                status="success",
+            )
+
+    import anyio
+
+    anyio.run(_create_schedule)
+    old_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+    try:
+        resp = client.get("/schedules")
+    finally:
+        if old_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", old_tz)
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+    assert resp.status_code == 200
+    assert "timezone-brief" in resp.text
+    assert "2026-01-02 07:04" in resp.text
+    assert "2026-01-02 15:04" not in resp.text
+
+
 def test_schedules_page_can_prefill_from_template(client_and_factory):
     client, factory = client_and_factory
 
@@ -391,8 +489,7 @@ def test_template_model_is_not_marked_unavailable_when_catalog_fails(
 
     assert page.status_code == 200
     assert (
-        '<option value="catalog-fallback-model" selected>'
-        "catalog-fallback-model</option>"
+        '<option value="catalog-fallback-model" selected>catalog-fallback-model</option>'
     ) in page.text
     assert "catalog-fallback-model (not available)" not in page.text
 

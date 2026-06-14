@@ -46,6 +46,19 @@ class _StubCatalog:
         return self._result
 
 
+class _RaisingDispatcher:
+    async def dispatch_scheduled(self, trigger):
+        raise RuntimeError("calendar timed out")
+
+
+class _CapturingOutputRouter:
+    def __init__(self) -> None:
+        self.errors: list[tuple[str, str]] = []
+
+    async def send_error(self, *, text: str, discord_user_id: str) -> None:
+        self.errors.append((text, discord_user_id))
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def infra(tmp_path):
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
@@ -60,7 +73,7 @@ async def infra(tmp_path):
     await engine.dispose()
 
 
-async def _make_scheduler(factory, audit, catalog):
+async def _make_scheduler(factory, audit, catalog, **kwargs):
     return Scheduler(
         session_factory=factory,
         audit=audit,
@@ -69,6 +82,7 @@ async def _make_scheduler(factory, audit, catalog):
         mcp_servers_provider=lambda: [],
         discord_adapter=None,
         model_catalog=catalog,
+        **kwargs,
     )
 
 
@@ -143,3 +157,48 @@ async def test_catalog_unavailable_no_fallback(infra):
     async with factory() as s:
         events = await AuditRepo(s).recent(limit=50)
     assert not [e for e in events if e.type == AuditEventType.MODEL_FALLBACK.value]
+
+
+async def test_scheduled_run_failure_emits_error_audit_and_links_notification(infra):
+    factory, audit = infra
+    async with factory() as s:
+        sched = await ScheduleRepo(s).create(
+            name="daily brief",
+            description="",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            prompt="p",
+            output_mode="dashboard_only",
+            notify_on_error=True,
+            enabled=True,
+            discord_user_id="123",
+        )
+    scheduler = await _make_scheduler(
+        factory,
+        audit,
+        _StubCatalog(Catalog(models=["cfg-model"], ok=True)),
+        base_url="https://jarvis.example",
+    )
+    scheduler._dispatcher = _RaisingDispatcher()
+    output_router = _CapturingOutputRouter()
+    scheduler._output_router = output_router
+
+    await scheduler.fire_now(sched.id)
+    await asyncio.sleep(0.15)
+
+    async with factory() as s:
+        refreshed = await ScheduleRepo(s).get(sched.id)
+        events = await AuditRepo(s).recent(types=[AuditEventType.SCHEDULE_ERROR], limit=10)
+
+    assert refreshed.last_run_status == "error"
+    assert len(events) == 1
+    assert events[0].payload["schedule_id"] == str(sched.id)
+    assert events[0].payload["schedule_name"] == "daily brief"
+    assert events[0].payload["error_type"] == "RuntimeError"
+    assert events[0].payload["error"] == "calendar timed out"
+    assert output_router.errors == [
+        (
+            f"Scheduled task `daily brief` failed. Error: https://jarvis.example/errors#event-{events[0].id}",
+            "123",
+        )
+    ]
