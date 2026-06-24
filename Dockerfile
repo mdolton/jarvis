@@ -23,6 +23,12 @@ RUN uv sync --frozen --no-dev
 # === Runtime stage ===
 FROM python:3.12-slim
 
+# Runtimes needed to launch stdio MCP servers: `npx` (Node) and `uvx` (uv).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
 # Non-root user for security.
 RUN groupadd -r jarvis && useradd -r -g jarvis -d /app jarvis
 
