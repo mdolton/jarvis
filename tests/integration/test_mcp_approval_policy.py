@@ -144,6 +144,28 @@ async def test_missing_policy_row_falls_back_to_sdk_annotations(factory):
     assert await policy.needs_approval("missing", tool) is False
 
 
+async def test_set_policy_override_for_server_bulk(factory):
+    async with factory() as session:
+        server = await MCPServerRepo(session).upsert(name="brave", transport="stdio")
+        await MCPToolRepo(session).replace_for_server(
+            server.id,
+            tools=[
+                MCPToolDescriptor(name="brave_web_search", input_schema={}),
+                MCPToolDescriptor(name="brave_local_search", input_schema={}),
+            ],
+        )
+
+    async with factory() as session:
+        await MCPToolRepo(session).set_policy_override_for_server(server.id, "allow")
+
+    async with factory() as session:
+        tools = await MCPToolRepo(session).list_for_server(server.id)
+    assert {t.name: t.policy_override for t in tools} == {
+        "brave_web_search": "allow",
+        "brave_local_search": "allow",
+    }
+
+
 def _tool(
     name: str,
     *,
