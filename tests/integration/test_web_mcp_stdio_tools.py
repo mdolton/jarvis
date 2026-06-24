@@ -66,3 +66,13 @@ def test_allow_all_unknown_server_404s(client_and_factory):
     client, _factory, _ctx = client_and_factory
     resp = client.post("/mcp/stdio/nope/tools/allow-all", follow_redirects=False)
     assert resp.status_code == 404
+
+
+def test_stdio_section_renders_tools_table_and_allow_all(client_and_factory):
+    client, _factory, _ctx = client_and_factory
+    page = client.get("/mcp").text
+    # per-tool policy form for a stdio tool
+    assert "brave_web_search" in page
+    assert 'data-policy-tool="brave_web_search"' in page
+    # bulk allow-all button for the server
+    assert 'action="/mcp/stdio/brave/tools/allow-all"' in page
