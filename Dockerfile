@@ -37,10 +37,12 @@ WORKDIR /app
 # Copy the venv + app from build stage.
 COPY --from=builder /app /app
 
-# Docker doesn't export $HOME from the user's passwd entry, so set it
-# explicitly. Without this, npx (~/.npm) and uvx (~/.cache/uv) fall back to /
-# and fail with EACCES under the non-root user when launching stdio MCP servers.
-ENV HOME="/app"
+# Compose overrides USER with `user: ${JARVIS_UID}` (the host uid, e.g. 1000),
+# which does not own /app, so npx (~/.npm) and uvx (~/.cache/uv) cannot create
+# their caches there and fail with EACCES when launching stdio MCP servers.
+# Point HOME at a world-writable dir so any runtime uid can write its caches.
+RUN mkdir -p /home/jarvis && chmod 1777 /home/jarvis
+ENV HOME="/home/jarvis"
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy entrypoint.
