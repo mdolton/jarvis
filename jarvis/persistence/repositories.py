@@ -1020,6 +1020,17 @@ class MCPToolRepo:
         )
         await self._session.commit()
 
+    async def set_policy_override_for_server(
+        self, server_id: UUID, policy_override: str | None
+    ) -> None:
+        """Bulk-set policy_override for every tool of a server."""
+        await self._session.execute(
+            update(MCPToolRow)
+            .where(MCPToolRow.server_id == server_id)
+            .values(policy_override=policy_override)
+        )
+        await self._session.commit()
+
 
 class SettingsRepo:
     def __init__(self, session: AsyncSession) -> None:

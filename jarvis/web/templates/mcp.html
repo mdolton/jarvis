@@ -1,5 +1,24 @@
 {% extends "base.html" %}
 {% block title %}MCP Servers{% endblock %}
+{% macro tools_table(tools) %}
+{% if tools %}
+<table class="ops-table">
+  <thead><tr><th>Tool</th><th>Description</th><th>Read-only</th><th>Destructive</th><th>Policy</th></tr></thead>
+  <tbody>
+  {% for t in tools %}
+    <tr><td><code>{{ t.name }}</code></td><td>{{ t.description or '—' }}</td>
+    <td>{{ '✓' if t.read_only_hint else '—' }}</td><td>{{ '⚠' if t.destructive_hint else '—' }}</td>
+    <td><form method="post" action="/mcp/tools/{{ t.id }}/policy" data-policy-tool="{{ t.name }}" class="inline-form policy-form">
+      <select name="policy_override">
+        <option value="" {% if not t.policy_override %}selected{% endif %}>auto-detect</option>
+        <option value="allow" {% if t.policy_override=='allow' %}selected{% endif %}>allow</option>
+        <option value="confirm" {% if t.policy_override=='confirm' %}selected{% endif %}>confirm</option>
+        <option value="deny" {% if t.policy_override=='deny' %}selected{% endif %}>deny</option>
+      </select><button type="submit">Save</button></form></td></tr>
+  {% endfor %}
+  </tbody></table>
+{% endif %}
+{% endmacro %}
 {% block content %}
 <section class="page-head"><div><h1>MCP</h1>
   <p class="muted">Providers, account connections, stdio servers, tools, and policy.</p></div></section>
@@ -28,23 +47,7 @@
       {% endif %}
       <form method="post" action="/mcp/connections/{{ c.id }}/remove" class="inline-form"><button type="submit">Remove</button></form>
       {% if c.last_error %}<pre>{{ c.last_error }}</pre>{% endif %}
-      {% if c.tools %}
-      <table class="ops-table">
-        <thead><tr><th>Tool</th><th>Description</th><th>Read-only</th><th>Destructive</th><th>Policy</th></tr></thead>
-        <tbody>
-        {% for t in c.tools %}
-          <tr><td><code>{{ t.name }}</code></td><td>{{ t.description or '—' }}</td>
-          <td>{{ '✓' if t.read_only_hint else '—' }}</td><td>{{ '⚠' if t.destructive_hint else '—' }}</td>
-          <td><form method="post" action="/mcp/tools/{{ t.id }}/policy" data-policy-tool="{{ t.name }}" class="inline-form policy-form">
-            <select name="policy_override">
-              <option value="" {% if not t.policy_override %}selected{% endif %}>auto-detect</option>
-              <option value="allow" {% if t.policy_override=='allow' %}selected{% endif %}>allow</option>
-              <option value="confirm" {% if t.policy_override=='confirm' %}selected{% endif %}>confirm</option>
-              <option value="deny" {% if t.policy_override=='deny' %}selected{% endif %}>deny</option>
-            </select><button type="submit">Save</button></form></td></tr>
-        {% endfor %}
-        </tbody></table>
-      {% endif %}
+      {{ tools_table(c.tools) }}
     </div>
     {% endfor %}
 
@@ -97,6 +100,12 @@
       <form method="post" action="/mcp/stdio/{{ srv.name }}/enable" class="inline-form"><button type="submit">Enable</button></form>
     {% endif %}
     {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
+    {{ tools_table(srv.tools) }}
+    {% if srv.tools %}
+    <form method="post" action="/mcp/stdio/{{ srv.name }}/tools/allow-all" class="inline-form">
+      <button type="submit">Allow all tools</button>
+    </form>
+    {% endif %}
   </div>
   {% endfor %}
   {% if not stdio_servers %}<p class="muted">No stdio servers configured.</p>{% endif %}

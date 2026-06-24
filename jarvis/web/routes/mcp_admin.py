@@ -10,7 +10,7 @@ from jarvis.oauth.catalog import unique_runtime_name
 from jarvis.oauth.crypto import encrypt_blob
 from jarvis.oauth.discovery import DiscoveryResult, discover_provider
 from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
-from jarvis.persistence.repositories import SettingsRepo
+from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo, SettingsRepo
 
 router = APIRouter()
 
@@ -254,4 +254,23 @@ async def enable_stdio(request: Request, name: str):
         except Exception:
             pass
     await _emit(ctx, "stdio.enable", name=name)
+    return _redirect()
+
+
+@router.post("/mcp/stdio/{name}/tools/allow-all")
+async def allow_all_stdio_tools(request: Request, name: str):
+    ctx = request.app.state.ctx
+    async with ctx.session_factory() as session:
+        servers = await MCPServerRepo(session).list_all()
+        row = next(
+            (s for s in servers if s.name == name and s.source == "stdio"), None
+        )
+        if row is None:
+            raise HTTPException(404, "stdio server not found")
+        await MCPToolRepo(session).set_policy_override_for_server(row.id, "allow")
+    mcp_manager = getattr(ctx, "mcp_manager", None)
+    clear_policy_cache = getattr(mcp_manager, "clear_policy_cache", None)
+    if callable(clear_policy_cache):
+        clear_policy_cache(name)
+    await _emit(ctx, "stdio.tools.allow_all", name=name)
     return _redirect()
