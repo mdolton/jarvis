@@ -166,6 +166,26 @@ async def test_set_policy_override_for_server_bulk(factory):
     }
 
 
+async def test_allow_override_flips_needs_approval_for_stdio_tool(factory):
+    async with factory() as session:
+        server = await MCPServerRepo(session).upsert(name="brave", transport="stdio")
+        await MCPToolRepo(session).replace_for_server(
+            server.id,
+            tools=[MCPToolDescriptor(name="brave_web_search", input_schema={})],
+        )
+        tool_id = (await MCPToolRepo(session).list_for_server(server.id))[0].id
+
+    policy = MCPApprovalPolicy(session_factory=factory)
+    # Non-read-prefixed, no hints -> defaults to CONFIRM.
+    assert await policy.needs_approval("brave", _tool("brave_web_search")) is True
+
+    async with factory() as session:
+        await MCPToolRepo(session).set_policy_override(tool_id, "allow")
+    policy.clear_server("brave")
+
+    assert await policy.needs_approval("brave", _tool("brave_web_search")) is False
+
+
 def _tool(
     name: str,
     *,
