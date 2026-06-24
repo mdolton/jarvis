@@ -37,6 +37,10 @@ WORKDIR /app
 # Copy the venv + app from build stage.
 COPY --from=builder /app /app
 
+# Docker doesn't export $HOME from the user's passwd entry, so set it
+# explicitly. Without this, npx (~/.npm) and uvx (~/.cache/uv) fall back to /
+# and fail with EACCES under the non-root user when launching stdio MCP servers.
+ENV HOME="/app"
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy entrypoint.
