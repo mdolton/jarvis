@@ -245,6 +245,38 @@ code {
   border-left: 2px solid var(--line);
 }
 
+.conn-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  cursor: pointer;
+}
+
+.conn-title,
+.conn-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.conn-title {
+  margin-right: auto;
+}
+
+.conn-summary .inline-form {
+  margin-bottom: 0;
+}
+
+.conn-details {
+  padding-top: 0.65rem;
+}
+
+.conn-row:not([open]) > .conn-details {
+  display: none;
+}
+
 .add-form {
   margin: 0.5rem 0 0.75rem;
 }
@@ -321,6 +353,15 @@ code {
 
   .inline-form button,
   .inline-form select {
+    width: 100%;
+  }
+
+  .conn-summary {
+    align-items: stretch;
+  }
+
+  .conn-title,
+  .conn-actions {
     width: 100%;
   }
 }
