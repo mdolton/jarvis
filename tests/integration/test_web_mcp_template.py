@@ -45,3 +45,16 @@ def test_page_renders_management_forms(client):
     # existing connection + stdio toggle still present
     assert "Personal" in page
     assert 'action="/mcp/stdio/fs/disable"' in page
+
+
+def test_provider_connections_are_collapsed_by_default(client):
+    page = client.get("/mcp").text
+    assert '<details class="conn-row">' in page
+    assert "<summary" in page
+    assert "Personal" in page
+
+    details_start = page.index('<details class="conn-row">')
+    summary_start = page.index("<summary", details_start)
+    summary_end = page.index("</summary>", summary_start)
+    assert "Personal" in page[summary_start:summary_end]
+    assert "open" not in page[details_start:summary_start]

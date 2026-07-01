@@ -30,25 +30,33 @@
     <h3>{{ p.display_name }} <span class="badge">{{ p.kind }}</span>
       {% if p.builtin %}<span class="badge">built-in</span>{% endif %}</h3>
     {% for c in p.connections %}
-    <div class="conn-row">
-      <strong>{{ c.label }}</strong>
-      <span class="badge {% if c.runtime_status=='connected' %}badge-ok{% elif c.runtime_status=='error' %}badge-err{% else %}badge-warn{% endif %}">{{ c.runtime_status }}</span>
-      {% if p.kind == 'oauth' %}
-        {% if not c.authorized or c.auth_status == 'needs_reauth' %}
-          <a class="btn" href="/oauth/connect/{{ c.id }}">Connect</a>
-        {% else %}
-          <form method="post" action="/oauth/disconnect/{{ c.id }}" class="inline-form"><button type="submit">Disconnect</button></form>
+    <details class="conn-row">
+      <summary class="conn-summary">
+        <span class="conn-title">
+          <strong>{{ c.label }}</strong>
+          <span class="badge {% if c.runtime_status=='connected' %}badge-ok{% elif c.runtime_status=='error' %}badge-err{% else %}badge-warn{% endif %}">{{ c.runtime_status }}</span>
+        </span>
+        <span class="conn-actions">
+        {% if p.kind == 'oauth' %}
+          {% if not c.authorized or c.auth_status == 'needs_reauth' %}
+            <a class="btn" href="/oauth/connect/{{ c.id }}">Connect</a>
+          {% else %}
+            <form method="post" action="/oauth/disconnect/{{ c.id }}" class="inline-form"><button type="submit">Disconnect</button></form>
+          {% endif %}
         {% endif %}
-      {% endif %}
-      {% if c.enabled %}
-        <form method="post" action="/mcp/connections/{{ c.id }}/disable" class="inline-form"><button type="submit">Disable</button></form>
-      {% else %}
-        <form method="post" action="/mcp/connections/{{ c.id }}/enable" class="inline-form"><button type="submit">Enable</button></form>
-      {% endif %}
-      <form method="post" action="/mcp/connections/{{ c.id }}/remove" class="inline-form"><button type="submit">Remove</button></form>
-      {% if c.last_error %}<pre>{{ c.last_error }}</pre>{% endif %}
-      {{ tools_table(c.tools) }}
-    </div>
+        {% if c.enabled %}
+          <form method="post" action="/mcp/connections/{{ c.id }}/disable" class="inline-form"><button type="submit">Disable</button></form>
+        {% else %}
+          <form method="post" action="/mcp/connections/{{ c.id }}/enable" class="inline-form"><button type="submit">Enable</button></form>
+        {% endif %}
+        <form method="post" action="/mcp/connections/{{ c.id }}/remove" class="inline-form"><button type="submit">Remove</button></form>
+        </span>
+      </summary>
+      <div class="conn-details">
+        {% if c.last_error %}<pre>{{ c.last_error }}</pre>{% endif %}
+        {{ tools_table(c.tools) }}
+      </div>
+    </details>
     {% endfor %}
 
     <details class="add-form"><summary>Add connection</summary>
