@@ -46,6 +46,9 @@ from jarvis.persistence.repositories import (
 
 _log = logging.getLogger(__name__)
 
+_HISTORY_MAX_MESSAGES = 20
+_HISTORY_MAX_CHARS = 8_000
+
 
 @dataclass(slots=True)
 class AgentRunResult:
@@ -107,6 +110,12 @@ class AgentRunner:
             )
             conv_id = conv.id
 
+            # Prior turns, captured BEFORE the new user message is appended so
+            # the current prompt is never duplicated into history.
+            history_rows = await MessageRepo(session).recent_history(
+                conv_id, limit=_HISTORY_MAX_MESSAGES
+            )
+
             # Persist user message.
             await MessageRepo(session).append(
                 conversation_id=conv_id,
@@ -120,6 +129,11 @@ class AgentRunner:
             trigger_context=trigger_context,
             user_prompt=user_prompt,
         )
+
+        run_input: list[dict] = [
+            *_history_input_items(history_rows),
+            {"role": "user", "content": prompt},
+        ]
 
         await self._audit.emit(
             AuditEvent(
@@ -145,14 +159,14 @@ class AgentRunner:
         if self._run_timeout_sec is None:
             sdk_result = await Runner.run(
                 agent,
-                prompt,
+                run_input,
                 run_config=RunConfig(workflow_name="jarvis-invoke"),
             )
         else:
             async with asyncio.timeout(self._run_timeout_sec):
                 sdk_result = await Runner.run(
                     agent,
-                    prompt,
+                    run_input,
                     run_config=RunConfig(workflow_name="jarvis-invoke"),
                 )
 
@@ -387,3 +401,20 @@ def _empty_memory_context() -> MemoryContext:
         recall_available=False,
         error=None,
     )
+
+
+def _history_input_items(rows: list) -> list[dict]:
+    """Map prior message rows to SDK chat input items under the char budget.
+
+    Only user/assistant turns are forwarded; oldest items are dropped first
+    when total content length exceeds _HISTORY_MAX_CHARS.
+    """
+    items = [
+        {"role": row.role, "content": row.content}
+        for row in rows
+        if row.role in (MessageRole.USER.value, MessageRole.ASSISTANT.value)
+    ]
+    total = sum(len(item["content"]) for item in items)
+    while items and total > _HISTORY_MAX_CHARS:
+        total -= len(items.pop(0)["content"])
+    return items

@@ -115,7 +115,7 @@ async def test_agent_runner_injects_memory_context_and_summarizes(infra, monkeyp
     real_create_task = asyncio.create_task
 
     async def fake_run(agent, prompt, run_config=None):
-        captured["prompt"] = prompt
+        captured["prompt"] = prompt[-1]["content"]
         return SimpleNamespace(final_output="done")
 
     def fake_create_task(coro, *, name=None):
@@ -156,7 +156,7 @@ async def test_agent_runner_uses_only_user_prompt_for_memory_recall_on_scheduled
     captured = {}
 
     async def fake_run(agent, prompt, run_config=None):
-        captured["prompt"] = prompt
+        captured["prompt"] = prompt[-1]["content"]
         return SimpleNamespace(final_output="done")
 
     monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
@@ -202,7 +202,7 @@ async def test_agent_runner_continues_when_memory_recall_or_summary_fails(infra,
             raise RuntimeError("summary down")
 
     async def fake_run(agent, prompt, run_config=None):
-        captured["prompt"] = prompt
+        captured["prompt"] = prompt[-1]["content"]
         return SimpleNamespace(final_output="done")
 
     def fake_create_task(coro, *, name=None):

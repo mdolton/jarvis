@@ -17,6 +17,7 @@ from jarvis.config.schema import LLMConfig
 from jarvis.core.types import (
     AuditEventType,
     ChannelKind,
+    ChannelMessage,
     InvocationRequest,
     ManualTrigger,
     MessageRole,
@@ -129,7 +130,7 @@ async def test_scheduled_trigger_prompt_includes_local_date_context(infra, monke
     captured = {}
 
     async def fake_run(agent, prompt, run_config=None):
-        captured["prompt"] = prompt
+        captured["prompt"] = prompt[-1]["content"]
         return SimpleNamespace(final_output="ok")
 
     monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
@@ -168,7 +169,7 @@ async def test_agent_runner_prompt_includes_current_mcp_context_before_user_prom
     captured = {}
 
     async def fake_run(agent, prompt, run_config=None):
-        captured["prompt"] = prompt
+        captured["prompt"] = prompt[-1]["content"]
         return SimpleNamespace(final_output="ok")
 
     monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
@@ -210,3 +211,103 @@ async def test_agent_runner_writes_audit_events(infra):
         events = await AuditRepo(s).recent(limit=50)
     types = {e.type for e in events}
     assert AuditEventType.TRIGGER_RECEIVED.value in types
+
+
+async def test_second_message_in_conversation_includes_history(infra, monkeypatch):
+    _, factory, audit = infra
+    captured = {}
+
+    async def fake_run(agent, run_input, run_config=None):
+        captured["input"] = run_input
+        return SimpleNamespace(final_output="the assistant reply")
+
+    monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
+
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers_provider=lambda: [],
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        model=_FakeModel(),
+        idle_timeout_sec=900,
+    )
+
+    def _msg(text, ext_id):
+        return InvocationRequest(
+            trigger=ChannelMessage(
+                channel_kind=ChannelKind.DISCORD,
+                channel_ref="42",
+                text=text,
+                external_id=ext_id,
+            )
+        )
+
+    await runner.run(_msg("first message", "e1"))
+    await runner.run(_msg("second message", "e2"))
+
+    run_input = captured["input"]
+    assert isinstance(run_input, list)
+    assert run_input[0] == {"role": "user", "content": "first message"}
+    assert run_input[1] == {"role": "assistant", "content": "the assistant reply"}
+    assert run_input[-1]["role"] == "user"
+    assert run_input[-1]["content"].endswith("second message")
+    # History must not contain the current turn.
+    assert len(run_input) == 3
+
+
+async def test_first_message_has_no_history(infra, monkeypatch):
+    _, factory, audit = infra
+    captured = {}
+
+    async def fake_run(agent, run_input, run_config=None):
+        captured["input"] = run_input
+        return SimpleNamespace(final_output="ok")
+
+    monkeypatch.setattr("jarvis.agents.runner.Runner.run", fake_run)
+
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers_provider=lambda: [],
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        model=_FakeModel(),
+    )
+    await runner.run(
+        InvocationRequest(trigger=ManualTrigger(user="dashboard", prompt="hello"))
+    )
+
+    run_input = captured["input"]
+    assert isinstance(run_input, list)
+    assert len(run_input) == 1
+    assert run_input[0]["role"] == "user"
+    assert run_input[0]["content"].endswith("hello")
+
+
+def test_history_input_items_drops_oldest_over_char_budget():
+    from types import SimpleNamespace as NS
+
+    from jarvis.agents.runner import _HISTORY_MAX_CHARS, _history_input_items
+
+    big = "x" * (_HISTORY_MAX_CHARS - 10)
+    rows = [
+        NS(role="user", content="oldest"),
+        NS(role="assistant", content=big),
+        NS(role="user", content="newest"),
+    ]
+    items = _history_input_items(rows)
+    # "oldest" is dropped to fit the budget; newest turns survive.
+    assert [i["content"] for i in items] == [big, "newest"]
+
+
+def test_history_input_items_skips_non_chat_roles():
+    from types import SimpleNamespace as NS
+
+    from jarvis.agents.runner import _history_input_items
+
+    rows = [
+        NS(role="system", content="internal"),
+        NS(role="user", content="hi"),
+        NS(role="assistant", content="hello"),
+    ]
+    items = _history_input_items(rows)
+    assert [i["role"] for i in items] == ["user", "assistant"]
