@@ -23,6 +23,10 @@ Use `uv` for everything; there is no activated venv.
 | One-shot agent run | `uv run python -m jarvis invoke "..."` |
 | Validate config | `uv run python -m jarvis check-config` |
 | Local docker stack | `make up` / `make down` / `make logs` |
+| Prod stack (on the server) | `make prod-pull && make prod-up` (uses `docker-compose.prod.yml`; pin with `JARVIS_IMAGE_TAG`); `make prod-logs` |
+
+For a clean pass/fail summary use `uv run pytest -q 2>&1 | tail -5` once — don't re-run the
+suite with different grep pipes to hunt for the summary line.
 
 Python 3.12 only (`requires-python >=3.12,<3.13`). Ruff: line-length 100, target py312
 (`ruff.toml`). Pytest runs in `asyncio_mode = auto` (`pytest.ini`) — write `async def test_*`
@@ -73,6 +77,12 @@ The Docker entrypoint runs `alembic upgrade head` then `python -m jarvis serve`.
   in the yaml.
 - **Secrets at rest**: OAuth tokens, client secrets, and HTTP auth headers are Fernet-encrypted
   with `JARVIS_SECRETS_KEY`; decrypt only at point of use.
+- **`${VAR}` expansion in config yaml**: `config/loader.py` `expand_env` recursively expands
+  `${VAR}` in every string value of the config files (including `mcp-servers.yaml`); a missing
+  env var raises `ConfigLoadError` at load, not at use.
+- **HTTP auth header values are sent verbatim** — write `Authorization: Bearer ${TOKEN}` with no
+  inner quotes. Wrapping the value in quotes (`Authorization: "Bearer …"`) makes the quotes part
+  of the header and the upstream returns 401.
 - **Built-in providers** (seeded in migration `0011`, mirrored in `oauth/catalog.py`, kept in sync
   by `test_migration_seed_matches_catalog`): Fastmail (DCR), Gmail and Google Calendar (manual auth).
 - **Gmail tool 403s** are usually external, not a code bug: `gmailmcp.googleapis.com` is behind an
@@ -90,3 +100,23 @@ Branch off `main`, open a PR (don't push to `main`). Co-author trailer on commit
 `make check` must be green before deploy. Migration changes need a test under
 `tests/integration/` that runs real alembic (see `test_migration_0011.py`,
 `test_connection_uuid_repair_migration.py`).
+
+After a PR merges (the user merges in the GitHub UI): the remote branch auto-deletes on
+merge — never `git push origin --delete`. Cleanup is `git checkout main && git pull --ff-only
+&& git branch -d <branch> && git fetch --prune` (+ sweep `[gone]` branches and stale
+worktrees); the `/merged` skill does the whole ritual.
+
+## Production
+
+Deploys are pull-based on the server: CI publishes the image; the server runs
+`make prod-pull && make prod-up`. Migrations are self-contained in the image (entrypoint runs
+`alembic upgrade head` before serve). Each fix costs a user-driven redeploy round-trip, so
+reproduce locally first (scratch-DB migration runs, `make up`) whenever possible.
+
+**Reading production:** if the read-only Docker proxy is up (`~/dev/nas-observability/`),
+`DOCKER_HOST=tcp://192.168.30.131:2375 docker logs jarvis-1 --tail 100` reads prod logs
+directly (GET-only; deploy/exec return 403 — ask the user). **Caveat for jarvis specifically:**
+`docker inspect` exposes container Env — if `JARVIS_SECRETS_KEY` (the Fernet key) is passed as a
+plain env var rather than a file/Docker secret, it is readable through the proxy; prefer `logs`
+over `inspect` here, and don't enable the proxy for jarvis until that's confirmed file-based. If
+the proxy is down, fall back to pasted `jarvis-1 |` logs / `make prod-logs`.
