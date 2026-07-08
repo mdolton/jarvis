@@ -2,11 +2,12 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Form, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.core.types import AuditEventType
 from jarvis.persistence.repositories import AuditRepo, DigestTemplateRepo, ScheduleRepo
+from jarvis.scheduler.scheduler import validate_schedule_timing
 
 router = APIRouter()
 
@@ -70,9 +71,13 @@ async def schedule_create(
     discord_user_id: str = Form(""),
 ):
     ctx = request.app.state.ctx
+    try:
+        validate_schedule_timing(cron_expr, timezone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid schedule: {exc}") from exc
     target_user = discord_user_id.strip() or _default_discord_user_id(ctx)
     async with ctx.session_factory() as session:
-        await ScheduleRepo(session).create(
+        row = await ScheduleRepo(session).create(
             name=name,
             description=description,
             cron_expr=cron_expr,
@@ -84,6 +89,7 @@ async def schedule_create(
             model=model.strip() or None,
             discord_user_id=target_user,
         )
+    await ctx.scheduler.on_created(row)
     return RedirectResponse(url="/schedules", status_code=303)
 
 
@@ -95,6 +101,10 @@ async def schedule_toggle(request: Request, schedule_id: UUID):
         row = await repo.get(schedule_id)
         if row:
             await repo.set_enabled(schedule_id, not row.enabled)
+    if row:
+        async with ctx.session_factory() as session:
+            row = await ScheduleRepo(session).get(schedule_id)
+        await ctx.scheduler.on_toggled(row)
     return RedirectResponse(url="/schedules", status_code=303)
 
 
@@ -110,6 +120,7 @@ async def schedule_delete(request: Request, schedule_id: UUID):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
         await ScheduleRepo(session).delete(schedule_id)
+    await ctx.scheduler.on_deleted(schedule_id)
     return RedirectResponse(url="/schedules", status_code=303)
 
 
