@@ -295,8 +295,6 @@ class MemoryPreferenceRepo:
         if not items:
             return []
         items = _dedupe_new_preferences(items)
-        if not items:
-            return []
         now = _utcnow()
         rows = [
             MemoryPreferenceRow(
