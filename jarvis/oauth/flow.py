@@ -4,8 +4,10 @@ so unit tests can stub responses with MockTransport."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -17,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jarvis.oauth.catalog import AuthMode, ProviderCatalog, ProviderEntry
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob
 from jarvis.oauth.pkce import generate_code_challenge, generate_code_verifier, generate_state
-from jarvis.oauth.store import MCPConnectionRepo, MCPPendingRepo
+from jarvis.oauth.store import PENDING_STATE_TTL_SEC, MCPConnectionRepo, MCPPendingRepo
 
 _log = logging.getLogger(__name__)
 
@@ -75,12 +77,22 @@ class OAuthFlow:
         base_url: str,
         secrets_key: bytes,
         catalog: ProviderCatalog | None = None,
+        refresh_coalesce_window_sec: float = 30.0,
     ) -> None:
         self._http = http_client
         self._session_factory = session_factory
         self._base_url = base_url.rstrip("/")
         self._secrets_key = secrets_key
         self._catalog = catalog
+        # Per-connection serialization of refresh() plus a recency window:
+        # concurrent 401s coalesce onto one token exchange instead of burning a
+        # single-use rotated refresh token (invalid_grant -> spurious
+        # needs_reauth). A recency window (NOT a token_expires_at check) so a
+        # server-side-revoked-but-unexpired token still reaches the endpoint
+        # and produces the correct invalid_grant signal.
+        self._refresh_window = refresh_coalesce_window_sec
+        self._refresh_locks: dict[UUID, asyncio.Lock] = {}
+        self._last_refresh: dict[UUID, tuple[float, dict[str, str]]] = {}
 
     @property
     def redirect_uri(self) -> str:
@@ -246,6 +258,13 @@ class OAuthFlow:
         if pending is None:
             raise OAuthCallbackError(f"unknown or expired state {state!r}")
 
+        # Enforce the TTL at use — the daily sweep alone would leave a state
+        # valid for up to ~24h.
+        if pending.created_at < datetime.now(UTC) - timedelta(seconds=PENDING_STATE_TTL_SEC):
+            async with self._session_factory() as session:
+                await MCPPendingRepo(session).delete(state)
+            raise OAuthCallbackError(f"unknown or expired state {state!r}")
+
         connection_id = pending.connection_id
         async with self._session_factory() as session:
             conn = await MCPConnectionRepo(session).get(connection_id)
@@ -332,6 +351,23 @@ class OAuthFlow:
         )
 
     async def refresh(self, connection_id: UUID) -> dict[str, str]:
+        """Refresh tokens, serialized per connection with a recency window.
+
+        Concurrent callers coalesce: whoever wins the lock does the exchange;
+        callers that acquire the lock within ``refresh_coalesce_window_sec`` of
+        a successful refresh get that refresh's headers without a second token
+        exchange. Failed refreshes never populate the window.
+        """
+        lock = self._refresh_locks.setdefault(connection_id, asyncio.Lock())
+        async with lock:
+            recent = self._last_refresh.get(connection_id)
+            if recent is not None and time.monotonic() - recent[0] < self._refresh_window:
+                return dict(recent[1])
+            headers = await self._refresh_locked(connection_id)
+            self._last_refresh[connection_id] = (time.monotonic(), dict(headers))
+            return dict(headers)
+
+    async def _refresh_locked(self, connection_id: UUID) -> dict[str, str]:
         """Refresh tokens. Returns new headers dict for MCPServerStreamableHttp.
 
         Raises OAuthRefreshTransientError on network/5xx (caller may retry).

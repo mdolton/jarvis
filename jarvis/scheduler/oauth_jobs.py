@@ -11,7 +11,7 @@ from jarvis.oauth.flow import (
     OAuthRefreshPermanentError,
     OAuthRefreshTransientError,
 )
-from jarvis.oauth.store import MCPConnectionRepo, MCPPendingRepo
+from jarvis.oauth.store import PENDING_STATE_TTL_SEC, MCPConnectionRepo, MCPPendingRepo
 
 _log = logging.getLogger(__name__)
 OAUTH_REFRESH_ATTACH_TIMEOUT = 35.0
@@ -59,7 +59,7 @@ async def oauth_token_refresh(
 async def oauth_pending_sweep(
     *,
     session_factory: async_sessionmaker[AsyncSession],
-    ttl_seconds: int = 600,
+    ttl_seconds: int = PENDING_STATE_TTL_SEC,
 ) -> int:
     """Delete mcp_pending rows older than ttl_seconds. Returns number deleted."""
     async with session_factory() as session:

@@ -68,16 +68,43 @@ async def oauth_callback(request: Request):
             status_code=400,
         )
 
-    # Attach the SDK server with fresh headers.
-    headers = await ctx.oauth_flow.current_headers(result.connection_id)
     entry = await ctx.catalog.get(result.provider_key)
+    async with ctx.session_factory() as session:
+        conn = await MCPConnectionRepo(session).get(result.connection_id)
+    if conn is None:
+        # The connection row vanished between token exchange and attach
+        # (concurrent removal). Don't claim success for a connection that no
+        # longer exists.
+        return templates.TemplateResponse(
+            request,
+            "oauth_callback.html",
+            {
+                "outcome": "error",
+                "provider": entry.display_name,
+                "message": "connection was removed before the MCP attach could run",
+            },
+            status_code=500,
+        )
     if ctx.mcp_manager is not None:
         try:
+            # connect_connection resolves url_override/token from the row itself,
+            # so this route no longer hand-rolls the attach.
             await asyncio.wait_for(
-                ctx.mcp_manager.replace_oauth_server(
-                    result.runtime_name, url=entry.mcp_url, headers=headers
-                ),
+                ctx.mcp_manager.connect_connection(conn),
                 timeout=POST_CALLBACK_ATTACH_TIMEOUT,
+            )
+        except TimeoutError:
+            # The attach command is queued on the MCP lifecycle task and keeps
+            # running after this wait gives up — a timeout is "still in
+            # progress", never a failure. Do not touch connection status; the
+            # dashboard's runtime status reflects the eventual outcome.
+            _log.warning(
+                "post-callback MCP attach still pending for %s", result.runtime_name
+            )
+            return templates.TemplateResponse(
+                request,
+                "oauth_callback.html",
+                {"outcome": "pending", "provider": entry.display_name, "message": ""},
             )
         except Exception as e:
             _log.exception(

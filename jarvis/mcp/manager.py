@@ -348,7 +348,7 @@ class MCPManager:
             token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
             await self.replace_oauth_server(
                 conn.runtime_name,
-                url=entry.mcp_url,
+                url=conn.url_override or entry.mcp_url,
                 headers={"Authorization": f"Bearer {token}"},
                 oauth=True,
                 tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
@@ -452,6 +452,14 @@ class MCPManager:
             except Exception as e:
                 if not fut.done():
                     fut.set_exception(e)
+                else:
+                    # The caller stopped waiting (e.g. the OAuth callback's
+                    # bounded wait timed out) — without this, a late failure
+                    # would vanish: no log, no dashboard status, while the UI
+                    # says "check the MCP page".
+                    _log.exception("MCP %r command failed after caller stopped waiting", kind)
+                    if kind == "replace":
+                        await self._record_replace_failure(payload, e)
             if kind == "shutdown":
                 return
 
@@ -468,7 +476,7 @@ class MCPManager:
                     token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
                     await self.replace_oauth_server(
                         conn.runtime_name,
-                        url=entry.mcp_url,
+                        url=conn.url_override or entry.mcp_url,
                         headers={"Authorization": f"Bearer {token}"},
                         oauth=True,
                         tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
@@ -533,6 +541,27 @@ class MCPManager:
             repo = MCPServerRepo(session)
             row = await repo.upsert(name=cfg.name, transport=cfg.transport)
             await repo.set_status(row.id, status="error", last_error=f"{type(exc).__name__}: {exc}")
+
+    async def _record_replace_failure(self, payload: object, exc: Exception) -> None:
+        """Best-effort dashboard status for a replace that failed after its
+        caller stopped waiting. Mirrors the status write in _do_replace_oauth,
+        but with an error status; never raises."""
+        try:
+            provider_key = payload["provider_key"]  # type: ignore[index]
+            async with self._session_factory() as session:
+                repo = MCPServerRepo(session)
+                conn = await MCPConnectionRepo(session).get_by_runtime_name(provider_key)
+                row = await repo.upsert(
+                    name=provider_key,
+                    transport="http",
+                    source="connection",
+                    connection_id=conn.id if conn else None,
+                )
+                await repo.set_status(
+                    row.id, status="error", last_error=f"{type(exc).__name__}: {exc}"
+                )
+        except Exception:
+            _log.exception("failed to record late replace failure")
 
     async def _do_replace_oauth(
         self,

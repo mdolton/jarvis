@@ -4,6 +4,8 @@ The flow is keyed on connection_id: the service *definition* comes from the
 ProviderCatalog, the *credentials/scopes/tokens* from the connection row.
 """
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -11,7 +13,7 @@ import pytest
 
 from jarvis.oauth.catalog import SEED_PROVIDERS, ProviderCatalog, seed_built_in_providers
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob, generate_key
-from jarvis.oauth.flow import OAuthDiscoveryError, OAuthFlow
+from jarvis.oauth.flow import OAuthCallbackError, OAuthDiscoveryError, OAuthFlow
 from jarvis.oauth.store import MCPConnectionRepo, MCPPendingRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 
@@ -257,7 +259,6 @@ async def test_handle_callback_unknown_state_raises(db_factory):
     flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
                      base_url="http://localhost:8080", secrets_key=generate_key().encode(),
                      catalog=ProviderCatalog(db_factory))
-    from jarvis.oauth.flow import OAuthCallbackError
     with pytest.raises(OAuthCallbackError, match="state"):
         await flow.handle_callback(state="not-a-real-state", code="abc")
 
@@ -594,3 +595,109 @@ async def test_current_headers_returns_bearer(db_factory, fastmail_metadata_payl
 
     headers = await flow.current_headers(conn.id)
     assert headers["Authorization"] == "Bearer AT"
+
+
+def _refresh_counting_handler(fastmail_metadata_payload, refresh_calls):
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            form = dict(p.split("=", 1) for p in request.read().decode().split("&"))
+            if form["grant_type"] == "authorization_code":
+                return httpx.Response(
+                    200,
+                    json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600},
+                )
+            refresh_calls["count"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": f"AT{refresh_calls['count'] + 1}",
+                    "refresh_token": f"RT{refresh_calls['count'] + 1}",
+                    "expires_in": 3600,
+                },
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_concurrent_refresh_coalesces_to_one_exchange(db_factory, fastmail_metadata_payload):
+    refresh_calls = {"count": 0}
+    handler = _refresh_counting_handler(fastmail_metadata_payload, refresh_calls)
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key,
+                     catalog=ProviderCatalog(db_factory))
+    conn = await _make_connection(db_factory, key, provider_key="fastmail",
+                                  runtime_name="fastmail:main")
+    consent_url = await flow.start_authorization(conn.id)
+    state = parse_qs(urlparse(consent_url).query)["state"][0]
+    await flow.handle_callback(state=state, code="abc")
+
+    first, second = await asyncio.gather(flow.refresh(conn.id), flow.refresh(conn.id))
+
+    assert refresh_calls["count"] == 1
+    assert first == second == {"Authorization": "Bearer AT2"}
+
+
+async def test_refresh_outside_window_hits_endpoint_again(db_factory, fastmail_metadata_payload):
+    refresh_calls = {"count": 0}
+    handler = _refresh_counting_handler(fastmail_metadata_payload, refresh_calls)
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key,
+                     catalog=ProviderCatalog(db_factory),
+                     refresh_coalesce_window_sec=0.0)
+    conn = await _make_connection(db_factory, key, provider_key="fastmail",
+                                  runtime_name="fastmail:main")
+    consent_url = await flow.start_authorization(conn.id)
+    state = parse_qs(urlparse(consent_url).query)["state"][0]
+    await flow.handle_callback(state=state, code="abc")
+
+    assert await flow.refresh(conn.id) == {"Authorization": "Bearer AT2"}
+    assert await flow.refresh(conn.id) == {"Authorization": "Bearer AT3"}
+    assert refresh_calls["count"] == 2
+
+
+async def test_handle_callback_rejects_expired_pending_state(db_factory, fastmail_metadata_payload):
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(
+                200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+            )
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(http_client=make_client(handler), session_factory=db_factory,
+                     base_url="http://localhost:8080", secrets_key=key,
+                     catalog=ProviderCatalog(db_factory))
+    conn = await _make_connection(db_factory, key, provider_key="fastmail",
+                                  runtime_name="fastmail:main")
+    consent_url = await flow.start_authorization(conn.id)
+    state = parse_qs(urlparse(consent_url).query)["state"][0]
+
+    # Backdate the pending row past the TTL.
+    from sqlalchemy import update as sa_update
+
+    from jarvis.persistence.models import MCPPendingRow
+
+    async with db_factory() as session:
+        await session.execute(
+            sa_update(MCPPendingRow)
+            .where(MCPPendingRow.state == state)
+            .values(created_at=datetime.now(UTC) - timedelta(seconds=700))
+        )
+        await session.commit()
+
+    with pytest.raises(OAuthCallbackError, match="expired"):
+        await flow.handle_callback(state=state, code="abc")
+
+    async with db_factory() as session:
+        assert await MCPPendingRepo(session).get(state) is None
