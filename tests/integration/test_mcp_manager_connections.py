@@ -1,8 +1,10 @@
 """Manager attaches enabled OAuth connections at start, keyed by runtime_name."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
 import pytest_asyncio
 from mcp.types import Tool
 
@@ -12,6 +14,7 @@ from jarvis.oauth.catalog import ProviderCatalog, seed_built_in_providers
 from jarvis.oauth.crypto import encrypt_blob, generate_key
 from jarvis.oauth.store import MCPConnectionRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
+from jarvis.persistence.repositories import MCPServerRepo
 
 
 class _FakeSDK:
@@ -206,3 +209,51 @@ async def test_connect_connection_honors_url_override(factory):
         finally:
             await mgr.stop()
     assert captured["url"] == "https://alt2.example/mcp"
+
+
+async def test_late_replace_failure_is_recorded_after_caller_timeout(factory):
+    """A replace command that fails AFTER the submitting caller stopped waiting
+    must still surface: server row status 'error', not silence."""
+    key = generate_key().encode()
+
+    class _SlowFailingSDK:
+        async def __aenter__(self):
+            await asyncio.sleep(0.1)
+            raise RuntimeError("late attach boom")
+
+        async def __aexit__(self, *a):
+            return False
+
+    mgr = MCPManager(
+        config=MCPServersConfig(servers=[]),
+        session_factory=factory,
+        secrets_key=key,
+        oauth_flow=None,
+        catalog=ProviderCatalog(factory),
+    )
+    with patch("jarvis.mcp.manager._build_streamable_http", return_value=_SlowFailingSDK()):
+        await mgr.start()
+        try:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    mgr.replace_oauth_server(
+                        "calendar:late",
+                        url="https://alt.example/mcp",
+                        headers={"Authorization": "Bearer T"},
+                    ),
+                    timeout=0.01,
+                )
+            # Let the lifecycle task finish processing the queued command.
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                async with factory() as s:
+                    rows = await MCPServerRepo(s).list_all()
+                row = next((r for r in rows if r.name == "calendar:late"), None)
+                if row is not None and row.status == "error":
+                    break
+        finally:
+            await mgr.stop()
+
+    assert row is not None
+    assert row.status == "error"
+    assert "late attach boom" in (row.last_error or "")
