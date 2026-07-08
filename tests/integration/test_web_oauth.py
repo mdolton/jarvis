@@ -396,3 +396,46 @@ async def test_connect_dcr_unsupported_renders_error_page(factory):
     assert r.status_code == 502
     assert "Authorization failed" in r.text
     assert "does not support DCR" in r.text
+
+
+async def test_callback_vanished_connection_renders_error(factory, monkeypatch):
+    """The branch where the connection row disappears between token exchange and
+    attach: monkeypatch the ROUTE MODULE's repo so its re-fetch returns None.
+    handle_callback uses its own import and is unaffected."""
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata())
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            return httpx.Response(
+                200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+            )
+        return httpx.Response(404)
+
+    flow = make_flow(factory, handler)
+    ctx = make_ctx(factory, flow)
+    ctx.mcp_manager = _ManagerStub()
+    conn = await _make_connection(factory, provider_key="fastmail", runtime_name="fastmail:default")
+
+    client = make_app(ctx)
+    r = client.get(f"/oauth/connect/{conn.id}", follow_redirects=False)
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+
+    # Patch AFTER the connect request (oauth_connect uses the same module repo).
+    from jarvis.web.routes import oauth as oauth_routes
+
+    class _NoneRepo:
+        def __init__(self, session):
+            pass
+
+        async def get(self, connection_id):
+            return None
+
+    monkeypatch.setattr(oauth_routes, "MCPConnectionRepo", _NoneRepo)
+
+    r2 = client.get(f"/oauth/callback?state={state}&code=abc")
+    assert r2.status_code == 500
+    assert "removed before the MCP attach" in r2.text
+    assert ctx.mcp_manager.connected == []  # no attach was attempted
