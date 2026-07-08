@@ -28,6 +28,7 @@ from jarvis.channels.base import ChannelAdapter
 from jarvis.config.schema import LLMConfig
 from jarvis.core.dispatcher import TriggerDispatcher
 from jarvis.core.types import AuditEvent, AuditEventType, ScheduledTrigger
+from jarvis.persistence.models import ScheduleRow
 from jarvis.persistence.repositories import ScheduleRepo
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
@@ -164,6 +165,28 @@ class Scheduler:
     async def fire_now(self, schedule_id: UUID) -> None:
         """Trigger a schedule immediately (for tests / dashboard Run Now)."""
         await self._execute_schedule(schedule_id)
+
+    async def on_created(self, row: ScheduleRow) -> None:
+        """Register a schedule created while the app is running."""
+        if row.enabled:
+            await self._register(row.id, row.cron_expr, row.timezone)
+
+    async def on_toggled(self, row: ScheduleRow) -> None:
+        """Sync APScheduler registration with the row's new enabled state."""
+        if row.enabled:
+            if row.id not in self._jobs:
+                await self._register(row.id, row.cron_expr, row.timezone)
+        else:
+            await self._unregister(row.id)
+
+    async def on_deleted(self, schedule_id: UUID) -> None:
+        """Drop the APScheduler job for a deleted schedule, if registered."""
+        await self._unregister(schedule_id)
+
+    async def _unregister(self, schedule_id: UUID) -> None:
+        job_id = self._jobs.pop(schedule_id, None)
+        if job_id is not None and self._aps is not None:
+            await self._aps.remove_schedule(job_id)
 
     async def _register(
         self,

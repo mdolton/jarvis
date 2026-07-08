@@ -399,3 +399,92 @@ async def test_start_survives_bad_schedule_row_and_registers_good_ones(infra):
     async with factory() as s:
         events = await AuditRepo(s).recent(types=[AuditEventType.SCHEDULE_ERROR], limit=10)
     assert any(e.payload.get("schedule_name") == "bad-cron" for e in events)
+
+
+async def test_lifecycle_methods_register_and_unregister(infra):
+    _, factory, audit = infra
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=None,
+    )
+    await scheduler.start()
+    try:
+        assert scheduler.active_job_count() == 0
+
+        async with factory() as s:
+            row = await ScheduleRepo(s).create(
+                name="post-boot",
+                description="",
+                cron_expr=_far_future_cron_expr(),
+                timezone="UTC",
+                prompt="x",
+                output_mode="dashboard_only",
+                notify_on_error=False,
+                enabled=True,
+            )
+
+        # Created after boot -> registers live.
+        await scheduler.on_created(row)
+        assert scheduler.active_job_count() == 1
+
+        # Disable -> unregisters.
+        async with factory() as s:
+            repo = ScheduleRepo(s)
+            await repo.set_enabled(row.id, False)
+        async with factory() as s:
+            row = await ScheduleRepo(s).get(row.id)
+        await scheduler.on_toggled(row)
+        assert scheduler.active_job_count() == 0
+
+        # Re-enable -> registers again.
+        async with factory() as s:
+            await ScheduleRepo(s).set_enabled(row.id, True)
+        async with factory() as s:
+            row = await ScheduleRepo(s).get(row.id)
+        await scheduler.on_toggled(row)
+        assert scheduler.active_job_count() == 1
+
+        # Delete -> unregisters.
+        await scheduler.on_deleted(row.id)
+        assert scheduler.active_job_count() == 0
+
+        # Idempotent: removing an unknown id is a no-op.
+        await scheduler.on_deleted(row.id)
+        assert scheduler.active_job_count() == 0
+    finally:
+        await scheduler.stop()
+
+
+async def test_on_created_ignores_disabled_row(infra):
+    _, factory, audit = infra
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=None,
+    )
+    await scheduler.start()
+    try:
+        async with factory() as s:
+            row = await ScheduleRepo(s).create(
+                name="starts-disabled",
+                description="",
+                cron_expr=_far_future_cron_expr(),
+                timezone="UTC",
+                prompt="x",
+                output_mode="dashboard_only",
+                notify_on_error=False,
+                enabled=False,
+            )
+        await scheduler.on_created(row)
+        assert scheduler.active_job_count() == 0
+    finally:
+        await scheduler.stop()
