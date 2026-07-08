@@ -214,6 +214,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         mcp_servers_provider=mcp_manager.agent_mcp_servers,
         scheduled_output_router=ScheduledOutputRouter(discord_adapter=discord_adapter),
         memory_service=memory_service,
+        run_timeout_sec=cfg.jarvis.idle_timeout_sec,
     )
 
     # Scheduler.

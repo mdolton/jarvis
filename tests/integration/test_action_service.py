@@ -705,3 +705,36 @@ async def test_decision_fails_cleanly_when_restored_state_has_no_interruptions(m
         assert events[0].payload["action_id"] == str(action.id)
         assert events[0].payload["server_name"] == "gmail"
         assert events[0].payload["tool_name"] == "send_email"
+
+
+async def test_resume_timeout_marks_failed(monkeypatch, infra):
+    factory, audit = infra
+    action = await _action(factory)
+    canonical_item = SimpleNamespace(raw_item={"name": "send_email", "call_id": "call-1"})
+    state = _FakeRunState([canonical_item])
+    monkeypatch.setattr(
+        "jarvis.actions.service.run_state_from_json",
+        AsyncMock(return_value=state),
+    )
+
+    async def hung_run(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr("jarvis.actions.service.Runner.run", hung_run)
+
+    service = ActionService(
+        session_factory=factory,
+        audit=audit,
+        output_router=SimpleNamespace(route=AsyncMock()),
+        llm_config=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+        mcp_servers_provider=lambda: [],
+        run_timeout_sec=0.05,
+    )
+
+    with pytest.raises(TimeoutError):
+        await service.approve(action.id)
+
+    async with factory() as s:
+        row = await ActionRepo(s).get(action.id)
+    assert row.status == "failed"
+    assert "TimeoutError" in (row.error or "")

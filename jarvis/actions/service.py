@@ -39,6 +39,7 @@ class ActionService:
         mcp_servers_provider: Callable[[], list],
         scheduled_output_router: ScheduledOutputRouter | None = None,
         memory_service: Any = None,
+        run_timeout_sec: float | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -47,6 +48,7 @@ class ActionService:
         self._llm_config = llm_config
         self._mcp_servers_provider = mcp_servers_provider
         self._memory_service = memory_service
+        self._run_timeout_sec = run_timeout_sec
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def approve(self, action_id: UUID) -> AgentRunResult:
@@ -101,11 +103,22 @@ class ActionService:
                 )
             )
 
-            sdk_result = await Runner.run(
-                agent,
-                run_state,
-                run_config=RunConfig(workflow_name="jarvis-action-resume"),
-            )
+            if self._run_timeout_sec is None:
+                sdk_result = await Runner.run(
+                    agent,
+                    run_state,
+                    run_config=RunConfig(workflow_name="jarvis-action-resume"),
+                )
+            else:
+                # A wedged resume must not hold the (shielded) approve request
+                # forever with the action stuck in 'running'. TimeoutError flows
+                # into the except-path below: mark failed, route notice, re-raise.
+                async with asyncio.timeout(self._run_timeout_sec):
+                    sdk_result = await Runner.run(
+                        agent,
+                        run_state,
+                        run_config=RunConfig(workflow_name="jarvis-action-resume"),
+                    )
             interruptions = list(getattr(sdk_result, "interruptions", []) or [])
             if interruptions:
                 return await self._create_followup_action(action, sdk_result, interruptions[0])
