@@ -194,6 +194,9 @@ class Scheduler:
         cron_expr: str,
         timezone: str,
     ) -> None:
+        if self._aps is None:
+            return
+
         trigger = CronTrigger.from_crontab(cron_expr, timezone=timezone)
 
         job_id = await self._aps.add_schedule(

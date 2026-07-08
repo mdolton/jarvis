@@ -622,3 +622,13 @@ def test_delete_schedule_unregisters(client_and_factory):
     resp = client.post(f"/schedules/{schedule_id}/delete", follow_redirects=False)
     assert resp.status_code in (302, 303)
     client.app.state.ctx.scheduler.on_deleted.assert_awaited_once_with(schedule_id)
+
+
+def test_toggle_missing_schedule_is_noop(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.post(
+        "/schedules/00000000-0000-0000-0000-000000000000/toggle",
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    client.app.state.ctx.scheduler.on_toggled.assert_not_awaited()

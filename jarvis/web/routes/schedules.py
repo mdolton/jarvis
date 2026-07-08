@@ -104,7 +104,8 @@ async def schedule_toggle(request: Request, schedule_id: UUID):
     if row:
         async with ctx.session_factory() as session:
             row = await ScheduleRepo(session).get(schedule_id)
-        await ctx.scheduler.on_toggled(row)
+        if row is not None:
+            await ctx.scheduler.on_toggled(row)
     return RedirectResponse(url="/schedules", status_code=303)
 
 
