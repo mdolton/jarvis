@@ -376,3 +376,23 @@ async def test_disconnect_revokes_and_removes(factory):
         row = await MCPConnectionRepo(session).get(conn.id)
         assert row is not None
         assert row.access_token_enc is None
+
+
+async def test_connect_dcr_unsupported_renders_error_page(factory):
+    # Metadata WITHOUT registration_endpoint: DCR registration is impossible.
+    meta = {k: v for k, v in fastmail_metadata().items() if k != "registration_endpoint"}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=meta)
+        return httpx.Response(404)
+
+    flow = make_flow(factory, handler)
+    ctx = make_ctx(factory, flow)
+    conn = await _make_connection(factory, provider_key="fastmail", runtime_name="fastmail:default")
+
+    client = make_app(ctx)
+    r = client.get(f"/oauth/connect/{conn.id}", follow_redirects=False)
+    assert r.status_code == 502
+    assert "Authorization failed" in r.text
+    assert "does not support DCR" in r.text

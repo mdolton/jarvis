@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from jarvis.oauth.flow import OAuthCallbackError, OAuthDiscoveryError
+from jarvis.oauth.flow import DCRUnsupportedError, OAuthCallbackError, OAuthDiscoveryError
 from jarvis.oauth.store import MCPConnectionRepo
 
 router = APIRouter(prefix="/oauth")
@@ -150,7 +150,7 @@ async def oauth_connect(connection_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}")
     try:
         consent_url = await ctx.oauth_flow.start_authorization(cid)
-    except OAuthDiscoveryError as e:
+    except (OAuthDiscoveryError, DCRUnsupportedError) as e:
         templates = request.app.state.templates
         return templates.TemplateResponse(
             request,
