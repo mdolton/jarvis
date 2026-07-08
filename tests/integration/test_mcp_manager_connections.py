@@ -257,3 +257,48 @@ async def test_late_replace_failure_is_recorded_after_caller_timeout(factory):
     assert row is not None
     assert row.status == "error"
     assert "late attach boom" in (row.last_error or "")
+
+
+async def test_agent_mcp_context_uses_collision_digested_wire_names(factory):
+    key = generate_key().encode()
+    from jarvis.oauth.store import MCPProviderRepo
+
+    async with factory() as s:
+        await MCPProviderRepo(s).upsert(
+            key="internal", display_name="Internal", kind="http",
+            mcp_url="http://svc.local/mcp", builtin=False, auth_mode=None,
+            oauth_metadata_url=None, pkce=True, send_resource_indicator=True,
+            extra_auth_params={}, default_scopes=[], header_names=[],
+        )
+    async with factory() as s:
+        await MCPConnectionRepo(s).create(
+            provider_key="internal", label="Prod", runtime_name="internal:prod",
+        )
+
+    class _CollidingSDK(_FakeSDK):
+        async def list_tools(self):
+            # Both sanitize to "do_thing": the second must get a digest suffix.
+            return [
+                Tool(name="do thing", inputSchema={}),
+                Tool(name="do-thing", inputSchema={}),
+            ]
+
+    mgr = MCPManager(
+        config=MCPServersConfig(servers=[]),
+        session_factory=factory,
+        secrets_key=key,
+        oauth_flow=None,
+        catalog=ProviderCatalog(factory),
+    )
+    with patch("jarvis.mcp.manager._build_streamable_http", return_value=_CollidingSDK()):
+        await mgr.start()
+    try:
+        from jarvis.mcp.manager import _tool_wire_names
+
+        expected = _tool_wire_names("prod.internal", ["do thing", "do-thing"])
+        assert expected["do thing"] != expected["do-thing"]  # sanity: they collided
+        context = mgr.agent_mcp_context()
+        assert expected["do thing"] in context
+        assert expected["do-thing"] in context
+    finally:
+        await mgr.stop()
