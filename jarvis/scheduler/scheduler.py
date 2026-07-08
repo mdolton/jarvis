@@ -34,6 +34,19 @@ from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 _log = logging.getLogger(__name__)
 
 
+def validate_schedule_timing(cron_expr: str, timezone: str) -> None:
+    """Raise ValueError if `cron_expr`/`timezone` cannot build a CronTrigger.
+
+    Called at schedule-create time so bad input is rejected at the HTTP
+    boundary instead of crashing the next boot (Scheduler.start registers
+    every enabled row with CronTrigger.from_crontab).
+    """
+    try:
+        CronTrigger.from_crontab(cron_expr, timezone=timezone)
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
+
+
 class Scheduler:
     def __init__(
         self,
@@ -117,7 +130,24 @@ class Scheduler:
             rows = await ScheduleRepo(session).list_enabled()
 
         for row in rows:
-            await self._register(row.id, row.cron_expr, row.timezone)
+            try:
+                await self._register(row.id, row.cron_expr, row.timezone)
+            except Exception as exc:
+                # One bad row (e.g. legacy invalid cron) must degrade to one
+                # dead schedule, never a dead app.
+                _log.exception("failed to register schedule %s (%s)", row.id, row.name)
+                await self._audit.emit(
+                    AuditEvent(
+                        type=AuditEventType.SCHEDULE_ERROR,
+                        payload={
+                            "schedule_id": str(row.id),
+                            "schedule_name": row.name,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "stage": "register",
+                        },
+                    )
+                )
 
         _log.info("scheduler started with %d active jobs", len(self._jobs))
 

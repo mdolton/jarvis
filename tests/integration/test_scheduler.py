@@ -323,3 +323,79 @@ async def test_scheduler_times_out_wedged_agent_run(infra, monkeypatch):
     assert len(discord.sent) == 1
     assert discord.sent[0].channel_ref == "111"
     assert "Scheduled task `wedged` failed" in discord.sent[0].text
+
+
+def test_validate_schedule_timing_accepts_valid_input():
+    from jarvis.scheduler.scheduler import validate_schedule_timing
+
+    validate_schedule_timing("0 8 * * *", "America/Los_Angeles")  # must not raise
+
+
+def test_validate_schedule_timing_rejects_bad_cron():
+    import pytest
+
+    from jarvis.scheduler.scheduler import validate_schedule_timing
+
+    with pytest.raises(ValueError):
+        validate_schedule_timing("not a cron", "UTC")
+
+
+def test_validate_schedule_timing_rejects_bad_timezone():
+    import pytest
+
+    from jarvis.scheduler.scheduler import validate_schedule_timing
+
+    with pytest.raises(ValueError):
+        validate_schedule_timing("0 8 * * *", "Mars/Olympus_Mons")
+
+
+async def test_start_survives_bad_schedule_row_and_registers_good_ones(infra):
+    _, factory, audit = infra
+
+    async with factory() as s:
+        repo = ScheduleRepo(s)
+        await repo.create(
+            name="bad-cron",
+            description="",
+            cron_expr="not a cron",
+            timezone="UTC",
+            prompt="x",
+            output_mode="dashboard_only",
+            notify_on_error=False,
+            enabled=True,
+        )
+        good = await repo.create(
+            name="good",
+            description="",
+            cron_expr=_far_future_cron_expr(),
+            timezone="UTC",
+            prompt="x",
+            output_mode="dashboard_only",
+            notify_on_error=False,
+            enabled=True,
+        )
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=None,
+    )
+
+    await scheduler.start()  # must not raise
+    try:
+        assert scheduler.active_job_count() == 1
+        assert good.id in scheduler._jobs
+    finally:
+        await scheduler.stop()
+
+    # SCHEDULE_ERROR audit event names the bad schedule.
+    await asyncio.sleep(0.1)  # let the audit logger flush
+    from jarvis.core.types import AuditEventType
+    from jarvis.persistence.repositories import AuditRepo
+
+    async with factory() as s:
+        events = await AuditRepo(s).recent(types=[AuditEventType.SCHEDULE_ERROR], limit=10)
+    assert any(e.payload.get("schedule_name") == "bad-cron" for e in events)
