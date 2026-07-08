@@ -5,9 +5,10 @@ response), tool calls, and tool results. Each span becomes one AuditEvent
 with the span's structured data as payload.
 
 We install this via `set_trace_processors([JarvisTraceProcessor(...)])` in
-the bootstrap, which replaces the default OpenAI-backend exporter. When
-paired with `set_tracing_disabled(True)` in llm_client.install_as_default,
-no traces leak to OpenAI.
+the bootstrap, which REPLACES the SDK's default processor list (including
+the OpenAI-backend exporter) — that alone keeps traces local.
+`install_as_default` deliberately does NOT call `set_tracing_disabled(True)`,
+because that would silence this processor too.
 """
 
 import asyncio
