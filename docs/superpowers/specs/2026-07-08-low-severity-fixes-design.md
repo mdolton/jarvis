@@ -135,18 +135,26 @@ the source of the intermittent
 `PytestUnhandledThreadExceptionWarning: RuntimeError: Event loop is closed` that lands
 on unrelated tests.
 
-**Design.** This task carries diagnostic latitude:
+**Design (amended after diagnosis, 2026-07-08).** Instrumented reproduction with a
+captured traceback established the precise mechanism, which differs from the leading
+hypotheses: `Scheduler.start()` registers `oauth_token_refresh` with
+`IntervalTrigger(seconds=60)` and no `start_time`, so APScheduler fires it almost
+immediately at boot. A bootstrap-then-quick-shutdown (the smoke test; also `jarvis
+invoke`) cancels that in-flight job via `Scheduler.stop()` while it is acquiring a DB
+connection; the `CancelledError` lands inside SQLAlchemy's `_ConnectionRecord.__connect()`
+during post-connect event dispatch — a window SQLAlchemy's own try/except does not
+cover — orphaning an opened aiosqlite connection that was never registered with the
+pool. `engine.dispose()` cannot see it (pool-implementation-agnostic; `NullPool` would
+not help); only GC reaps it. The complete fix for the unprotected window is upstream in
+SQLAlchemy.
 
-1. Reproduce with the cheap instrumentation recipe from the writeup (venv-level
-   aiosqlite event log + current-test tagging; heavier instrumentation hides the race).
-2. Determine why the second connection survives `dispose()` — leading hypotheses: a
-   connection still checked out at dispose time (dispose only closes checked-in
-   connections), or the async pool's terminate path not stopping the aiosqlite worker.
-3. Fix in production code (shutdown ordering in `AppContext.shutdown()`, or engine/pool
-   configuration for SQLite in `jarvis/persistence/db.py` — e.g. `NullPool` if the pool
-   itself is the problem). Tests must not change to mask the leak.
-4. If the true fix requires upstream (SQLAlchemy/aiosqlite) changes, STOP and report
-   with evidence instead of working around it.
+**Fix.** Remove the observed trigger in `jarvis/scheduler/scheduler.py`: give the
+`oauth_token_refresh` interval job a `start_time` one interval in the future, so the
+first proactive refresh happens 60s after boot instead of immediately. This is also the
+more sensible product behavior — bootstrap has just attached connections with current
+tokens, so an immediate refresh sweep is redundant. Tests must not change to mask the
+leak. The residual theoretical window (shutdown exactly during any later job's DB
+connect) is upstream's to close; noted, not worked around.
 
 **Acceptance.** Instrumented verification that every aiosqlite connection opened during
 the smoke test reaches an explicit `stop` before test end (no GC-reaped `del`), and 5
