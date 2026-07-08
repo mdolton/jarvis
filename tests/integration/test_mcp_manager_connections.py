@@ -123,3 +123,86 @@ async def test_enabled_connection_attaches_at_start(factory):
         assert "calendar:work" in mgr.agent_mcp_context()
     finally:
         await mgr.stop()
+
+
+async def test_bootstrap_oauth_attach_honors_url_override(factory):
+    key = generate_key().encode()
+    async with factory() as s:
+        await MCPConnectionRepo(s).create(
+            provider_key="calendar",
+            label="Alt",
+            runtime_name="calendar:alt",
+            url_override="https://alt.example/mcp",
+        )
+    async with factory() as s:
+        conn = await MCPConnectionRepo(s).get_by_runtime_name("calendar:alt")
+        await MCPConnectionRepo(s).set_tokens(
+            conn.id,
+            access_token_enc=encrypt_blob(b"AT", key),
+            refresh_token_enc=None,
+            token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scopes_granted=[],
+        )
+
+    captured = {}
+
+    def fake_build(url, headers, **kwargs):
+        captured["url"] = url
+        return _FakeSDK()
+
+    mgr = MCPManager(
+        config=MCPServersConfig(servers=[]),
+        session_factory=factory,
+        secrets_key=key,
+        oauth_flow=None,
+        catalog=ProviderCatalog(factory),
+    )
+    with patch("jarvis.mcp.manager._build_streamable_http", side_effect=fake_build):
+        await mgr.start()
+    try:
+        assert captured["url"] == "https://alt.example/mcp"
+    finally:
+        await mgr.stop()
+
+
+async def test_connect_connection_honors_url_override(factory):
+    key = generate_key().encode()
+    async with factory() as s:
+        await MCPConnectionRepo(s).create(
+            provider_key="calendar",
+            label="Alt2",
+            runtime_name="calendar:alt2",
+            url_override="https://alt2.example/mcp",
+            enabled=False,  # keep bootstrap from attaching it; we call connect_connection directly
+        )
+    async with factory() as s:
+        conn = await MCPConnectionRepo(s).get_by_runtime_name("calendar:alt2")
+        await MCPConnectionRepo(s).set_tokens(
+            conn.id,
+            access_token_enc=encrypt_blob(b"AT", key),
+            refresh_token_enc=None,
+            token_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            scopes_granted=[],
+        )
+        conn = await MCPConnectionRepo(s).get_by_runtime_name("calendar:alt2")
+
+    captured = {}
+
+    def fake_build(url, headers, **kwargs):
+        captured["url"] = url
+        return _FakeSDK()
+
+    mgr = MCPManager(
+        config=MCPServersConfig(servers=[]),
+        session_factory=factory,
+        secrets_key=key,
+        oauth_flow=None,
+        catalog=ProviderCatalog(factory),
+    )
+    with patch("jarvis.mcp.manager._build_streamable_http", side_effect=fake_build):
+        await mgr.start()
+        try:
+            await mgr.connect_connection(conn)
+        finally:
+            await mgr.stop()
+    assert captured["url"] == "https://alt2.example/mcp"

@@ -348,7 +348,7 @@ class MCPManager:
             token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
             await self.replace_oauth_server(
                 conn.runtime_name,
-                url=entry.mcp_url,
+                url=conn.url_override or entry.mcp_url,
                 headers={"Authorization": f"Bearer {token}"},
                 oauth=True,
                 tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
@@ -468,7 +468,7 @@ class MCPManager:
                     token = decrypt_blob(conn.access_token_enc, self._secrets_key).decode()
                     await self.replace_oauth_server(
                         conn.runtime_name,
-                        url=entry.mcp_url,
+                        url=conn.url_override or entry.mcp_url,
                         headers={"Authorization": f"Bearer {token}"},
                         oauth=True,
                         tool_namespace=_tool_namespace_for_runtime_name(conn.runtime_name),
