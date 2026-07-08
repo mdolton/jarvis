@@ -53,15 +53,18 @@ stored refresh token; with single-use rotation the second exchange gets
 **Design.** In `jarvis/oauth/flow.py`:
 - `OAuthFlow` gains `self._refresh_locks: dict[UUID, asyncio.Lock]`, entries created on
   demand (`setdefault`). Bounded by the number of connections.
-- `refresh(connection_id)` runs its whole body under the connection's lock. After
-  acquiring, it re-reads the connection; if `access_token_enc` is present and
-  `token_expires_at` is more than `REFRESH_SKEW_SEC` (90) seconds in the future,
-  another task refreshed while we waited — return
-  `{"Authorization": "Bearer <current token>"}` without touching the token endpoint.
-  Otherwise proceed with the existing refresh flow.
-- The scheduler's proactive refresh path triggers at ≤90s to expiry, so it never
-  short-circuits incorrectly; the 401-retry path short-circuits exactly when a
-  concurrent refresh just installed a fresh token.
+- `refresh(connection_id)` runs its whole body under the connection's lock, with a
+  **recency-window short-circuit**: `OAuthFlow` records
+  `(monotonic timestamp, headers)` per connection on each successful refresh; a caller
+  that acquires the lock within `refresh_coalesce_window_sec` (default 30.0, a
+  constructor parameter so tests can inject 0.0) of the last successful refresh gets
+  those cached headers back without touching the token endpoint. Failed refreshes
+  never populate the cache.
+- Why a recency window rather than a `token_expires_at` freshness check: a token
+  revoked server-side while still unexpired must NOT short-circuit — the refresh has
+  to reach the token endpoint so `invalid_grant` marks the connection `needs_reauth`.
+  The recency window coalesces only genuinely concurrent bursts (two 401s within
+  milliseconds), which is the actual race.
 - `_UnauthorizedTracker` is deliberately unchanged: with the lock, a misclassified 401
   costs one short-circuited refresh, not a torn-down connection.
 
@@ -109,8 +112,9 @@ No code impact.
   `pending` page and connection status untouched; attach raising → `needs_reauth`
   (existing behavior preserved).
 - **C:** two concurrent `refresh()` calls against an httpx MockTransport that counts
-  token-endpoint hits → exactly one hit, both callers receive the fresh token; a
-  `refresh()` when the stored token is already fresh short-circuits (zero hits).
+  refresh-grant hits → exactly one hit, both callers receive the same fresh token;
+  with `refresh_coalesce_window_sec=0.0`, two sequential `refresh()` calls hit the
+  endpoint twice (window respected, not permanent).
 - **D:** `Runner.run` stubbed to outlast a short timeout → action marked `failed` with
   the timeout recorded, exception propagates to the caller.
 - **E:** pending row backdated beyond the TTL → `OAuthCallbackError` and the row is
