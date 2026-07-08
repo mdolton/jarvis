@@ -442,7 +442,12 @@ class OAuthFlow:
                 "token endpoint returned malformed response: missing access_token"
             )
         new_refresh: str | None = data.get("refresh_token")  # may rotate
-        expires_in = int(data.get("expires_in", 3600))
+        try:
+            expires_in = int(data.get("expires_in") or 3600)
+        except (TypeError, ValueError) as exc:
+            raise OAuthRefreshTransientError(
+                "token endpoint returned malformed response: bad expires_in"
+            ) from exc
         expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
 
         async with self._session_factory() as session:
@@ -472,8 +477,10 @@ class OAuthFlow:
             raise RuntimeError("OAuthFlow needs a catalog for revoke")
 
         # Evict this connection's refresh-coalescing state: after revoke the
-        # cached headers hold a dead token. An in-flight refresh racing this
-        # pop is benign — worst case one extra token exchange on a fresh lock.
+        # cached headers hold a dead token. Racing an in-flight refresh is
+        # tolerated: it may mint one extra token and repopulate the cache with
+        # that fresh (never-revoked) token for up to the coalesce window —
+        # still strictly narrower exposure than not evicting at all.
         self._last_refresh.pop(connection_id, None)
         self._refresh_locks.pop(connection_id, None)
 

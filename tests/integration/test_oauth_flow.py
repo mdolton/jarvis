@@ -725,7 +725,13 @@ async def test_refresh_malformed_response_raises_transient(db_factory, fastmail_
             if state["mode"] == "not-json":
                 state["mode"] = "no-token"
                 return httpx.Response(200, text="<html>gateway error page</html>")
-            return httpx.Response(200, json={"token_type": "Bearer"})
+            if state["mode"] == "no-token":
+                state["mode"] = "bad-expiry"
+                return httpx.Response(200, json={"token_type": "Bearer"})
+            return httpx.Response(
+                200,
+                json={"access_token": "AT4", "refresh_token": "RT4", "expires_in": "1h"},
+            )
         return httpx.Response(404)
 
     key = generate_key().encode()
@@ -747,6 +753,8 @@ async def test_refresh_malformed_response_raises_transient(db_factory, fastmail_
     with pytest.raises(OAuthRefreshTransientError, match="not JSON"):
         await flow.refresh(conn.id)
     with pytest.raises(OAuthRefreshTransientError, match="missing access_token"):
+        await flow.refresh(conn.id)
+    with pytest.raises(OAuthRefreshTransientError, match="bad expires_in"):
         await flow.refresh(conn.id)
 
     # Transient means NOT needs_reauth.
