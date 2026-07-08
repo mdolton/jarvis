@@ -71,7 +71,21 @@ async def oauth_callback(request: Request):
     entry = await ctx.catalog.get(result.provider_key)
     async with ctx.session_factory() as session:
         conn = await MCPConnectionRepo(session).get(result.connection_id)
-    if ctx.mcp_manager is not None and conn is not None:
+    if conn is None:
+        # The connection row vanished between token exchange and attach
+        # (concurrent removal). Don't claim success for a connection that no
+        # longer exists.
+        return templates.TemplateResponse(
+            request,
+            "oauth_callback.html",
+            {
+                "outcome": "error",
+                "provider": entry.display_name,
+                "message": "connection was removed before the MCP attach could run",
+            },
+            status_code=500,
+        )
+    if ctx.mcp_manager is not None:
         try:
             # connect_connection resolves url_override/token from the row itself,
             # so this route no longer hand-rolls the attach.
