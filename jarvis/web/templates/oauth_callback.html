@@ -5,6 +5,9 @@
   {% if outcome == "success" %}
     <h2>Connected to {{ provider }}.</h2>
     <p>You can close this tab.</p>
+  {% elif outcome == "pending" %}
+    <h2>Connected to {{ provider }}.</h2>
+    <p>MCP attach is still in progress — check the <a href="/mcp">MCP page</a> for status.</p>
   {% elif outcome == "declined" %}
     <h2>Authorization declined.</h2>
     <p>No data was saved. <a href="/mcp">Back to Jarvis</a>.</p>

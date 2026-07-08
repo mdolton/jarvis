@@ -127,10 +127,10 @@ async def test_connect_missing_connection_returns_404(factory):
 
 class _ManagerStub:
     def __init__(self):
-        self.replaced = []
+        self.connected = []
 
-    async def replace_oauth_server(self, runtime_name, *, url, headers):
-        self.replaced.append((runtime_name, url, headers))
+    async def connect_connection(self, conn):
+        self.connected.append(conn.runtime_name)
 
 
 async def test_callback_happy_path_renders_success_and_swaps_server(factory):
@@ -155,9 +155,7 @@ async def test_callback_happy_path_renders_success_and_swaps_server(factory):
     r2 = client.get(f"/oauth/callback?state={state}&code=abc")
     assert r2.status_code == 200
     assert "Connected" in r2.text
-    assert ctx.mcp_manager.replaced == [
-        ("fastmail:default", "https://api.fastmail.com/mcp", {"Authorization": "Bearer AT"}),
-    ]
+    assert ctx.mcp_manager.connected == ["fastmail:default"]
 
 
 async def test_callback_unknown_state_renders_error(factory):
@@ -229,13 +227,13 @@ class _ManagerStubRemoveRaises(_ManagerStub):
         raise RuntimeError("teardown boom")
 
 
-class _ManagerStubReplaceRaises(_ManagerStub):
-    async def replace_oauth_server(self, runtime_name, *, url, headers):
+class _ManagerStubConnectRaises(_ManagerStub):
+    async def connect_connection(self, conn):
         raise RuntimeError("attach boom")
 
 
-class _ManagerStubReplaceHangs(_ManagerStub):
-    async def replace_oauth_server(self, runtime_name, *, url, headers):
+class _ManagerStubConnectHangs(_ManagerStub):
+    async def connect_connection(self, conn):
         await asyncio.Event().wait()
 
 
@@ -289,7 +287,7 @@ async def test_callback_marks_needs_reauth_when_attach_fails(factory):
 
     flow = make_flow(factory, handler)
     ctx = make_ctx(factory, flow)
-    ctx.mcp_manager = _ManagerStubReplaceRaises()
+    ctx.mcp_manager = _ManagerStubConnectRaises()
     conn = await _make_connection(factory, provider_key="fastmail", runtime_name="fastmail:default")
 
     client = make_app(ctx)
@@ -304,7 +302,7 @@ async def test_callback_marks_needs_reauth_when_attach_fails(factory):
 
 
 async def test_callback_times_out_hung_mcp_attach(factory, monkeypatch):
-    """The browser must not hang on the consent screen if post-callback MCP attach wedges."""
+    """A slow MCP attach must not hang the browser NOR mark the connection needs_reauth."""
 
     from jarvis.web.routes import oauth as oauth_routes
 
@@ -324,7 +322,7 @@ async def test_callback_times_out_hung_mcp_attach(factory, monkeypatch):
 
     flow = make_flow(factory, handler)
     ctx = make_ctx(factory, flow)
-    ctx.mcp_manager = _ManagerStubReplaceHangs()
+    ctx.mcp_manager = _ManagerStubConnectHangs()
     conn = await _make_connection(factory, provider_key="fastmail", runtime_name="fastmail:default")
     app = create_app(app_context=ctx)
 
@@ -339,12 +337,14 @@ async def test_callback_times_out_hung_mcp_attach(factory, monkeypatch):
             timeout=1.0,
         )
 
-    assert r2.status_code == 500
-    assert "MCP attach failed" in r2.text
+    assert r2.status_code == 200
+    assert "still in progress" in r2.text
     async with factory() as session:
         row = await MCPConnectionRepo(session).get(conn.id)
         assert row is not None
-        assert row.status == "needs_reauth"
+        # Tokens were stored and the attach is merely pending — status must NOT
+        # be downgraded to needs_reauth by a timeout.
+        assert row.status == "connected"
 
 
 async def test_disconnect_revokes_and_removes(factory):
