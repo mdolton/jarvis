@@ -6,14 +6,19 @@ ProviderCatalog, the *credentials/scopes/tokens* from the connection row.
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import httpx
 import pytest
 
 from jarvis.oauth.catalog import SEED_PROVIDERS, ProviderCatalog, seed_built_in_providers
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob, generate_key
-from jarvis.oauth.flow import OAuthCallbackError, OAuthDiscoveryError, OAuthFlow
+from jarvis.oauth.flow import (
+    OAuthCallbackError,
+    OAuthDiscoveryError,
+    OAuthFlow,
+    OAuthRefreshTransientError,
+)
 from jarvis.oauth.store import MCPConnectionRepo, MCPPendingRepo
 from jarvis.persistence.db import Base, create_engine, session_factory
 
@@ -701,3 +706,122 @@ async def test_handle_callback_rejects_expired_pending_state(db_factory, fastmai
 
     async with db_factory() as session:
         assert await MCPPendingRepo(session).get(state) is None
+
+
+async def test_refresh_malformed_response_raises_transient(db_factory, fastmail_metadata_payload):
+    state = {"mode": "authcode"}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            if state["mode"] == "authcode":
+                state["mode"] = "not-json"
+                return httpx.Response(
+                    200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+                )
+            if state["mode"] == "not-json":
+                state["mode"] = "no-token"
+                return httpx.Response(200, text="<html>gateway error page</html>")
+            return httpx.Response(200, json={"token_type": "Bearer"})
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(
+        http_client=make_client(handler),
+        session_factory=db_factory,
+        base_url="http://localhost:8080",
+        secrets_key=key,
+        catalog=ProviderCatalog(db_factory),
+        refresh_coalesce_window_sec=0.0,
+    )
+    conn = await _make_connection(
+        db_factory, key, provider_key="fastmail", runtime_name="fastmail:main"
+    )
+    consent_url = await flow.start_authorization(conn.id)
+    st = parse_qs(urlparse(consent_url).query)["state"][0]
+    await flow.handle_callback(state=st, code="abc")
+
+    with pytest.raises(OAuthRefreshTransientError, match="not JSON"):
+        await flow.refresh(conn.id)
+    with pytest.raises(OAuthRefreshTransientError, match="missing access_token"):
+        await flow.refresh(conn.id)
+
+    # Transient means NOT needs_reauth.
+    async with db_factory() as session:
+        stored = await MCPConnectionRepo(session).get(conn.id)
+        assert stored.status == "connected"
+
+
+async def test_resource_indicator_uses_url_override(db_factory, fastmail_metadata_payload):
+    seen = {"token_resources": []}
+
+    def handler(request):
+        if "/.well-known" in request.url.path:
+            return httpx.Response(200, json=fastmail_metadata_payload)
+        if request.url.path == "/oauth/register":
+            return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
+        if request.url.path == "/oauth/token":
+            form = dict(p.split("=", 1) for p in request.read().decode().split("&"))
+            seen["token_resources"].append(unquote_plus(form.get("resource", "")))
+            return httpx.Response(
+                200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+            )
+        return httpx.Response(404)
+
+    key = generate_key().encode()
+    flow = OAuthFlow(
+        http_client=make_client(handler),
+        session_factory=db_factory,
+        base_url="http://localhost:8080",
+        secrets_key=key,
+        catalog=ProviderCatalog(db_factory),
+        refresh_coalesce_window_sec=0.0,
+    )
+    async with db_factory() as s:
+        conn = await MCPConnectionRepo(s).create(
+            provider_key="fastmail",
+            label="alt",
+            runtime_name="fastmail:alt",
+            url_override="https://alt.example/mcp",
+        )
+
+    consent_url = await flow.start_authorization(conn.id)
+    qs = parse_qs(urlparse(consent_url).query)
+    assert qs["resource"] == ["https://alt.example/mcp"]
+
+    await flow.handle_callback(state=qs["state"][0], code="abc")
+    await flow.refresh(conn.id)
+    # Code exchange + refresh exchange both carried the override.
+    assert seen["token_resources"] == ["https://alt.example/mcp", "https://alt.example/mcp"]
+
+
+async def test_revoke_evicts_refresh_cache(db_factory, fastmail_metadata_payload):
+    refresh_calls = {"count": 0}
+    handler = _refresh_counting_handler(fastmail_metadata_payload, refresh_calls)
+    key = generate_key().encode()
+    # Default 30s coalesce window: only eviction can allow a second exchange.
+    flow = OAuthFlow(
+        http_client=make_client(handler),
+        session_factory=db_factory,
+        base_url="http://localhost:8080",
+        secrets_key=key,
+        catalog=ProviderCatalog(db_factory),
+    )
+    conn = await _make_connection(
+        db_factory, key, provider_key="fastmail", runtime_name="fastmail:main"
+    )
+    consent_url = await flow.start_authorization(conn.id)
+    st = parse_qs(urlparse(consent_url).query)["state"][0]
+    await flow.handle_callback(state=st, code="abc")
+
+    await flow.refresh(conn.id)
+    assert refresh_calls["count"] == 1
+
+    # revoke's HTTP call 404s against this handler — best-effort, never raises.
+    await flow.revoke(conn.id)
+
+    await flow.refresh(conn.id)
+    assert refresh_calls["count"] == 2

@@ -206,7 +206,7 @@ class OAuthFlow:
         params.update(entry.extra_auth_params)
         # RFC 8707 + MCP authorization spec: identify the protected resource.
         if entry.send_resource_indicator:
-            params["resource"] = entry.mcp_url
+            params["resource"] = conn.url_override or entry.mcp_url
         return f"{metadata.authorization_endpoint}?{urlencode(params)}"
 
     async def register_client(
@@ -293,7 +293,7 @@ class OAuthFlow:
         }
         # RFC 8707 + MCP authorization spec: identify the protected resource.
         if entry.send_resource_indicator:
-            form["resource"] = entry.mcp_url
+            form["resource"] = conn.url_override or entry.mcp_url
         headers: dict[str, str] = {}
         if client_secret is not None:
             # client_secret_basic: Authorization: Basic base64(client_id:client_secret)
@@ -405,7 +405,7 @@ class OAuthFlow:
         }
         # RFC 8707 + MCP authorization spec: identify the protected resource.
         if entry.send_resource_indicator:
-            form["resource"] = entry.mcp_url
+            form["resource"] = conn.url_override or entry.mcp_url
         headers: dict[str, str] = {}
         if client_secret is not None:
             basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
@@ -430,8 +430,17 @@ class OAuthFlow:
                 f"{connection_id}: refresh permanently failed: {err}"
             )
 
-        data = resp.json()
-        access_token: str = data["access_token"]
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise OAuthRefreshTransientError(
+                "token endpoint returned malformed response: not JSON"
+            ) from exc
+        access_token = data.get("access_token")
+        if not access_token:
+            raise OAuthRefreshTransientError(
+                "token endpoint returned malformed response: missing access_token"
+            )
         new_refresh: str | None = data.get("refresh_token")  # may rotate
         expires_in = int(data.get("expires_in", 3600))
         expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
@@ -461,6 +470,12 @@ class OAuthFlow:
             raise RuntimeError("OAuthFlow needs a session_factory for revoke")
         if self._catalog is None:
             raise RuntimeError("OAuthFlow needs a catalog for revoke")
+
+        # Evict this connection's refresh-coalescing state: after revoke the
+        # cached headers hold a dead token. An in-flight refresh racing this
+        # pop is benign — worst case one extra token exchange on a fresh lock.
+        self._last_refresh.pop(connection_id, None)
+        self._refresh_locks.pop(connection_id, None)
 
         async with self._session_factory() as session:
             conn = await MCPConnectionRepo(session).get(connection_id)
