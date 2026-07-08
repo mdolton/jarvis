@@ -294,6 +294,7 @@ class MemoryPreferenceRepo:
     ) -> list[MemoryPreferenceRow]:
         if not items:
             return []
+        items = _dedupe_new_preferences(items)
         now = _utcnow()
         rows = [
             MemoryPreferenceRow(
@@ -328,11 +329,13 @@ class MemoryPreferenceRepo:
         source: str,
     ) -> list[MemoryPreferenceRow]:
         existing = await self.existing_normalized_contents()
-        missing = [
-            item
-            for item in items
-            if _normalize_preference_content(item.content) not in existing
-        ]
+        missing = _dedupe_new_preferences(
+            [
+                item
+                for item in items
+                if _normalize_preference_content(item.content) not in existing
+            ]
+        )
         if not missing:
             return []
         now = _utcnow()
@@ -693,6 +696,19 @@ class MemoryRecallRepo:
 
 def _normalize_preference_content(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip().casefold()
+
+
+def _dedupe_new_preferences(items: list[NewPreference]) -> list[NewPreference]:
+    """Drop items whose normalized content repeats within the batch (first wins)."""
+    deduped: list[NewPreference] = []
+    seen: set[str] = set()
+    for item in items:
+        normalized = _normalize_preference_content(item.content)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(item)
+    return deduped
 
 
 class ScheduleRepo:

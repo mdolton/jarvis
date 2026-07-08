@@ -95,12 +95,17 @@ async def edit_provider_credentials(
 ):
     """Set OAuth app credentials on this provider's connections (creds live on connections)."""
     ctx = request.app.state.ctx
-    key = ctx.config.secrets_key
-    cid_enc = encrypt_blob(client_id.encode(), key)
-    sec_enc = encrypt_blob(client_secret.encode(), key) if client_secret.strip() else None
     async with ctx.session_factory() as session:
         crepo = MCPConnectionRepo(session)
         conns = await crepo.list_for_provider(provider_key)
+        if not conns:
+            raise HTTPException(
+                400,
+                "provider has no connections — add a connection first, then set credentials",
+            )
+        key = ctx.config.secrets_key
+        cid_enc = encrypt_blob(client_id.encode(), key)
+        sec_enc = encrypt_blob(client_secret.encode(), key) if client_secret.strip() else None
         for c in conns:
             await crepo.set_client(c.id, client_id_enc=cid_enc, client_secret_enc=sec_enc)
     await _emit(ctx, "provider.edit_credentials", provider_key=provider_key, count=len(conns))

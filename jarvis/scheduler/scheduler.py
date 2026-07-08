@@ -14,7 +14,7 @@ Each job fire:
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -33,6 +33,11 @@ from jarvis.persistence.repositories import ScheduleRepo
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
 _log = logging.getLogger(__name__)
+
+# Proactive OAuth token refresh cadence; the first fire is delayed one full
+# interval (see Scheduler.start) so short-lived bootstraps never cancel an
+# in-flight refresh mid-DB-connect.
+OAUTH_REFRESH_INTERVAL_SEC = 60
 
 
 def validate_schedule_timing(cron_expr: str, timezone: str) -> None:
@@ -112,7 +117,17 @@ class Scheduler:
 
             await self._aps.add_schedule(
                 oauth_token_refresh,
-                IntervalTrigger(seconds=60),
+                # start_time one interval out: an immediate first fire is redundant
+                # (bootstrap just attached fresh tokens) and races short-lived
+                # bootstrap+shutdown cycles — cancelling the in-flight job
+                # mid-DB-connect orphans an aiosqlite connection inside an
+                # unprotected SQLAlchemy pool-connect window (see
+                # docs/superpowers/specs/2026-07-08-low-severity-fixes-design.md,
+                # Group 6).
+                IntervalTrigger(
+                    seconds=OAUTH_REFRESH_INTERVAL_SEC,
+                    start_time=datetime.now(UTC) + timedelta(seconds=OAUTH_REFRESH_INTERVAL_SEC),
+                ),
                 kwargs={
                     "flow": self._oauth_flow,
                     "mcp_manager": self._oauth_mcp_manager,

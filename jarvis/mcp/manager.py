@@ -221,6 +221,9 @@ class MCPManager:
         self._sdk_servers: dict[str, object] = {}
         self._tool_names_by_server: dict[str, tuple[str, ...]] = {}
         self._tool_namespaces_by_server: dict[str, str] = {}
+        # Collision-digested raw->wire tool-name map per server, captured at
+        # discovery time so agent_mcp_context advertises names that exist.
+        self._wire_names_by_server: dict[str, dict[str, str]] = {}
         # Live access token per OAuth provider. Refreshing updates the holder in
         # place; the running connection reads it on every request.
         self._token_holders: dict[str, _TokenHolder] = {}
@@ -291,8 +294,10 @@ class MCPManager:
                 name, _tool_namespace_for_runtime_name(name)
             )
             if tools:
+                wire_by_raw = self._wire_names_by_server.get(name, {})
                 exposed = ", ".join(
-                    f"{_tool_wire_name(namespace, tool)} (raw: {tool})" for tool in tools
+                    f"{wire_by_raw.get(tool, _tool_wire_name(namespace, tool))} (raw: {tool})"
+                    for tool in tools
                 )
                 lines.append(f"- {name} (namespace {namespace}): {exposed}")
             else:
@@ -323,6 +328,9 @@ class MCPManager:
         connections that inject a live access token and refresh on 401; False for
         http/sse connections, which carry only static headers and must NOT get a
         bearer token holder or an oauth ``unauthorized_retry``.
+
+        The underlying command returns the new SDK server (used by the refresh-retry
+        path); this wrapper discards it.
         """
         await self._submit(
             "replace",
@@ -525,6 +533,9 @@ class MCPManager:
                 namespace=self._tool_namespaces_by_server[cfg.name],
             )
             self._tool_names_by_server[cfg.name] = tuple(t.name for t in tools)
+            self._wire_names_by_server[cfg.name] = _tool_wire_names(
+                self._tool_namespaces_by_server[cfg.name], [t.name for t in tools]
+            )
 
             async with self._session_factory() as session:
                 srepo = MCPServerRepo(session)
@@ -571,7 +582,12 @@ class MCPManager:
         headers: dict[str, str],
         oauth: bool = True,
         tool_namespace: str | None = None,
-    ) -> None:
+    ) -> object:
+        """Build and swap a new MCP server, returning it for retry logic.
+
+        Returns the new SDK server object; refresh_oauth_server_for_retry consumes
+        it through _submit's result.
+        """
         tool_namespace = tool_namespace or _tool_namespace_for_runtime_name(provider_key)
         new_stack = AsyncExitStack()
 
@@ -618,6 +634,9 @@ class MCPManager:
         else:
             self._token_holders.pop(provider_key, None)
         self._tool_names_by_server[provider_key] = tuple(t.name for t in tools)
+        self._wire_names_by_server[provider_key] = _tool_wire_names(
+            tool_namespace, [t.name for t in tools]
+        )
 
         # Persist status/tools BEFORE closing the old connection. Closing an
         # anyio-based streamable-HTTP connection can emit a stray cancellation
@@ -648,6 +667,7 @@ class MCPManager:
         self._sdk_servers.pop(provider_key, None)
         self._tool_names_by_server.pop(provider_key, None)
         self._tool_namespaces_by_server.pop(provider_key, None)
+        self._wire_names_by_server.pop(provider_key, None)
         self._token_holders.pop(provider_key, None)
         stack = self._stacks.pop(provider_key, None)
         self.clear_policy_cache(provider_key)
@@ -662,6 +682,7 @@ class MCPManager:
         self._token_holders.clear()
         self._tool_names_by_server.clear()
         self._tool_namespaces_by_server.clear()
+        self._wire_names_by_server.clear()
 
 
 def _build_streamable_http(

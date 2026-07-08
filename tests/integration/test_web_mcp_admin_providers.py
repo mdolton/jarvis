@@ -105,3 +105,13 @@ def test_edit_credentials_updates_all_connections(client):
             assert decrypt_blob(conn.client_id_enc, secrets_key) == b"APP-CID"
 
     asyncio.get_event_loop().run_until_complete(check())
+
+
+def test_edit_credentials_400_when_no_connections(client):
+    resp = client.post(
+        "/mcp/providers/fastmail/edit-credentials",
+        data={"client_id": "cid", "client_secret": "sec"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "no connections" in resp.text
