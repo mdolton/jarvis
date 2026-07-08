@@ -173,6 +173,16 @@ class MessageRepo:
         )
         return list(result.scalars())
 
+    async def recent_history(self, conversation_id: UUID, *, limit: int) -> list[MessageRow]:
+        """Return the newest `limit` messages of a conversation, oldest first."""
+        result = await self._session.execute(
+            select(MessageRow)
+            .where(MessageRow.conversation_id == conversation_id)
+            .order_by(MessageRow.created_at.desc())
+            .limit(limit)
+        )
+        return list(reversed(list(result.scalars())))
+
 
 class TriggerRepo:
     def __init__(self, session: AsyncSession) -> None:

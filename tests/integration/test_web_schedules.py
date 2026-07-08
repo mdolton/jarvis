@@ -18,6 +18,9 @@ async def client_and_factory(tmp_path):
     ctx.session_factory = factory
     ctx.scheduler = MagicMock()
     ctx.scheduler.fire_now = AsyncMock(return_value=None)
+    ctx.scheduler.on_created = AsyncMock(return_value=None)
+    ctx.scheduler.on_toggled = AsyncMock(return_value=None)
+    ctx.scheduler.on_deleted = AsyncMock(return_value=None)
 
     from jarvis.agents.model_catalog import Catalog
 
@@ -548,3 +551,84 @@ def test_schedules_page_warns_for_disabled_template_id(client_and_factory):
     assert resp.status_code == 200
     assert "Template not found or disabled." in resp.text
     assert "Disabled template prompt." not in resp.text
+
+
+def _create_form(name="lifecycle-sched", cron="0 8 * * *", timezone="UTC"):
+    return {
+        "name": name,
+        "description": "",
+        "cron_expr": cron,
+        "timezone": timezone,
+        "prompt": "x",
+        "output_mode": "dashboard_only",
+    }
+
+
+def test_create_schedule_registers_with_live_scheduler(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.post("/schedules", data=_create_form(), follow_redirects=False)
+    assert resp.status_code in (302, 303)
+
+    on_created = client.app.state.ctx.scheduler.on_created
+    on_created.assert_awaited_once()
+    row = on_created.await_args.args[0]
+    assert row.name == "lifecycle-sched"
+
+
+def test_create_schedule_rejects_invalid_cron(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.post(
+        "/schedules",
+        data=_create_form(name="bad-cron-sched", cron="not a cron"),
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    client.app.state.ctx.scheduler.on_created.assert_not_awaited()
+    # No row was written.
+    assert "bad-cron-sched" not in client.get("/schedules").text
+
+
+def test_create_schedule_rejects_invalid_timezone(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.post(
+        "/schedules",
+        data=_create_form(name="bad-tz-sched", timezone="Mars/Olympus_Mons"),
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+
+
+def test_toggle_schedule_syncs_scheduler(client_and_factory):
+    client, _ = client_and_factory
+    client.post("/schedules", data=_create_form(name="toggle-sync"), follow_redirects=False)
+    on_created = client.app.state.ctx.scheduler.on_created
+    schedule_id = on_created.await_args.args[0].id
+
+    resp = client.post(f"/schedules/{schedule_id}/toggle", follow_redirects=False)
+    assert resp.status_code in (302, 303)
+
+    on_toggled = client.app.state.ctx.scheduler.on_toggled
+    on_toggled.assert_awaited_once()
+    row = on_toggled.await_args.args[0]
+    assert row.id == schedule_id
+    assert row.enabled is False  # was created enabled; toggle flips it
+
+
+def test_delete_schedule_unregisters(client_and_factory):
+    client, _ = client_and_factory
+    client.post("/schedules", data=_create_form(name="delete-sync"), follow_redirects=False)
+    schedule_id = client.app.state.ctx.scheduler.on_created.await_args.args[0].id
+
+    resp = client.post(f"/schedules/{schedule_id}/delete", follow_redirects=False)
+    assert resp.status_code in (302, 303)
+    client.app.state.ctx.scheduler.on_deleted.assert_awaited_once_with(schedule_id)
+
+
+def test_toggle_missing_schedule_is_noop(client_and_factory):
+    client, _ = client_and_factory
+    resp = client.post(
+        "/schedules/00000000-0000-0000-0000-000000000000/toggle",
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    client.app.state.ctx.scheduler.on_toggled.assert_not_awaited()

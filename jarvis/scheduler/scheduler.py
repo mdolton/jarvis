@@ -28,10 +28,24 @@ from jarvis.channels.base import ChannelAdapter
 from jarvis.config.schema import LLMConfig
 from jarvis.core.dispatcher import TriggerDispatcher
 from jarvis.core.types import AuditEvent, AuditEventType, ScheduledTrigger
+from jarvis.persistence.models import ScheduleRow
 from jarvis.persistence.repositories import ScheduleRepo
 from jarvis.scheduler.scheduled_output import ScheduledOutputRouter
 
 _log = logging.getLogger(__name__)
+
+
+def validate_schedule_timing(cron_expr: str, timezone: str) -> None:
+    """Raise ValueError if `cron_expr`/`timezone` cannot build a CronTrigger.
+
+    Called at schedule-create time so bad input is rejected at the HTTP
+    boundary instead of crashing the next boot (Scheduler.start registers
+    every enabled row with CronTrigger.from_crontab).
+    """
+    try:
+        CronTrigger.from_crontab(cron_expr, timezone=timezone)
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
 
 
 class Scheduler:
@@ -117,7 +131,24 @@ class Scheduler:
             rows = await ScheduleRepo(session).list_enabled()
 
         for row in rows:
-            await self._register(row.id, row.cron_expr, row.timezone)
+            try:
+                await self._register(row.id, row.cron_expr, row.timezone)
+            except Exception as exc:
+                # One bad row (e.g. legacy invalid cron) must degrade to one
+                # dead schedule, never a dead app.
+                _log.exception("failed to register schedule %s (%s)", row.id, row.name)
+                await self._audit.emit(
+                    AuditEvent(
+                        type=AuditEventType.SCHEDULE_ERROR,
+                        payload={
+                            "schedule_id": str(row.id),
+                            "schedule_name": row.name,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "stage": "register",
+                        },
+                    )
+                )
 
         _log.info("scheduler started with %d active jobs", len(self._jobs))
 
@@ -135,12 +166,37 @@ class Scheduler:
         """Trigger a schedule immediately (for tests / dashboard Run Now)."""
         await self._execute_schedule(schedule_id)
 
+    async def on_created(self, row: ScheduleRow) -> None:
+        """Register a schedule created while the app is running."""
+        if row.enabled:
+            await self._register(row.id, row.cron_expr, row.timezone)
+
+    async def on_toggled(self, row: ScheduleRow) -> None:
+        """Sync APScheduler registration with the row's new enabled state."""
+        if row.enabled:
+            if row.id not in self._jobs:
+                await self._register(row.id, row.cron_expr, row.timezone)
+        else:
+            await self._unregister(row.id)
+
+    async def on_deleted(self, schedule_id: UUID) -> None:
+        """Drop the APScheduler job for a deleted schedule, if registered."""
+        await self._unregister(schedule_id)
+
+    async def _unregister(self, schedule_id: UUID) -> None:
+        job_id = self._jobs.pop(schedule_id, None)
+        if job_id is not None and self._aps is not None:
+            await self._aps.remove_schedule(job_id)
+
     async def _register(
         self,
         schedule_id: UUID,
         cron_expr: str,
         timezone: str,
     ) -> None:
+        if self._aps is None:
+            return
+
         trigger = CronTrigger.from_crontab(cron_expr, timezone=timezone)
 
         job_id = await self._aps.add_schedule(
