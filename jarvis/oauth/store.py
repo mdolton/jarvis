@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from jarvis.persistence.models import MCPConnectionRow, MCPPendingRow, MCPProviderRow
 
+# How long an in-flight authorization (mcp_pending row) stays valid. Enforced
+# at use in OAuthFlow.handle_callback; the daily sweep is garbage collection.
+PENDING_STATE_TTL_SEC = 600
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -219,7 +223,7 @@ class MCPPendingRepo:
         await self._session.execute(delete(MCPPendingRow).where(MCPPendingRow.state == state))
         await self._session.commit()
 
-    async def sweep_expired(self, *, now: datetime, ttl_seconds: int = 600) -> int:
+    async def sweep_expired(self, *, now: datetime, ttl_seconds: int = PENDING_STATE_TTL_SEC) -> int:
         cutoff = now - timedelta(seconds=ttl_seconds)
         res = await self._session.execute(
             delete(MCPPendingRow).where(MCPPendingRow.created_at < cutoff)

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jarvis.oauth.catalog import AuthMode, ProviderCatalog, ProviderEntry
 from jarvis.oauth.crypto import decrypt_blob, encrypt_blob
 from jarvis.oauth.pkce import generate_code_challenge, generate_code_verifier, generate_state
-from jarvis.oauth.store import MCPConnectionRepo, MCPPendingRepo
+from jarvis.oauth.store import PENDING_STATE_TTL_SEC, MCPConnectionRepo, MCPPendingRepo
 
 _log = logging.getLogger(__name__)
 
@@ -256,6 +256,13 @@ class OAuthFlow:
         async with self._session_factory() as session:
             pending = await MCPPendingRepo(session).get(state)
         if pending is None:
+            raise OAuthCallbackError(f"unknown or expired state {state!r}")
+
+        # Enforce the TTL at use — the daily sweep alone would leave a state
+        # valid for up to ~24h.
+        if pending.created_at < datetime.now(UTC) - timedelta(seconds=PENDING_STATE_TTL_SEC):
+            async with self._session_factory() as session:
+                await MCPPendingRepo(session).delete(state)
             raise OAuthCallbackError(f"unknown or expired state {state!r}")
 
         connection_id = pending.connection_id
