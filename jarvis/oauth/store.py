@@ -223,7 +223,9 @@ class MCPPendingRepo:
         await self._session.execute(delete(MCPPendingRow).where(MCPPendingRow.state == state))
         await self._session.commit()
 
-    async def sweep_expired(self, *, now: datetime, ttl_seconds: int = PENDING_STATE_TTL_SEC) -> int:
+    async def sweep_expired(
+        self, *, now: datetime, ttl_seconds: int = PENDING_STATE_TTL_SEC
+    ) -> int:
         cutoff = now - timedelta(seconds=ttl_seconds)
         res = await self._session.execute(
             delete(MCPPendingRow).where(MCPPendingRow.created_at < cutoff)
