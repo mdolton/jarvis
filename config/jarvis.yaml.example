@@ -14,6 +14,15 @@ max_concurrent_agents: 3
 log_level: INFO
 default_schedule_output_mode: discord
 
+# Inbound event webhook (POST /events/webhook). Without a token the endpoint
+# is disabled (404). Uncomment and set JARVIS_EVENTS_WEBHOOK_TOKEN to enable;
+# senders must supply it as `Authorization: Bearer <token>`.
+events:
+  # webhook_token: ${JARVIS_EVENTS_WEBHOOK_TOKEN}
+  # Events on the same source (or source + coalesce_key) arriving within this
+  # window merge into a single agent turn.
+  coalesce_window_sec: 30.0
+
 memory:
   enabled: true
   recall_enabled: true

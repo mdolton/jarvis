@@ -26,6 +26,7 @@ from jarvis.channels.base import ChannelAdapter
 from jarvis.channels.discord_adapter import DiscordAdapter
 from jarvis.channels.discord_commands import ModelCommandDeps
 from jarvis.config.loader import LoadedConfig, load_config
+from jarvis.core.coalescer import EventCoalescer
 from jarvis.core.dispatcher import TriggerDispatcher
 from jarvis.core.output_router import NotificationGate, OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
@@ -56,6 +57,7 @@ class AppContext:
     agent_runner: AgentRunner
     action_service: ActionService
     dispatcher: TriggerDispatcher
+    event_coalescer: EventCoalescer
     channel_adapters: list[ChannelAdapter]
     output_router: OutputRouter
     scheduler: Scheduler
@@ -76,6 +78,7 @@ class AppContext:
                 await adapter.stop()
             except Exception:
                 _log.exception("error stopping channel adapter")
+        await self.event_coalescer.shutdown()
         await self.action_service.drain_memory_tasks()
         await self.agent_runner.drain_memory_tasks()
         await self.mcp_manager.stop()
@@ -216,6 +219,13 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         max_concurrent=cfg.jarvis.max_concurrent_agents,
     )
 
+    # Inbound event producer: webhook route → coalescer → dispatcher. Never
+    # touches the MCP manager (single-owner-task invariant stays intact).
+    event_coalescer = EventCoalescer(
+        dispatcher=dispatcher,
+        window_sec=cfg.jarvis.events.coalesce_window_sec,
+    )
+
     # Now that the dispatcher exists, start each adapter.
     for adapter in channel_adapters:
         await adapter.start(dispatcher)
@@ -270,6 +280,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         agent_runner=agent_runner,
         action_service=action_service,
         dispatcher=dispatcher,
+        event_coalescer=event_coalescer,
         channel_adapters=channel_adapters,
         output_router=output_router,
         scheduler=scheduler,

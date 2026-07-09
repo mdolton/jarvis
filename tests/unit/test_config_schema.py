@@ -120,3 +120,19 @@ def test_memory_config_rejects_inverted_thresholds():
             preference_dup_low_threshold=0.95,
             preference_dup_high_threshold=0.92,
         )
+
+
+def test_events_config_defaults_to_disabled():
+    from jarvis.config.schema import EventsConfig
+
+    cfg = EventsConfig()
+
+    assert cfg.webhook_token is None
+    assert cfg.coalesce_window_sec == 30.0
+
+
+def test_events_config_rejects_negative_window():
+    from jarvis.config.schema import EventsConfig
+
+    with pytest.raises(ValidationError):
+        EventsConfig(coalesce_window_sec=-1.0)

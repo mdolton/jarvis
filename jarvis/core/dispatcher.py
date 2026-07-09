@@ -54,10 +54,9 @@ class TriggerDispatcher:
         if msg.channel_ref not in allowed_refs:
             _log.info("rejected channel message from %r (not allow-listed)", msg.channel_ref)
             return None
-        if msg.external_id in self._seen:
+        if not self.remember_if_new(msg.external_id):
             _log.debug("dedup: suppressing repeat of %r", msg.external_id)
             return None
-        self._remember(msg.external_id)
 
         return await self._run(InvocationRequest(trigger=msg))
 
@@ -66,10 +65,9 @@ class TriggerDispatcher:
 
     async def dispatch_event(self, trigger: EventTrigger) -> AgentRunResult | None:
         """Dispatch an inbound external event. Returns None if it's a dup."""
-        if trigger.external_id in self._seen:
+        if not self.remember_if_new(trigger.external_id):
             _log.debug("dedup: suppressing repeat of event %r", trigger.external_id)
             return None
-        self._remember(trigger.external_id)
 
         return await self._run(InvocationRequest(trigger=trigger))
 
@@ -90,8 +88,16 @@ class TriggerDispatcher:
             await self._output_router.route(result)
         return result
 
-    def _remember(self, external_id: str) -> None:
+    def remember_if_new(self, external_id: str) -> bool:
+        """Record `external_id` in the dedup LRU; False if it was already seen.
+
+        Public so upstream producers (the event coalescer) can dedup at intake
+        against the same bounded LRU used by the dispatch paths.
+        """
+        if external_id in self._seen:
+            return False
         self._seen[external_id] = None
         # Bounded LRU: trim from the oldest.
         while len(self._seen) > self._seen_cap:
             self._seen.popitem(last=False)
+        return True
