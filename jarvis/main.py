@@ -137,6 +137,10 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         secrets_key=cfg.secrets_key,
         oauth_flow=oauth_flow,
         catalog=catalog,
+        audit=audit,
+        sensitivity_terms_provider=(
+            memory_service.sensitivity_terms if memory_service is not None else None
+        ),
     )
     await mcp_manager.start()
 
