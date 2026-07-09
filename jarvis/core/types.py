@@ -46,6 +46,7 @@ class AuditEventType(StrEnum):
     TOOL_CALL = "tool.call"
     TOOL_RESULT = "tool.result"
     TOOL_ERROR = "tool.error"
+    TOOL_POLICY_DECISION = "tool.policy_decision"
     CHANNEL_SENT = "channel.sent"
     OUTPUT_SUPPRESSED = "output.suppressed"
     CONFIG_RELOAD_FAILED = "config.reload_failed"
