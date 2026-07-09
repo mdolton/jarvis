@@ -21,6 +21,7 @@ _INTERNAL_KINDS: frozenset[ChannelKind] = frozenset(
     {
         ChannelKind.DASHBOARD,
         ChannelKind.SCHEDULED,  # scheduled runs route per their own output_mode (Plan 4)
+        ChannelKind.EVENT,  # event-triggered runs surface on the dashboard only
     }
 )
 

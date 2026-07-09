@@ -65,6 +65,16 @@ async def test_scheduled_result_is_silently_skipped():
     assert adapter.sent == []
 
 
+async def test_event_result_is_silently_skipped():
+    """Event-triggered runs are internal; their output surfaces on the dashboard."""
+    adapter = _RecordingAdapter()
+    router = OutputRouter(adapters=[adapter])
+
+    await router.route(_result(kind=ChannelKind.EVENT, ref="email"))
+
+    assert adapter.sent == []
+
+
 async def test_no_adapter_for_kind_raises():
     router = OutputRouter(adapters=[])
 

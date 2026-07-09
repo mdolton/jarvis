@@ -18,12 +18,22 @@ class ChannelKind(StrEnum):
     DISCORD = "discord"
     SCHEDULED = "scheduled"
     DASHBOARD = "dashboard"
+    EVENT = "event"
 
 
 class TriggerKind(StrEnum):
     DISCORD_MESSAGE = "discord_message"
     SCHEDULE = "schedule"
     MANUAL = "manual"
+    EVENT = "event"
+
+
+class TriggerSource(StrEnum):
+    """Who initiated a turn. Non-user turns run with a restricted tool scope."""
+
+    USER = "user"
+    SCHEDULED = "scheduled"
+    EVENT = "event"
 
 
 class AuditEventType(StrEnum):
@@ -115,8 +125,23 @@ class ManualTrigger(_ModelBase):
     prompt: str
 
 
+class EventTrigger(_ModelBase):
+    """An inbound external event (email, calendar invite, webhook).
+
+    `prompt` is the trusted standing instruction configured by the user;
+    `content` is the untrusted external payload and must never be treated
+    as instructions.
+    """
+
+    kind: Literal[TriggerKind.EVENT] = TriggerKind.EVENT
+    source: str  # e.g. "email", "calendar"
+    external_id: str  # platform-native id (for dedup)
+    prompt: str
+    content: str
+
+
 Trigger = Annotated[
-    ChannelMessage | ScheduledTrigger | ManualTrigger,
+    ChannelMessage | ScheduledTrigger | ManualTrigger | EventTrigger,
     Field(discriminator="kind"),
 ]
 
@@ -125,3 +150,12 @@ class InvocationRequest(_ModelBase):
     id: UUID = Field(default_factory=uuid4)
     created_at: datetime = Field(default_factory=_utcnow)
     trigger: Trigger
+
+    @property
+    def trigger_source(self) -> TriggerSource:
+        """Derived from the trigger type so it can never contradict it."""
+        if isinstance(self.trigger, ScheduledTrigger):
+            return TriggerSource.SCHEDULED
+        if isinstance(self.trigger, EventTrigger):
+            return TriggerSource.EVENT
+        return TriggerSource.USER

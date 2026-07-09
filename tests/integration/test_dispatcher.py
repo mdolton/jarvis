@@ -223,6 +223,34 @@ async def test_dispatch_channel_message_routes_reply_to_adapter(infra):
     assert sent_messages[0].text == result.final_output
 
 
+async def test_dispatch_event_dedups_by_external_id(infra):
+    from jarvis.core.types import EventTrigger
+
+    _, factory, audit = infra
+    model = _CountingFakeModel()
+    runner = AgentRunner(
+        session_factory=factory,
+        audit=audit,
+        mcp_servers_provider=lambda: [],
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model=model,
+    )
+    dispatcher = TriggerDispatcher(runner=runner, audit=audit)
+
+    trigger = EventTrigger(
+        source="calendar",
+        external_id="invite-42",
+        prompt="Summarize this invite.",
+        content="Team sync at 3pm",
+    )
+    first = await dispatcher.dispatch_event(trigger)
+    second = await dispatcher.dispatch_event(trigger)
+
+    assert first is not None
+    assert second is None  # dedup suppressed
+    assert model.calls == 1
+
+
 async def test_dispatch_manual_does_not_route(infra):
     """Manual triggers go through the CLI/dashboard path, not channel routing."""
     _, factory, audit = infra
