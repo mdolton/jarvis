@@ -499,7 +499,7 @@ class _RecordingApprovalPolicy:
         self._approval_result = approval_result
         self._denied_names = set(denied_names or [])
 
-    async def needs_approval(self, server_name, tool):
+    async def needs_approval(self, server_name, tool, arguments=None, call_id=None):
         self.calls.append(("needs_approval", server_name, tool.name))
         return self._approval_result
 
@@ -579,3 +579,27 @@ class _SdkTool:
         self.inputSchema = {}
         self.description = ""
         self.annotations = None
+
+
+async def test_policy_guard_threads_arguments_into_needs_approval(tmp_path):
+    from jarvis.mcp.approval_policy import MCPApprovalPolicy
+
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'guard.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = session_factory(engine)
+    try:
+
+        async def terms():
+            return ["mom@example.com"]
+
+        policy = MCPApprovalPolicy(session_factory=factory, sensitivity_terms_provider=terms)
+        cfg = MCPServerConfig(name="gmail", transport="stdio", command=["true"])
+        sdk_server = _build_sdk_server(cfg, approval_policy=policy)
+
+        needs_approval = sdk_server._get_needs_approval_for_tool(_SdkTool("create_draft"), None)
+
+        assert await needs_approval(None, {"to": "mom@example.com"}, "call-1") is True
+        assert await needs_approval(None, {"to": "other@example.com"}, "call-2") is False
+    finally:
+        await engine.dispose()

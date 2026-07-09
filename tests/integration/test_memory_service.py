@@ -578,3 +578,26 @@ async def test_summarize_run_dedupes_within_batch(factory):
         user_prompt="u", assistant_output="a",
     )
     assert outcome.preferences_created == 1
+
+
+async def test_sensitivity_terms_come_from_active_preferences(factory):
+    async with factory() as session:
+        repo = MemoryPreferenceRepo(session)
+        marked = await repo.create_pending(
+            content="sensitive: mom@example.com, Salary", source="user"
+        )
+        await repo.approve(marked.id)
+        unmarked = await repo.create_pending(content="Prefer concise answers.", source="user")
+        await repo.approve(unmarked.id)
+        # A pending (never approved) marked preference must not contribute.
+        await repo.create_pending(content="sensitive: pending@example.com", source="user")
+
+    service = MemoryService(
+        session_factory=factory,
+        embedding_provider=FakeEmbeddingProvider(),
+        vector_store=FakeVectorStore(uuid4()),
+        max_recalled_memories=3,
+        min_relevance_score=0.8,
+    )
+
+    assert await service.sensitivity_terms() == ["mom@example.com", "salary"]

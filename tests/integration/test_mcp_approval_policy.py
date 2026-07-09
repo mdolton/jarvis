@@ -219,6 +219,101 @@ async def test_non_user_trigger_scope_denies_side_effect_tools(factory):
     assert await policy.needs_approval("gmail", _tool("send_email")) is False
 
 
+class _StubAudit:
+    def __init__(self):
+        self.events = []
+
+    async def emit(self, event):
+        self.events.append(event)
+
+
+async def test_reversible_tools_do_not_need_approval(factory):
+    async with factory() as session:
+        server = await MCPServerRepo(session).upsert(name="gmail", transport="http")
+        await MCPToolRepo(session).replace_for_server(
+            server.id,
+            tools=[MCPToolDescriptor(name="create_draft", input_schema={})],
+        )
+
+    policy = MCPApprovalPolicy(session_factory=factory)
+
+    assert await policy.needs_approval("gmail", _tool("create_draft")) is False
+
+
+async def test_auto_allowed_decision_is_audited(factory):
+    from jarvis.core.types import AuditEventType
+
+    audit = _StubAudit()
+    policy = MCPApprovalPolicy(session_factory=factory, audit=audit)
+
+    assert await policy.needs_approval("gmail", _tool("create_draft")) is False
+
+    assert len(audit.events) == 1
+    event = audit.events[0]
+    assert event.type == AuditEventType.TOOL_POLICY_DECISION
+    assert event.payload["server_name"] == "gmail"
+    assert event.payload["tool_name"] == "create_draft"
+    assert event.payload["decision"] == "allow"
+    assert event.payload["effect"] == "reversible"
+    assert event.payload["auto_allowed"] is True
+
+
+async def test_gated_decision_is_audited(factory):
+    audit = _StubAudit()
+    policy = MCPApprovalPolicy(session_factory=factory, audit=audit)
+
+    assert await policy.needs_approval("gmail", _tool("send_email"), call_id="c1") is True
+
+    event = audit.events[0]
+    assert event.payload["decision"] == "confirm"
+    assert event.payload["effect"] == "irreversible"
+    assert event.payload["auto_allowed"] is False
+    assert event.payload["call_id"] == "c1"
+
+
+async def test_sensitive_arguments_escalate_to_approval(factory):
+    async def terms():
+        return ["mom@example.com"]
+
+    audit = _StubAudit()
+    policy = MCPApprovalPolicy(
+        session_factory=factory, audit=audit, sensitivity_terms_provider=terms
+    )
+
+    needs = await policy.needs_approval(
+        "gmail",
+        _tool("create_draft"),
+        arguments={"to": [{"email": "Mom@Example.com"}]},
+    )
+    assert needs is True
+    assert audit.events[0].payload["sensitive_term"] == "mom@example.com"
+
+    # Benign arguments still auto-allow.
+    assert (
+        await policy.needs_approval("gmail", _tool("create_draft"), arguments={"to": "x@y.z"})
+        is False
+    )
+
+
+async def test_sensitivity_provider_failure_fails_open(factory):
+    async def broken():
+        raise RuntimeError("no terms for you")
+
+    policy = MCPApprovalPolicy(session_factory=factory, sensitivity_terms_provider=broken)
+
+    assert await policy.needs_approval("gmail", _tool("create_draft")) is False
+
+
+async def test_audit_failure_does_not_break_decision(factory):
+    class _BrokenAudit:
+        async def emit(self, event):
+            raise RuntimeError("audit down")
+
+    policy = MCPApprovalPolicy(session_factory=factory, audit=_BrokenAudit())
+
+    assert await policy.needs_approval("gmail", _tool("send_email")) is True
+
+
 def _tool(
     name: str,
     *,

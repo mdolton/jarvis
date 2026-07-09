@@ -1,14 +1,22 @@
 """Runtime MCP approval and filtering policy."""
 
+import logging
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.core.run_scope import current_trigger_source
+from jarvis.core.types import AuditEvent, AuditEventType, TriggerSource
 from jarvis.mcp.descriptor import MCPToolDescriptor
-from jarvis.mcp.tool_policy import RuntimeToolDecision, runtime_decision
+from jarvis.mcp.sensitivity import find_sensitive_match
+from jarvis.mcp.tool_policy import RuntimeToolDecision, classify_effect, runtime_decision
 from jarvis.persistence.models import MCPServerRow, MCPToolRow
+
+_log = logging.getLogger(__name__)
+
+SensitivityTermsProvider = Callable[[], Awaitable[Sequence[str]]]
 
 
 class MCPApprovalPolicy:
@@ -18,14 +26,97 @@ class MCPApprovalPolicy:
     the restricted (read-only) tool scope. The SDK applies `tool_filter` on
     every list_tools call (its cache holds the raw list), so per-run filtering
     composes with `cache_tools_list=True`.
+
+    `needs_approval` is the per-call gate: it sees the call arguments (wired
+    through the runtime policy guard in mcp/manager.py), escalates on
+    sensitivity-term matches, and records every decision — auto-allowed or
+    gated — as a `tool.policy_decision` audit event.
     """
 
-    def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: async_sessionmaker[AsyncSession],
+        audit: Any = None,
+        sensitivity_terms_provider: SensitivityTermsProvider | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._audit = audit
+        self._sensitivity_terms_provider = sensitivity_terms_provider
         self._cache: dict[str, dict[str, tuple[MCPToolDescriptor, str | None]]] = {}
 
-    async def needs_approval(self, server_name: str, tool: Any) -> bool:
-        return await self._decide(server_name, tool) == RuntimeToolDecision.CONFIRM
+    async def needs_approval(
+        self,
+        server_name: str,
+        tool: Any,
+        arguments: dict | None = None,
+        call_id: str | None = None,
+    ) -> bool:
+        descriptor, override = await self._lookup(server_name, tool)
+        sensitive_term = await self._sensitive_term(descriptor.name, arguments)
+        trigger_source = current_trigger_source.get()
+        decision = runtime_decision(
+            descriptor,
+            override=override,
+            trigger_source=trigger_source,
+            sensitive=sensitive_term is not None,
+        )
+        await self._emit_decision(
+            server_name=server_name,
+            descriptor=descriptor,
+            override=override,
+            trigger_source=trigger_source,
+            decision=decision,
+            sensitive_term=sensitive_term,
+            call_id=call_id,
+        )
+        return decision == RuntimeToolDecision.CONFIRM
+
+    async def _sensitive_term(self, tool_name: str, arguments: dict | None) -> str | None:
+        if self._sensitivity_terms_provider is None:
+            return None
+        try:
+            terms = await self._sensitivity_terms_provider()
+        except Exception:
+            # Fail open on the *sensitivity* signal only — the effect
+            # classification still gates irreversible calls.
+            _log.warning("sensitivity terms provider failed", exc_info=True)
+            return None
+        return find_sensitive_match(terms, tool_name=tool_name, arguments=arguments)
+
+    async def _emit_decision(
+        self,
+        *,
+        server_name: str,
+        descriptor: MCPToolDescriptor,
+        override: str | None,
+        trigger_source: TriggerSource,
+        decision: RuntimeToolDecision,
+        sensitive_term: str | None,
+        call_id: str | None,
+    ) -> None:
+        if self._audit is None:
+            return
+        payload: dict[str, Any] = {
+            "server_name": server_name,
+            "tool_name": descriptor.name,
+            "decision": decision.value,
+            "effect": classify_effect(descriptor).value,
+            "trigger_source": trigger_source.value,
+            "auto_allowed": decision == RuntimeToolDecision.ALLOW,
+        }
+        if override is not None:
+            payload["override"] = override
+        if sensitive_term is not None:
+            payload["sensitive_term"] = sensitive_term
+        if call_id is not None:
+            payload["call_id"] = call_id
+        try:
+            await self._audit.emit(
+                AuditEvent(type=AuditEventType.TOOL_POLICY_DECISION, payload=payload)
+            )
+        except Exception:
+            _log.warning("failed to emit tool policy decision audit event", exc_info=True)
 
     async def filter_tool(self, server_name: str, tool: Any) -> bool:
         return await self._decide(server_name, tool) != RuntimeToolDecision.DENY

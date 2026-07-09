@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.core.types import AuditEvent, AuditEventType
+from jarvis.mcp.sensitivity import extract_sensitivity_terms
 from jarvis.memory.embeddings import EmbeddingProvider
 from jarvis.memory.preference_dedup import (
     ClusterPreference,
@@ -462,6 +463,15 @@ class MemoryService:
             )
         except Exception:
             return
+
+    async def sensitivity_terms(self) -> list[str]:
+        """Known-sensitive terms (contacts/topics) from active preferences.
+
+        Consumed by MCPApprovalPolicy so approval escalation is context-aware.
+        Preferences opt in with a leading ``sensitive:`` marker.
+        """
+        contents, _error = await self._load_preferences()
+        return extract_sensitivity_terms(contents)
 
     async def _load_preferences(self) -> tuple[list[str], str | None]:
         try:

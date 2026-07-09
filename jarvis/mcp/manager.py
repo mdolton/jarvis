@@ -205,6 +205,8 @@ class MCPManager:
         catalog: "ProviderCatalog | None" = None,
         connect_timeout: float = 60.0,
         close_timeout: float = 10.0,
+        audit=None,
+        sensitivity_terms_provider=None,
     ) -> None:
         self._config = config
         self._session_factory = session_factory
@@ -216,7 +218,11 @@ class MCPManager:
         # thereby block Disconnect/remove, which run through the same task).
         self._connect_timeout = connect_timeout
         self._close_timeout = close_timeout
-        self._approval_policy = MCPApprovalPolicy(session_factory=session_factory)
+        self._approval_policy = MCPApprovalPolicy(
+            session_factory=session_factory,
+            audit=audit,
+            sensitivity_terms_provider=sensitivity_terms_provider,
+        )
         self._stacks: dict[str, AsyncExitStack] = {}
         self._sdk_servers: dict[str, object] = {}
         self._tool_names_by_server: dict[str, tuple[str, ...]] = {}
@@ -866,6 +872,19 @@ def _apply_runtime_policy_guard(
             )
 
     sdk_server.call_tool = guarded_call_tool  # type: ignore[attr-defined]
+
+    def get_needs_approval_for_tool(tool, agent):
+        # Replace the SDK's normalization (which drops call arguments) with a
+        # per-call gate that sees them, so sensitivity escalation and the
+        # policy-decision audit event have argument-level context. The
+        # `require_approval` kwarg stays wired as a fallback should a future
+        # SDK stop consulting this instance attribute.
+        async def _needs_approval(run_context, args, call_id):
+            return await approval_policy.needs_approval(name, tool, arguments=args, call_id=call_id)
+
+        return _needs_approval
+
+    sdk_server._get_needs_approval_for_tool = get_needs_approval_for_tool  # type: ignore[attr-defined]
 
 
 async def _call_tool_with_timeout(
