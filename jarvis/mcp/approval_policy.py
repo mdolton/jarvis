@@ -5,28 +5,42 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from jarvis.core.run_scope import current_trigger_source
 from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.mcp.tool_policy import RuntimeToolDecision, runtime_decision
 from jarvis.persistence.models import MCPServerRow, MCPToolRow
 
 
 class MCPApprovalPolicy:
+    """Runtime policy decisions, evaluated under the current trigger scope.
+
+    Each decision reads `current_trigger_source` so scheduled/event turns get
+    the restricted (read-only) tool scope. The SDK applies `tool_filter` on
+    every list_tools call (its cache holds the raw list), so per-run filtering
+    composes with `cache_tools_list=True`.
+    """
+
     def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self._cache: dict[str, dict[str, tuple[MCPToolDescriptor, str | None]]] = {}
 
     async def needs_approval(self, server_name: str, tool: Any) -> bool:
-        descriptor, override = await self._lookup(server_name, tool)
-        return runtime_decision(descriptor, override=override) == RuntimeToolDecision.CONFIRM
+        return await self._decide(server_name, tool) == RuntimeToolDecision.CONFIRM
 
     async def filter_tool(self, server_name: str, tool: Any) -> bool:
-        descriptor, override = await self._lookup(server_name, tool)
-        return runtime_decision(descriptor, override=override) != RuntimeToolDecision.DENY
+        return await self._decide(server_name, tool) != RuntimeToolDecision.DENY
 
     async def is_denied(self, server_name: str, tool_or_name: Any) -> bool:
         tool = _tool_from_name(tool_or_name) if isinstance(tool_or_name, str) else tool_or_name
+        return await self._decide(server_name, tool) == RuntimeToolDecision.DENY
+
+    async def _decide(self, server_name: str, tool: Any) -> RuntimeToolDecision:
         descriptor, override = await self._lookup(server_name, tool)
-        return runtime_decision(descriptor, override=override) == RuntimeToolDecision.DENY
+        return runtime_decision(
+            descriptor,
+            override=override,
+            trigger_source=current_trigger_source.get(),
+        )
 
     def clear_cache(self) -> None:
         self._cache.clear()

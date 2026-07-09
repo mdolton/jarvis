@@ -186,6 +186,39 @@ async def test_allow_override_flips_needs_approval_for_stdio_tool(factory):
     assert await policy.needs_approval("brave", _tool("brave_web_search")) is False
 
 
+async def test_non_user_trigger_scope_denies_side_effect_tools(factory):
+    from jarvis.core.run_scope import trigger_scope
+    from jarvis.core.types import TriggerSource
+
+    async with factory() as session:
+        server = await MCPServerRepo(session).upsert(name="gmail", transport="http")
+        await MCPToolRepo(session).replace_for_server(
+            server.id,
+            tools=[
+                MCPToolDescriptor(name="send_email", input_schema={}),
+                MCPToolDescriptor(name="list_messages", input_schema={}),
+            ],
+        )
+        tools = await MCPToolRepo(session).list_for_server(server.id)
+        send = next(t for t in tools if t.name == "send_email")
+        # Even an explicit allow override must not survive a non-user turn.
+        await MCPToolRepo(session).set_policy_override(send.id, "allow")
+
+    policy = MCPApprovalPolicy(session_factory=factory)
+
+    for source in (TriggerSource.EVENT, TriggerSource.SCHEDULED):
+        with trigger_scope(source):
+            assert await policy.filter_tool("gmail", _tool("send_email")) is False, source
+            assert await policy.is_denied("gmail", "send_email") is True, source
+            assert await policy.filter_tool("gmail", _tool("list_messages")) is True, source
+            assert await policy.is_denied("gmail", "list_messages") is False, source
+
+    # Outside the scope (user turns), behavior is unchanged.
+    assert await policy.filter_tool("gmail", _tool("send_email")) is True
+    assert await policy.is_denied("gmail", "send_email") is False
+    assert await policy.needs_approval("gmail", _tool("send_email")) is False
+
+
 def _tool(
     name: str,
     *,

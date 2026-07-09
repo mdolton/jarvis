@@ -18,6 +18,7 @@ from jarvis.audit.logger import AuditLogger
 from jarvis.core.output_router import OutputRouter
 from jarvis.core.types import (
     ChannelMessage,
+    EventTrigger,
     InvocationRequest,
     ManualTrigger,
     ScheduledTrigger,
@@ -61,6 +62,15 @@ class TriggerDispatcher:
         return await self._run(InvocationRequest(trigger=msg))
 
     async def dispatch_scheduled(self, trigger: ScheduledTrigger) -> AgentRunResult:
+        return await self._run(InvocationRequest(trigger=trigger))
+
+    async def dispatch_event(self, trigger: EventTrigger) -> AgentRunResult | None:
+        """Dispatch an inbound external event. Returns None if it's a dup."""
+        if trigger.external_id in self._seen:
+            _log.debug("dedup: suppressing repeat of event %r", trigger.external_id)
+            return None
+        self._remember(trigger.external_id)
+
         return await self._run(InvocationRequest(trigger=trigger))
 
     async def dispatch_manual(
