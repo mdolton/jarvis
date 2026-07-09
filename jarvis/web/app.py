@@ -82,10 +82,12 @@ def create_app(*, app_context=None) -> FastAPI:
     from jarvis.web.routes.audit import router as audit_router
     from jarvis.web.routes.errors import router as errors_router
     from jarvis.web.routes.events import router as events_router
+    from jarvis.web.routes.webhooks import router as webhooks_router
 
     app.include_router(audit_router)
     app.include_router(errors_router)
     app.include_router(events_router)
+    app.include_router(webhooks_router)
 
     from jarvis.web.routes.settings import router as settings_router
 

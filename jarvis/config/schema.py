@@ -45,9 +45,22 @@ class MemoryConfig(_StrictModel):
         return self
 
 
+class EventsConfig(_StrictModel):
+    """Inbound event webhook (POST /events/webhook).
+
+    No token → the endpoint is disabled and returns 404. The token gates who
+    may wake an agent turn, so senders are operator-trusted; event *content*
+    stays untrusted regardless (reduced tool scope + provenance tagging).
+    """
+
+    webhook_token: str | None = None
+    coalesce_window_sec: float = Field(default=30.0, ge=0.0)
+
+
 class JarvisConfig(_StrictModel):
     llm: LLMConfig
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    events: EventsConfig = Field(default_factory=EventsConfig)
     timezone: str = "UTC"
     idle_timeout_sec: int = 900
     max_concurrent_agents: int = 3

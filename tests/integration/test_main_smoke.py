@@ -237,6 +237,10 @@ async def test_app_context_shutdown_drains_memory_tasks_before_closing_clients()
         async def stop(self):
             events.append("adapter.stop")
 
+    class FakeCoalescer:
+        async def shutdown(self):
+            events.append("coalescer.shutdown")
+
     class FakeStopper:
         def __init__(self, name):
             self.name = name
@@ -262,6 +266,7 @@ async def test_app_context_shutdown_drains_memory_tasks_before_closing_clients()
         agent_runner=FakeDrainable("runner"),
         action_service=FakeDrainable("actions"),
         dispatcher=object(),
+        event_coalescer=FakeCoalescer(),
         channel_adapters=[FakeAdapter()],
         output_router=object(),
         scheduler=FakeScheduler(),
@@ -277,6 +282,8 @@ async def test_app_context_shutdown_drains_memory_tasks_before_closing_clients()
 
     await ctx.shutdown()
 
+    # No new triggers (adapters stopped) before pending event windows cancel.
+    assert events.index("adapter.stop") < events.index("coalescer.shutdown")
     assert events.index("runner.drain") < events.index("llm.close")
     assert events.index("runner.drain") < events.index("audit.stop")
     assert events.index("runner.drain") < events.index("engine.dispose")
