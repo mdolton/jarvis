@@ -355,3 +355,26 @@ class SettingRow(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[object] = mapped_column(JSON)
 
+
+class NotificationRow(Base):
+    """One unsolicited outbound notification: sent immediately or queued for a digest.
+
+    `status` lifecycle: 'sent' (delivered as a standalone ping — these rows are
+    what the daily budget counts), 'queued' (sub-threshold; waiting for the next
+    digest), 'digested' (delivered inside a digest at `digested_at`).
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    priority: Mapped[int] = mapped_column(Integer)  # 1 (interrupt now) .. 4 (digest-only)
+    source: Mapped[str] = mapped_column(String(128))  # e.g. "event:email", "scheduled"
+    text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), index=True)  # sent | queued | digested
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+    digested_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+    __table_args__ = (
+        Index("ix_notifications_status_created_at", "status", "created_at"),
+    )
+

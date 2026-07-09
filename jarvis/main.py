@@ -27,7 +27,7 @@ from jarvis.channels.discord_adapter import DiscordAdapter
 from jarvis.channels.discord_commands import ModelCommandDeps
 from jarvis.config.loader import LoadedConfig, load_config
 from jarvis.core.dispatcher import TriggerDispatcher
-from jarvis.core.output_router import OutputRouter
+from jarvis.core.output_router import NotificationGate, OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.digests.seeds import seed_built_in_digest_templates
 from jarvis.mcp.manager import MCPManager
@@ -188,8 +188,25 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         )
         channel_adapters.append(discord_adapter)
 
+    # Notification gate: priority classifier + persisted daily rate-limiter for
+    # unsolicited sends. Event notifications go to the first allow-listed
+    # Discord user (single-operator deployment).
+    notification_gate = NotificationGate(
+        session_factory=factory,
+        daily_budget=cfg.jarvis.notification_daily_budget,
+    )
+    event_notify_ref = (
+        cfg.channels.discord.allowed_user_ids[0]
+        if cfg.channels.discord is not None and cfg.channels.discord.enabled
+        else None
+    )
+
     # Output router knows how to send replies through any of the adapters.
-    output_router = OutputRouter(adapters=channel_adapters)
+    output_router = OutputRouter(
+        adapters=channel_adapters,
+        notification_gate=notification_gate,
+        event_notify_ref=event_notify_ref,
+    )
 
     # Dispatcher gets the router so channel-triggered runs auto-reply.
     dispatcher = TriggerDispatcher(
@@ -236,6 +253,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         mcp_manager=mcp_manager,
         memory_service=memory_service,
         base_url=cfg.base_url,
+        notification_gate=notification_gate,
     )
     await scheduler.start()
 

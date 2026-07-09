@@ -53,6 +53,9 @@ class JarvisConfig(_StrictModel):
     max_concurrent_agents: int = 3
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     default_schedule_output_mode: OutputMode = "discord"
+    # Max unsolicited pings per UTC day (P1 bypasses but still spends allowance);
+    # sub-threshold notifications roll into the next scheduled digest.
+    notification_daily_budget: int = Field(default=5, ge=1)
 
 
 # --------------------------------------------------------------------
