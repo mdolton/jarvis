@@ -4,7 +4,7 @@ import pytest
 
 from jarvis.agents.runner import AgentRunResult
 from jarvis.channels.base import OutboundMessage
-from jarvis.core.output_router import OutputRouter
+from jarvis.core.output_router import OutputRouter, Priority, classify_priority
 from jarvis.core.types import ChannelKind
 
 
@@ -90,3 +90,35 @@ async def test_empty_text_is_still_sent():
 
     assert len(adapter.sent) == 1
     assert adapter.sent[0].text == ""
+
+
+def test_classify_priority_explicit_markers():
+    for name, expected in (("P1", Priority.P1), ("P2", Priority.P2),
+                           ("P3", Priority.P3), ("P4", Priority.P4)):
+        priority, cleaned = classify_priority(f"[{name}] pay the bill")
+        assert priority is expected
+        assert cleaned == "pay the bill"
+
+
+def test_classify_priority_is_case_insensitive_and_tolerates_whitespace():
+    priority, cleaned = classify_priority("  [p1]  fire  ")
+    assert priority is Priority.P1
+    assert cleaned == "fire  "
+
+
+def test_classify_priority_defaults_to_p3():
+    priority, cleaned = classify_priority("no marker here")
+    assert priority is Priority.P3
+    assert cleaned == "no marker here"
+
+
+def test_classify_priority_silent_drops():
+    priority, cleaned = classify_priority("[SILENT] whatever")
+    assert priority is None
+    assert cleaned == ""
+
+
+def test_classify_priority_marker_mid_text_is_ignored():
+    priority, cleaned = classify_priority("see [P1] in the docs")
+    assert priority is Priority.P3
+    assert cleaned == "see [P1] in the docs"

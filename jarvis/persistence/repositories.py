@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import case, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -25,6 +25,7 @@ from jarvis.persistence.models import (
     MemoryPreferenceRow,
     MemoryRecallEventRow,
     MessageRow,
+    NotificationRow,
     ScheduleRow,
     SettingRow,
     TriggerRow,
@@ -1224,3 +1225,64 @@ class ActionRepo:
             await self._session.rollback()
             raise ValueError(f"action {action_id} not found or not running")
         await self._session.commit()
+
+
+class NotificationRepo:
+    """Outbound notification ledger: sent pings and the queue for the next digest."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record_sent(
+        self,
+        *,
+        priority: int,
+        source: str,
+        text: str,
+        at: datetime,
+    ) -> NotificationRow:
+        row = NotificationRow(
+            priority=priority, source=source, text=text, status="sent", created_at=at
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def enqueue(
+        self,
+        *,
+        priority: int,
+        source: str,
+        text: str,
+        at: datetime,
+    ) -> NotificationRow:
+        row = NotificationRow(
+            priority=priority, source=source, text=text, status="queued", created_at=at
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def count_sent_since(self, cutoff: datetime) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(NotificationRow)
+            .where(NotificationRow.status == "sent", NotificationRow.created_at >= cutoff)
+        )
+        return int(result.scalar_one())
+
+    async def claim_queued(self, *, at: datetime) -> list[NotificationRow]:
+        """Mark every queued notification digested and return them oldest-first."""
+        result = await self._session.execute(
+            select(NotificationRow)
+            .where(NotificationRow.status == "queued")
+            .order_by(NotificationRow.created_at)
+        )
+        rows = list(result.scalars())
+        for row in rows:
+            row.status = "digested"
+            row.digested_at = at
+        await self._session.commit()
+        return rows

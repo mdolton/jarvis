@@ -27,6 +27,7 @@ from jarvis.audit.logger import AuditLogger
 from jarvis.channels.base import ChannelAdapter
 from jarvis.config.schema import LLMConfig
 from jarvis.core.dispatcher import TriggerDispatcher
+from jarvis.core.output_router import NotificationGate
 from jarvis.core.types import AuditEvent, AuditEventType, ScheduledTrigger
 from jarvis.persistence.models import ScheduleRow
 from jarvis.persistence.repositories import ScheduleRepo
@@ -72,6 +73,7 @@ class Scheduler:
         mcp_manager=None,
         memory_service: Any = None,
         base_url: str | None = None,
+        notification_gate: NotificationGate | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -81,7 +83,10 @@ class Scheduler:
         self._oauth_mcp_manager = mcp_manager
         self._base_url = base_url.rstrip("/") if base_url else None
 
-        self._output_router = ScheduledOutputRouter(discord_adapter=discord_adapter)
+        self._output_router = ScheduledOutputRouter(
+            discord_adapter=discord_adapter,
+            notification_gate=notification_gate,
+        )
 
         self._aps: AsyncScheduler | None = None
         self._jobs: dict[UUID, str] = {}
@@ -273,6 +278,7 @@ class Scheduler:
                 result=result,
                 output_mode=output_mode,
                 discord_user_id=discord_user_id or "",
+                source=f"schedule:{schedule_name}",
             )
 
             async with self._session_factory() as session:
