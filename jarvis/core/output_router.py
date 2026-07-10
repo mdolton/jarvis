@@ -26,8 +26,9 @@ from enum import IntEnum
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.agents.runner import AgentRunResult
+from jarvis.audit.logger import AuditLogger
 from jarvis.channels.base import ChannelAdapter, OutboundMessage
-from jarvis.core.types import ChannelKind
+from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.persistence.repositories import NotificationRepo
 
 _log = logging.getLogger(__name__)
@@ -75,6 +76,48 @@ def _day_start(now: datetime) -> datetime:
 
 
 _DIGEST_ITEM_MAX_CHARS = 200
+
+_TRACE_ACTION_MAX_CHARS = 300
+
+
+def _trace_action(text: str) -> str:
+    """Terse single-line 'did X' summary of a run's final output."""
+    flat = " ".join(text.split())
+    if len(flat) > _TRACE_ACTION_MAX_CHARS:
+        return flat[: _TRACE_ACTION_MAX_CHARS - 1] + "…"
+    return flat
+
+
+async def emit_autonomy_trace(
+    audit: AuditLogger | None,
+    *,
+    result: AgentRunResult,
+    source: str,
+    reason: str,
+    delivery: str,
+) -> None:
+    """Record a 'did X because Y' audit trace for an autonomous run.
+
+    `delivery` says where the run's output actually went: 'discord',
+    'digest', 'suppressed', 'dashboard_only', or 'undelivered'. The audit
+    SSE feed tails this table, so emitting here is what makes autonomous
+    activity visible without spending notification budget.
+    """
+    if audit is None:
+        return
+    await audit.emit(
+        AuditEvent(
+            type=AuditEventType.AUTONOMY_TRACE,
+            conversation_id=result.conversation_id,
+            trigger_id=result.trigger_id,
+            payload={
+                "source": source,
+                "reason": reason,
+                "action": _trace_action(result.final_output),
+                "delivery": delivery,
+            },
+        )
+    )
 
 
 class NotificationGate:
@@ -163,10 +206,12 @@ class OutputRouter:
         adapters: Iterable[ChannelAdapter],
         notification_gate: NotificationGate | None = None,
         event_notify_ref: str | None = None,
+        audit: AuditLogger | None = None,
     ) -> None:
         self._by_kind: dict[str, ChannelAdapter] = {a.kind: a for a in adapters}
         self._gate = notification_gate
         self._event_notify_ref = event_notify_ref
+        self._audit = audit
 
     async def route(self, result: AgentRunResult) -> None:
         if result.channel_kind is ChannelKind.EVENT:
@@ -191,23 +236,34 @@ class OutputRouter:
         """Proactive delivery for event-triggered runs, subject to the gate.
 
         Without a gate, a notify target, and a Discord adapter, event results
-        stay dashboard-only (the pre-gate behavior).
+        stay dashboard-only (the pre-gate behavior). Every path emits an
+        autonomy trace so the run is never silent.
         """
-        if self._gate is None or self._event_notify_ref is None:
-            return
+        source = f"event:{result.channel_ref}"
+        reason = f"inbound '{result.channel_ref}' event"
+
+        async def _trace(delivery: str) -> None:
+            await emit_autonomy_trace(
+                self._audit, result=result, source=source, reason=reason, delivery=delivery
+            )
+
         adapter = self._by_kind.get(ChannelKind.DISCORD.value)
-        if adapter is None:
+        if self._gate is None or self._event_notify_ref is None or adapter is None:
+            await _trace("dashboard_only")
             return
-        text = await self._gate.admit(
-            text=result.final_output,
-            source=f"event:{result.channel_ref}",
-        )
+        priority, _ = classify_priority(result.final_output)
+        if priority is None:
+            await _trace("suppressed")
+            return
+        text = await self._gate.admit(text=result.final_output, source=source)
         if text is None:
+            await _trace("digest")
             return
         await adapter.send(
             OutboundMessage(
                 channel_kind=ChannelKind.DISCORD,
                 channel_ref=self._event_notify_ref,
-                text=text,
+                text=f"⚙️ [{source}] {text}",
             )
         )
+        await _trace("discord")

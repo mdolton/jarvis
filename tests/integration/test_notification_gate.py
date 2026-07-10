@@ -109,7 +109,8 @@ async def test_p1_delivers_immediately_even_when_budget_exhausted(factory):
 
     await router.route(_event_result("[P1] server on fire"))
     assert len(adapter.sent) == 2
-    assert adapter.sent[1].text == "server on fire"  # marker stripped
+    # Marker stripped; autonomous sends carry a provenance prefix.
+    assert adapter.sent[1].text == "⚙️ [event:email] server on fire"
 
 
 async def test_p2_p3_respect_daily_budget(factory):
@@ -226,7 +227,7 @@ async def test_noteworthy_scheduled_send_is_gated_over_budget(factory):
         )
 
     assert len(adapter.sent) == 1  # budget of 1
-    assert adapter.sent[0].text == "thing 0"
+    assert adapter.sent[0].text == "⚙️ [schedule:watcher] thing 0"  # provenance prefix
 
     # The suppressed ones ride the next digest.
     await scheduled.route(

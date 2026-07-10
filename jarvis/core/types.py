@@ -49,6 +49,7 @@ class AuditEventType(StrEnum):
     TOOL_POLICY_DECISION = "tool.policy_decision"
     CHANNEL_SENT = "channel.sent"
     OUTPUT_SUPPRESSED = "output.suppressed"
+    AUTONOMY_TRACE = "autonomy.trace"
     CONFIG_RELOAD_FAILED = "config.reload_failed"
     MODEL_CHANGED = "model.changed"
     MODEL_FALLBACK = "model.fallback"

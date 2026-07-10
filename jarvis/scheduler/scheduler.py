@@ -86,6 +86,7 @@ class Scheduler:
         self._output_router = ScheduledOutputRouter(
             discord_adapter=discord_adapter,
             notification_gate=notification_gate,
+            audit=audit,
         )
 
         self._aps: AsyncScheduler | None = None
