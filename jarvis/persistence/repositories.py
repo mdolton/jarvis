@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,6 +18,8 @@ from jarvis.persistence.models import (
     AuditEventRow,
     ConversationRow,
     DigestTemplateRow,
+    DocumentChunkRow,
+    DocumentRow,
     MCPServerRow,
     MCPToolRow,
     MemoryEntryRow,
@@ -693,6 +695,118 @@ class MemoryRecallRepo:
             .order_by(MemoryRecallEventRow.created_at.desc(), MemoryRecallEventRow.rank.asc())
         )
         return list(result.scalars())
+
+
+class DocumentRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_source_ref(self, source_ref: str) -> DocumentRow | None:
+        stmt = select(DocumentRow).where(DocumentRow.source_ref == source_ref)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        source_type: str,
+        source_ref: str,
+        title: str,
+        content_hash: str,
+    ) -> DocumentRow:
+        now = _utcnow()
+        row = DocumentRow(
+            source_type=source_type,
+            source_ref=source_ref,
+            title=title,
+            content_hash=content_hash,
+            status="indexing",
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        return row
+
+    async def mark_reingesting(
+        self,
+        document_id: UUID,
+        *,
+        title: str,
+        content_hash: str,
+    ) -> None:
+        await self._session.execute(
+            update(DocumentRow)
+            .where(DocumentRow.id == document_id)
+            .values(
+                title=title,
+                content_hash=content_hash,
+                status="indexing",
+                error=None,
+                updated_at=_utcnow(),
+            )
+        )
+        await self._session.commit()
+
+    async def set_status(
+        self,
+        document_id: UUID,
+        status: str,
+        *,
+        error: str | None = None,
+    ) -> None:
+        await self._session.execute(
+            update(DocumentRow)
+            .where(DocumentRow.id == document_id)
+            .values(status=status, error=error, updated_at=_utcnow())
+        )
+        await self._session.commit()
+
+    async def replace_chunks(
+        self,
+        document_id: UUID,
+        contents: list[str],
+    ) -> tuple[list[UUID], list[DocumentChunkRow]]:
+        old_stmt = select(DocumentChunkRow.id).where(DocumentChunkRow.document_id == document_id)
+        old_ids = list((await self._session.execute(old_stmt)).scalars())
+        await self._session.execute(
+            delete(DocumentChunkRow).where(DocumentChunkRow.document_id == document_id)
+        )
+        now = _utcnow()
+        rows = [
+            DocumentChunkRow(
+                document_id=document_id,
+                chunk_index=index,
+                content=content,
+                created_at=now,
+            )
+            for index, content in enumerate(contents)
+        ]
+        self._session.add_all(rows)
+        await self._session.commit()
+        return old_ids, rows
+
+    async def count_chunks(self, document_id: UUID) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(DocumentChunkRow)
+            .where(DocumentChunkRow.document_id == document_id)
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def get_chunks_with_documents(
+        self,
+        ids: list[UUID],
+    ) -> dict[UUID, tuple[DocumentChunkRow, DocumentRow]]:
+        if not ids:
+            return {}
+        stmt = (
+            select(DocumentChunkRow, DocumentRow)
+            .join(DocumentRow, DocumentChunkRow.document_id == DocumentRow.id)
+            .where(DocumentChunkRow.id.in_(ids), DocumentRow.status == "active")
+        )
+        result = await self._session.execute(stmt)
+        return {chunk.id: (chunk, document) for chunk, document in result.all()}
 
 
 def _normalize_preference_content(content: str) -> str:
