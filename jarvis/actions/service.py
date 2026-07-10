@@ -40,6 +40,7 @@ class ActionService:
         scheduled_output_router: ScheduledOutputRouter | None = None,
         memory_service: Any = None,
         run_timeout_sec: float | None = None,
+        tools: list | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -49,6 +50,7 @@ class ActionService:
         self._mcp_servers_provider = mcp_servers_provider
         self._memory_service = memory_service
         self._run_timeout_sec = run_timeout_sec
+        self._tools = list(tools or [])
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def approve(self, action_id: UUID) -> AgentRunResult:
@@ -80,6 +82,7 @@ class ActionService:
                 llm_config=self._llm_config,
                 mcp_servers_provider=self._mcp_servers_provider,
                 model_override=action.model,
+                tools=self._tools,
             )
             run_state = await run_state_from_json(agent, action.run_state_json)
             approval_item = _approval_interruption_for_action(run_state, action)

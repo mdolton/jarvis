@@ -46,6 +46,7 @@ def build_agent(
     explicit_model: Any = None,
     model_provider: Callable[[], str] | None = None,
     model_override: str | None = None,
+    tools: list | None = None,
 ) -> tuple[Agent, str]:
     model = model_override or resolve_model(
         trigger,
@@ -58,5 +59,6 @@ def build_agent(
         instructions=system_prompt(),
         mcp_servers=mcp_servers_provider(),
         model=model,
+        tools=list(tools or []),
     )
     return agent, str(model)

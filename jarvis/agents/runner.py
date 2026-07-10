@@ -76,6 +76,7 @@ class AgentRunner:
         run_timeout_sec: float | None = None,
         memory_service: Any = None,
         home_location: str | None = None,
+        tools: list | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -88,6 +89,7 @@ class AgentRunner:
         self._run_timeout_sec = run_timeout_sec
         self._memory_service = memory_service
         self._home_location = home_location
+        self._tools = list(tools or [])
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def run(self, request: InvocationRequest) -> AgentRunResult:
@@ -158,6 +160,7 @@ class AgentRunner:
             trigger=request.trigger,
             explicit_model=self._model,
             model_provider=self._model_provider,
+            tools=self._tools,
         )
 
         # Scheduled/event turns run with a restricted tool scope: the MCP
