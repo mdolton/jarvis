@@ -34,6 +34,11 @@ class MemoryConfig(_StrictModel):
     preference_dup_high_threshold: float = Field(default=0.92, ge=0.0, le=1.0)
     preference_dup_low_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
     preference_dedup_max_judge_calls: int = Field(default=5, ge=0)
+    # Document corpus (notes, PDFs) ingestion + retrieval.
+    documents_folder: str | None = None
+    document_chunk_chars: int = Field(default=1800, ge=200)
+    document_chunk_overlap: int = Field(default=200, ge=0)
+    max_document_results: int = Field(default=5, ge=0, le=20)
 
     @model_validator(mode="after")
     def _thresholds_ordered(self) -> "MemoryConfig":
@@ -41,6 +46,10 @@ class MemoryConfig(_StrictModel):
             raise ValueError(
                 "preference_dup_low_threshold must be strictly less than "
                 "preference_dup_high_threshold"
+            )
+        if self.document_chunk_overlap >= self.document_chunk_chars:
+            raise ValueError(
+                "document_chunk_overlap must be strictly less than document_chunk_chars"
             )
         return self
 

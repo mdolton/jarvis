@@ -197,7 +197,9 @@ memory:
         await ctx.shutdown()
 
 
-async def test_bootstrap_disables_memory_for_non_sqlite_db_url(tmp_path, config_dir, monkeypatch, caplog):
+async def test_bootstrap_disables_memory_for_non_sqlite_db_url(
+    tmp_path, config_dir, monkeypatch, caplog
+):
     from jarvis import main as main_mod
     from jarvis.persistence.db import create_engine as real_create_engine
 
@@ -278,6 +280,7 @@ async def test_app_context_shutdown_drains_memory_tasks_before_closing_clients()
         model_catalog=object(),
         model_store=object(),
         memory_service=None,
+        document_service=None,
     )
 
     await ctx.shutdown()

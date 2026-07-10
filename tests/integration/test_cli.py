@@ -137,3 +137,52 @@ def test_serve_starts_and_stops_cleanly(config_dir, tmp_path, monkeypatch):
 
     assert len(started) == 1
     assert len(stopped) == 1
+
+
+def test_ingest_command_indexes_folder_and_is_idempotent(config_dir, tmp_path, monkeypatch):
+    """`jarvis ingest` indexes a folder and skips unchanged files on re-run."""
+    from jarvis.memory import embeddings as embeddings_mod
+
+    vector = [1.0] + [0.0] * 1535  # matches the default embedding_dimensions
+
+    async def _fake_embed(self, text):
+        return list(vector)
+
+    async def _fake_embed_many(self, texts):
+        return [list(vector) for _ in texts]
+
+    monkeypatch.setattr(embeddings_mod.OpenAIEmbeddingProvider, "embed", _fake_embed)
+    monkeypatch.setattr(embeddings_mod.OpenAIEmbeddingProvider, "embed_many", _fake_embed_many)
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "note.md").write_text("the boiler pilot light reset code is 7-7-1")
+    db_path = tmp_path / "jarvis.db"
+    args = [
+        "ingest",
+        str(docs),
+        "--config-dir",
+        str(config_dir),
+        "--db-url",
+        f"sqlite+aiosqlite:///{db_path}",
+    ]
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert "created" in result.output
+
+    again = runner.invoke(cli.app, args)
+    assert again.exit_code == 0, again.output
+    assert "unchanged" in again.output
+
+
+def test_ingest_command_without_path_or_config_folder_errors(config_dir, tmp_path):
+    db_path = tmp_path / "jarvis.db"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["ingest", "--config-dir", str(config_dir), "--db-url", f"sqlite+aiosqlite:///{db_path}"],
+    )
+    assert result.exit_code == 2
+    assert "documents_folder" in result.output

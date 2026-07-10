@@ -218,7 +218,9 @@ class MemoryService:
                 AuditEventType.MEMORY_PREFERENCE_DEDUP_DROPPED,
                 conversation_id=conversation_id,
                 payload={
-                    "matched_preference_id": str(dropped.matched_id) if dropped.matched_id else None,
+                    "matched_preference_id": str(dropped.matched_id)
+                    if dropped.matched_id
+                    else None,
                     "matched_content": dropped.matched_content,
                     "score": dropped.score,
                     "method": dropped.method,
@@ -422,9 +424,7 @@ class MemoryService:
                 trigger_id=trigger_id,
                 payload={
                     "count": len(recalled),
-                    "memory_entry_ids": [
-                        str(memory.memory_entry_id) for memory in recalled
-                    ],
+                    "memory_entry_ids": [str(memory.memory_entry_id) for memory in recalled],
                 },
             )
         if recall_error is not None:
@@ -491,7 +491,7 @@ class MemoryService:
         if not results:
             return [], None
 
-        result_by_id = {result.memory_entry_id: result for result in results}
+        result_by_id = {result.entry_id: result for result in results}
         async with self._session_factory() as session:
             entry_repo = MemoryEntryRepo(session)
             entries = await entry_repo.list_active_by_ids(list(result_by_id))

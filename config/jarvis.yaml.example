@@ -42,3 +42,9 @@ memory:
   preference_dup_low_threshold: 0.82
   # Cap LLM judge calls per proposal batch / per Find-duplicates run.
   preference_dedup_max_judge_calls: 5
+  # Folder of user documents (.md/.txt/.pdf) for `jarvis ingest` and the
+  # search_documents agent tool. Leave empty to pass paths explicitly.
+  documents_folder:
+  document_chunk_chars: 1800
+  document_chunk_overlap: 200
+  max_document_results: 5

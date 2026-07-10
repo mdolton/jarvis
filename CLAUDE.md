@@ -21,6 +21,7 @@ Use `uv` for everything; there is no activated venv.
 | Run migration on a scratch DB | `uv run alembic -x db_url=sqlite+aiosqlite:////tmp/x.db upgrade head` |
 | Run app locally | `uv run python -m jarvis serve` (Discord + scheduler + dashboard on :8080) |
 | One-shot agent run | `uv run python -m jarvis invoke "..."` |
+| Ingest documents | `uv run python -m jarvis ingest <path>` (.md/.txt/.pdf → search_documents tool) |
 | Validate config | `uv run python -m jarvis check-config` |
 | Local docker stack | `make up` / `make down` / `make logs` |
 | Prod stack (on the server) | `make prod-pull && make prod-up` (uses `docker-compose.prod.yml`; pin with `JARVIS_IMAGE_TAG`); `make prod-logs` |
@@ -43,7 +44,8 @@ The Docker entrypoint runs `alembic upgrade head` then `python -m jarvis serve`.
 - `jarvis/scheduler/` — APScheduler wrapper + `oauth_jobs.py` (background token refresh).
 - `jarvis/agents/` — Agents-SDK runner, LLM client, model catalog/selection.
 - `jarvis/channels/` — Discord adapter + slash commands.
-- `jarvis/memory/` — preferences + vector recall (sqlite-vec), semantic dedup.
+- `jarvis/memory/` — preferences + vector recall (sqlite-vec), semantic dedup, document corpus
+  ingest/search (`documents.py`, `chunking.py`; vectors live in prefixed `document_*` vec tables).
 - `jarvis/web/` — FastAPI app, `routes/`, Jinja templates, static assets.
 - `jarvis/core/` — `dispatcher.py` (concurrency/dedup/allow-list), `types.py`, output routing.
 - `alembic/versions/` — numbered migrations `0001…`. `config/*.yaml.example` — config templates.

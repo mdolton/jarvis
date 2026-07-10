@@ -99,9 +99,7 @@ class ActionRow(Base):
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    __table_args__ = (
-        Index("ix_actions_status_created_at", "status", "created_at"),
-    )
+    __table_args__ = (Index("ix_actions_status_created_at", "status", "created_at"),)
 
 
 class MemoryPreferenceRow(Base):
@@ -190,6 +188,49 @@ class MemoryRecallEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
 
 
+class DocumentRow(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_ref: Mapped[str] = mapped_column(String(512))
+    title: Mapped[str] = mapped_column(String(256))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="indexing", index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+    chunks: Mapped[list["DocumentChunkRow"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (Index("ix_documents_source_ref_unique", "source_ref", unique=True),)
+
+
+class DocumentChunkRow(Base):
+    __tablename__ = "document_chunks"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+
+    document: Mapped[DocumentRow] = relationship(back_populates="chunks")
+
+    __table_args__ = (
+        Index(
+            "ix_document_chunks_document_chunk_unique",
+            "document_id",
+            "chunk_index",
+            unique=True,
+        ),
+    )
+
+
 class ScheduleRow(Base):
     __tablename__ = "schedules"
 
@@ -241,6 +282,7 @@ class DigestTemplateRow(Base):
 
 class MCPProviderRow(Base):
     """Catalog entry: a secret-free service definition. stdio is NOT represented here."""
+
     __tablename__ = "mcp_providers"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -267,6 +309,7 @@ class MCPProviderRow(Base):
 
 class MCPConnectionRow(Base):
     """One credentialed account instance of a provider -> one live MCP server."""
+
     __tablename__ = "mcp_connections"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -295,9 +338,7 @@ class MCPConnectionRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime())
     updated_at: Mapped[datetime] = mapped_column(TZDateTime())
 
-    __table_args__ = (
-        Index("ix_mcp_connections_runtime_name_unique", "runtime_name", unique=True),
-    )
+    __table_args__ = (Index("ix_mcp_connections_runtime_name_unique", "runtime_name", unique=True),)
 
     provider: Mapped[MCPProviderRow] = relationship(back_populates="connections")
 
@@ -374,7 +415,4 @@ class NotificationRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
     digested_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
 
-    __table_args__ = (
-        Index("ix_notifications_status_created_at", "status", "created_at"),
-    )
-
+    __table_args__ = (Index("ix_notifications_status_created_at", "status", "created_at"),)
