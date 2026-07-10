@@ -26,6 +26,7 @@ from jarvis.agents.factory import resolve_model as resolve_model
 from jarvis.audit.logger import AuditLogger
 from jarvis.config.schema import LLMConfig
 from jarvis.core.run_scope import trigger_scope
+from jarvis.core.streaming import RunStream
 from jarvis.core.types import (
     AuditEvent,
     AuditEventType,
@@ -92,7 +93,9 @@ class AgentRunner:
         self._tools = list(tools or [])
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
-    async def run(self, request: InvocationRequest) -> AgentRunResult:
+    async def run(
+        self, request: InvocationRequest, stream: RunStream | None = None
+    ) -> AgentRunResult:
         channel_kind, channel_ref, user_prompt, trigger_context = _extract_from_trigger(request)
         trigger_kind = request.trigger.kind
         stored_user_prompt = _assemble_trigger_prompt(
@@ -167,18 +170,10 @@ class AgentRunner:
         # approval policy reads this scope on every tool filter/approval/call.
         with trigger_scope(request.trigger_source):
             if self._run_timeout_sec is None:
-                sdk_result = await Runner.run(
-                    agent,
-                    run_input,
-                    run_config=RunConfig(workflow_name="jarvis-invoke"),
-                )
+                sdk_result = await self._execute(agent, run_input, stream)
             else:
                 async with asyncio.timeout(self._run_timeout_sec):
-                    sdk_result = await Runner.run(
-                        agent,
-                        run_input,
-                        run_config=RunConfig(workflow_name="jarvis-invoke"),
-                    )
+                    sdk_result = await self._execute(agent, run_input, stream)
 
         interruptions = list(getattr(sdk_result, "interruptions", []) or [])
         if interruptions:
@@ -262,6 +257,16 @@ class AgentRunner:
             channel_kind=channel_kind,
             channel_ref=channel_ref,
         )
+
+    async def _execute(self, agent, run_input, stream: RunStream | None):
+        """One turn against the SDK: plain run, or streamed when a RunStream
+        is attached (channel messages from adapters that support streaming)."""
+        run_config = RunConfig(workflow_name="jarvis-invoke")
+        if stream is None:
+            return await Runner.run(agent, run_input, run_config=run_config)
+        sdk_result = Runner.run_streamed(agent, run_input, run_config=run_config)
+        await _pump_stream_events(sdk_result, stream)
+        return sdk_result
 
     async def _build_prompt_with_memory(
         self,
@@ -418,6 +423,40 @@ def _scheduled_context(trigger: ScheduledTrigger) -> str:
         f"- Local time: {local_time:%Y-%m-%d %H:%M %Z}\n"
         "- Interpret relative dates like today, tomorrow, and yesterday in this timezone."
     )
+
+
+async def _pump_stream_events(sdk_result, stream: RunStream) -> None:
+    """Forward SDK stream events to the channel stream.
+
+    The stream implementation swallows its own delivery errors, so only SDK
+    exceptions propagate — exactly like the non-streamed path. If iteration
+    dies (error, timeout cancellation), the background run loop is cancelled
+    so it can't outlive the request.
+    """
+    acc = ""
+    try:
+        async for event in sdk_result.stream_events():
+            if event.type == "raw_response_event":
+                data = event.data
+                if getattr(data, "type", None) == "response.output_text.delta":
+                    acc += data.delta
+                    await stream.update(acc)
+            elif event.type == "run_item_stream_event":
+                if event.name == "tool_called":
+                    await stream.status(_tool_label(event.item))
+                elif event.name == "tool_output":
+                    await stream.status(None)
+                elif event.name == "message_output_created" and acc and not acc.endswith("\n\n"):
+                    # Separate this completed interim message from the next one.
+                    acc += "\n\n"
+    finally:
+        if not sdk_result.is_complete:
+            sdk_result.cancel()
+
+
+def _tool_label(item) -> str:
+    raw = getattr(item, "raw_item", None)
+    return getattr(raw, "name", None) or "tool"
 
 
 def _extract_text(sdk_result) -> str:
