@@ -16,6 +16,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from jarvis.actions.service import ActionService
+from jarvis.agents.document_tool import build_document_search_tool
 from jarvis.agents.llm_client import build_llm_client, install_as_default
 from jarvis.agents.model_catalog import ModelCatalog
 from jarvis.agents.model_store import ModelStore
@@ -32,6 +33,7 @@ from jarvis.core.output_router import NotificationGate, OutputRouter
 from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.digests.seeds import seed_built_in_digest_templates
 from jarvis.mcp.manager import MCPManager
+from jarvis.memory.documents import DocumentService
 from jarvis.memory.embeddings import OpenAIEmbeddingProvider
 from jarvis.memory.preference_dedup import PreferenceDeduplicator, PreferenceJudge
 from jarvis.memory.service import MemoryService
@@ -69,6 +71,7 @@ class AppContext:
     model_catalog: ModelCatalog
     model_store: ModelStore
     memory_service: MemoryService | None
+    document_service: DocumentService | None
 
     async def shutdown(self) -> None:
         await self.scheduler.stop()
@@ -122,6 +125,16 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         llm_client=llm_client,
         audit=audit,
     )
+    document_service = await _build_document_service(
+        cfg=cfg,
+        db_url=db_url,
+        session_factory=factory,
+        llm_client=llm_client,
+        audit=audit,
+    )
+    agent_tools = (
+        [build_document_search_tool(document_service)] if document_service is not None else []
+    )
 
     # OAuth.
     oauth_http = httpx.AsyncClient(timeout=30.0)
@@ -159,6 +172,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
         memory_service=memory_service,
         home_location=cfg.jarvis.home_location,
+        tools=agent_tools,
     )
 
     # Discord /model command dependencies (interactive model selection).
@@ -248,6 +262,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         scheduled_output_router=ScheduledOutputRouter(discord_adapter=discord_adapter),
         memory_service=memory_service,
         run_timeout_sec=cfg.jarvis.idle_timeout_sec,
+        tools=agent_tools,
     )
 
     # Scheduler.
@@ -267,6 +282,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         base_url=cfg.base_url,
         notification_gate=notification_gate,
         home_location=cfg.jarvis.home_location,
+        tools=agent_tools,
     )
     await scheduler.start()
 
@@ -295,6 +311,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         model_catalog=model_catalog,
         model_store=model_store,
         memory_service=memory_service,
+        document_service=document_service,
     )
     # Wire the full context into the web app now that it exists.
     web_app.state.ctx = ctx
@@ -359,6 +376,45 @@ async def _build_memory_service(
     )
     await service.reindex_entries()
     return service
+
+
+async def _build_document_service(
+    *,
+    cfg: LoadedConfig,
+    db_url: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    llm_client: AsyncOpenAI,
+    audit: AuditLogger,
+) -> DocumentService | None:
+    if not cfg.jarvis.memory.enabled:
+        return None
+    db_path = _local_sqlite_db_path(db_url)
+    if db_path is None:
+        return None
+
+    vector_store = MemoryVectorStore(
+        db_path=db_path,
+        dimensions=cfg.jarvis.memory.embedding_dimensions,
+        table_prefix="document",
+    )
+    await vector_store.initialize()
+
+    embedding_model = cfg.jarvis.memory.embedding_model or cfg.jarvis.llm.model
+    embedding_provider = OpenAIEmbeddingProvider(
+        client=llm_client,
+        model=embedding_model,
+        dimensions=cfg.jarvis.memory.embedding_dimensions,
+    )
+    return DocumentService(
+        session_factory=session_factory,
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+        chunk_chars=cfg.jarvis.memory.document_chunk_chars,
+        chunk_overlap=cfg.jarvis.memory.document_chunk_overlap,
+        max_results=cfg.jarvis.memory.max_document_results,
+        min_relevance_score=cfg.jarvis.memory.min_relevance_score,
+        audit=audit,
+    )
 
 
 def _local_sqlite_db_path(db_url: str) -> Path | None:

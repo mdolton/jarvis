@@ -278,6 +278,7 @@ async def test_app_context_shutdown_drains_memory_tasks_before_closing_clients()
         model_catalog=object(),
         model_store=object(),
         memory_service=None,
+        document_service=None,
     )
 
     await ctx.shutdown()

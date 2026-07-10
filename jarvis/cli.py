@@ -45,6 +45,47 @@ async def _invoke_async(prompt: str, config_dir: Path, db_url: str, user: str) -
         await ctx.shutdown()
 
 
+@app.command("ingest")
+def ingest_command(
+    path: Path = typer.Argument(
+        None, help="File or folder to ingest (defaults to memory.documents_folder)"
+    ),
+    config_dir: Path = typer.Option(
+        _DEFAULT_CONFIG, "--config-dir", "-c", help="Directory with jarvis.yaml etc."
+    ),
+    db_url: str = typer.Option(_DEFAULT_DB, "--db-url", help="SQLAlchemy DB URL"),
+) -> None:
+    """Index documents (.md/.txt/.pdf) so the agent can answer from them."""
+    asyncio.run(_ingest_async(path, config_dir, db_url))
+
+
+async def _ingest_async(path: Path | None, config_dir: Path, db_url: str) -> None:
+    ctx = await bootstrap(config_dir=config_dir, db_url=db_url)
+    try:
+        if ctx.document_service is None:
+            typer.echo("document ingestion unavailable (memory disabled or non-local DB)")
+            raise typer.Exit(code=1)
+        folder = ctx.config.jarvis.memory.documents_folder
+        target = path or (Path(folder) if folder else None)
+        if target is None:
+            typer.echo("no path given and memory.documents_folder is not configured")
+            raise typer.Exit(code=2)
+        outcomes = await ctx.document_service.ingest_path(target)
+        if not outcomes:
+            typer.echo("no supported files found (.md, .markdown, .txt, .pdf)")
+        for outcome in outcomes:
+            detail = f" ({outcome.error})" if outcome.error else ""
+            typer.echo(
+                f"{outcome.status:10s} {outcome.source_ref} "
+                f"[{outcome.chunk_count} chunks]{detail}"
+            )
+        failures = [o for o in outcomes if o.status in ("failed", "unindexed")]
+        if failures:
+            raise typer.Exit(code=3)
+    finally:
+        await ctx.shutdown()
+
+
 @app.command("check-config")
 def check_config_command(
     config_dir: Path = typer.Option(
