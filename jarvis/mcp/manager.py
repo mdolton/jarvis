@@ -532,6 +532,9 @@ class MCPManager:
                 await _aclose_silently(stack, close_timeout=self._close_timeout)
                 raise
 
+            if cfg.read_only:
+                tools = [_force_read_only(t) for t in tools]
+
             self._stacks[cfg.name] = stack
             self._tool_namespaces_by_server[cfg.name] = _tool_namespace_for_runtime_name(cfg.name)
             self._sdk_servers[cfg.name] = _NamespacedMCPServer(
@@ -948,6 +951,17 @@ def _tracking_httpx_client_factory(
         return client
 
     return factory
+
+
+def _force_read_only(descriptor: MCPToolDescriptor) -> MCPToolDescriptor:
+    """Apply a config-level `read_only: true` assertion to one tool descriptor.
+
+    Only fills in a *missing* readOnlyHint; a server-provided hint (either
+    value) and a destructive_hint=True both win over the operator assertion.
+    """
+    if descriptor.read_only_hint is not None or descriptor.destructive_hint is True:
+        return descriptor
+    return descriptor.model_copy(update={"read_only_hint": True})
 
 
 async def _list_tools(sdk_server: object) -> list[MCPToolDescriptor]:

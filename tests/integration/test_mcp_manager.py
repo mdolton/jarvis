@@ -110,6 +110,59 @@ async def test_mcp_manager_connects_and_catalogs_tools(engine_and_factory, test_
         await manager.stop()
 
 
+async def test_read_only_config_forces_read_only_hint(engine_and_factory, test_server_script):
+    """`read_only: true` fills the missing readOnlyHint so unannotated pure-data
+    servers (weather) survive the scheduled-turn read-only tool scope."""
+    _, factory = engine_and_factory
+
+    cfg = MCPServersConfig(
+        servers=[
+            MCPServerConfig(
+                name="test",
+                transport="stdio",
+                command=[sys.executable, str(test_server_script)],
+                read_only=True,
+            ),
+        ],
+    )
+
+    manager = MCPManager(config=cfg, session_factory=factory)
+    await manager.start()
+    try:
+        async with factory() as s:
+            servers = await MCPServerRepo(s).list_all()
+            tools = await MCPToolRepo(s).list_for_server(servers[0].id)
+        assert len(tools) == 1
+        assert tools[0].name == "echo"
+        assert tools[0].read_only_hint is True
+    finally:
+        await manager.stop()
+
+
+async def test_unmarked_server_keeps_missing_hints(engine_and_factory, test_server_script):
+    _, factory = engine_and_factory
+
+    cfg = MCPServersConfig(
+        servers=[
+            MCPServerConfig(
+                name="test",
+                transport="stdio",
+                command=[sys.executable, str(test_server_script)],
+            ),
+        ],
+    )
+
+    manager = MCPManager(config=cfg, session_factory=factory)
+    await manager.start()
+    try:
+        async with factory() as s:
+            servers = await MCPServerRepo(s).list_all()
+            tools = await MCPToolRepo(s).list_for_server(servers[0].id)
+        assert tools[0].read_only_hint is None
+    finally:
+        await manager.stop()
+
+
 async def test_mcp_manager_records_failure_for_bad_command(engine_and_factory):
     _, factory = engine_and_factory
 

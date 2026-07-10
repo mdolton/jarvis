@@ -6,11 +6,16 @@ from jarvis.memory.types import MemoryContext, RecalledMemory
 def assemble_memory_prompt(
     *,
     memory_context: MemoryContext,
+    user_context: str = "",
     runtime_context: str = "",
     trigger_context: str,
     current_prompt: str,
 ) -> str:
     sections: list[str] = []
+
+    stripped_user_context = user_context.strip()
+    if stripped_user_context:
+        sections.append("\n".join(["User context:", stripped_user_context]))
 
     if memory_context.preferences:
         lines = ["Standing preferences:"]

@@ -10,6 +10,24 @@ def test_stdio_server_is_accepted():
     assert cfg.servers[0].transport == "stdio"
 
 
+def test_read_only_defaults_false_and_parses():
+    cfg = MCPServersConfig.model_validate(
+        {
+            "servers": [
+                {"name": "fs", "transport": "stdio", "command": ["npx", "x"]},
+                {
+                    "name": "weather",
+                    "transport": "stdio",
+                    "command": ["npx", "y"],
+                    "read_only": True,
+                },
+            ]
+        }
+    )
+    assert cfg.servers[0].read_only is False
+    assert cfg.servers[1].read_only is True
+
+
 def test_http_server_in_yaml_is_rejected():
     with pytest.raises(Exception) as ei:
         MCPServersConfig.model_validate(

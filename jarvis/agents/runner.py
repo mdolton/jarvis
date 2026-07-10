@@ -75,6 +75,7 @@ class AgentRunner:
         idle_timeout_sec: int = 900,
         run_timeout_sec: float | None = None,
         memory_service: Any = None,
+        home_location: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -86,6 +87,7 @@ class AgentRunner:
         self._idle_timeout_sec = idle_timeout_sec
         self._run_timeout_sec = run_timeout_sec
         self._memory_service = memory_service
+        self._home_location = home_location
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def run(self, request: InvocationRequest) -> AgentRunResult:
@@ -269,6 +271,7 @@ class AgentRunner:
         if self._memory_service is None:
             return assemble_memory_prompt(
                 memory_context=_empty_memory_context(),
+                user_context=self._build_user_context(),
                 runtime_context=self._build_runtime_context(),
                 trigger_context=trigger_context,
                 current_prompt=user_prompt,
@@ -286,6 +289,7 @@ class AgentRunner:
 
         return assemble_memory_prompt(
             memory_context=memory_context,
+            user_context=self._build_user_context(),
             runtime_context=self._build_runtime_context(),
             trigger_context=trigger_context,
             current_prompt=user_prompt,
@@ -295,6 +299,11 @@ class AgentRunner:
         if self._mcp_context_provider is None:
             return ""
         return self._mcp_context_provider()
+
+    def _build_user_context(self) -> str:
+        if self._home_location is None:
+            return ""
+        return f"- Home location: {self._home_location}"
 
     def _schedule_memory_summary(
         self,

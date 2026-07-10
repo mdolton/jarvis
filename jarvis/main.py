@@ -158,6 +158,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         model_provider=model_store.current,
         idle_timeout_sec=cfg.jarvis.idle_timeout_sec,
         memory_service=memory_service,
+        home_location=cfg.jarvis.home_location,
     )
 
     # Discord /model command dependencies (interactive model selection).
@@ -265,6 +266,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         memory_service=memory_service,
         base_url=cfg.base_url,
         notification_gate=notification_gate,
+        home_location=cfg.jarvis.home_location,
     )
     await scheduler.start()
 

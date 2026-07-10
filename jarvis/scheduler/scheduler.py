@@ -74,6 +74,7 @@ class Scheduler:
         memory_service: Any = None,
         base_url: str | None = None,
         notification_gate: NotificationGate | None = None,
+        home_location: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._audit = audit
@@ -104,6 +105,7 @@ class Scheduler:
             idle_timeout_sec=idle_timeout_sec,
             run_timeout_sec=run_timeout_sec if run_timeout_sec is not None else idle_timeout_sec,
             memory_service=memory_service,
+            home_location=home_location,
         )
         self._dispatcher = TriggerDispatcher(
             runner=self._runner,

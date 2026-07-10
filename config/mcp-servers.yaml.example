@@ -5,7 +5,24 @@
 # /mcp dashboard (they're stored in the database). This file is limited to
 # stdio servers, which launch a local command on the Jarvis host.
 
-servers: []
+servers:
+  # Open-Meteo weather (17 tools: forecasts, geocoding, air quality, ...).
+  # Free, no API key. The server ships no readOnlyHint annotations, so
+  # `read_only: true` asserts them — without it every weather tool is denied
+  # on scheduled turns (Daily Brief) by the non-user read-only tool scope.
+  # Requires Node >= 22 (the Docker image pins Node 22 for this).
+  - name: weather
+    transport: stdio
+    command: ["npx", "-y", "-p", "open-meteo-mcp-server", "open-meteo-mcp-server"]
+    read_only: true
+
+  # Stock/crypto market data (TradingView quotes/indices + Fear & Greed).
+  # Free, no API key; quotes may be delayed ~15min. Scoped to the two modules
+  # a daily brief needs — the full server registers 41 key-free tools.
+  # Sets readOnlyHint=True itself, so no `read_only` assertion is needed.
+  - name: markets
+    transport: stdio
+    command: ["npx", "-y", "stock-scanner-mcp", "--modules", "tradingview,sentiment"]
 
 # Example stdio server:
 # servers:
@@ -15,3 +32,6 @@ servers: []
 #     # optional environment for the spawned process:
 #     # env:
 #     #   SOME_TOKEN: "${SOME_TOKEN}"
+#     # operator assertion that all tools only observe state (fills missing
+#     # readOnlyHint annotations so scheduled/event turns can call them):
+#     # read_only: true

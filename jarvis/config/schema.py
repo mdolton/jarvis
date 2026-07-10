@@ -62,6 +62,10 @@ class JarvisConfig(_StrictModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     timezone: str = "UTC"
+    # Free-text home location ("Austin, Texas") surfaced to every agent run as
+    # user context, so briefs can fetch a local weather forecast without a
+    # hardcoded city. None → the location line is simply omitted.
+    home_location: str | None = None
     idle_timeout_sec: int = 900
     max_concurrent_agents: int = 3
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -95,6 +99,12 @@ class MCPServerConfig(_StrictModel):
     name: str
     transport: Literal["stdio", "http", "sse"]
     enabled: bool = True
+    # Operator assertion that every tool on this server only observes state.
+    # Fills in a missing readOnlyHint annotation at tool discovery so pure-data
+    # servers (weather, market quotes) stay callable on scheduled/event turns,
+    # which deny anything not strictly read-only. It never downgrades a hint
+    # the server itself provides.
+    read_only: bool = False
 
     # stdio
     command: list[str] | None = None

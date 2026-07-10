@@ -24,8 +24,14 @@ RUN uv sync --frozen --no-dev
 FROM python:3.12-slim
 
 # Runtimes needed to launch stdio MCP servers: `npx` (Node) and `uvx` (uv).
+# Node comes from NodeSource, not Debian: open-meteo-mcp-server needs >= 22
+# and Debian's packaged nodejs is older.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get purge -y curl \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
