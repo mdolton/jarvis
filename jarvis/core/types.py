@@ -82,6 +82,8 @@ class AuditEventType(StrEnum):
     MEMORY_FAILED = "memory.failed"
     MEMORY_PREFERENCE_DEDUP_DROPPED = "memory.preference_dedup_dropped"
     MEMORY_PREFERENCE_DEDUP_SKIPPED = "memory.preference_dedup_skipped"
+    DOCUMENT_INGESTED = "document.ingested"
+    DOCUMENT_FAILED = "document.failed"
 
 
 class MessageRole(StrEnum):
