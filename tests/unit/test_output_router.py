@@ -4,8 +4,13 @@ import pytest
 
 from jarvis.agents.runner import AgentRunResult
 from jarvis.channels.base import OutboundMessage
-from jarvis.core.output_router import OutputRouter, Priority, classify_priority
-from jarvis.core.types import ChannelKind
+from jarvis.core.output_router import (
+    OutputRouter,
+    Priority,
+    classify_priority,
+    emit_autonomy_trace,
+)
+from jarvis.core.types import AuditEventType, ChannelKind
 
 
 class _RecordingAdapter:
@@ -122,3 +127,65 @@ def test_classify_priority_marker_mid_text_is_ignored():
     priority, cleaned = classify_priority("see [P1] in the docs")
     assert priority is Priority.P3
     assert cleaned == "see [P1] in the docs"
+
+
+class _RecordingAudit:
+    def __init__(self) -> None:
+        self.events: list = []
+
+    async def emit(self, event) -> None:
+        self.events.append(event)
+
+
+async def test_emit_autonomy_trace_builds_audit_event():
+    audit = _RecordingAudit()
+    result = _result(kind=ChannelKind.EVENT, ref="email", text="Filed the invoice.")
+
+    await emit_autonomy_trace(
+        audit,
+        result=result,
+        source="event:email",
+        reason="inbound 'email' event",
+        delivery="digest",
+    )
+
+    assert len(audit.events) == 1
+    event = audit.events[0]
+    assert event.type is AuditEventType.AUTONOMY_TRACE
+    assert event.conversation_id == result.conversation_id
+    assert event.trigger_id == result.trigger_id
+    assert event.payload == {
+        "source": "event:email",
+        "reason": "inbound 'email' event",
+        "action": "Filed the invoice.",
+        "delivery": "digest",
+    }
+
+
+async def test_emit_autonomy_trace_without_audit_is_a_noop():
+    await emit_autonomy_trace(
+        None,
+        result=_result(kind=ChannelKind.EVENT, ref="email"),
+        source="event:email",
+        reason="inbound 'email' event",
+        delivery="discord",
+    )
+
+
+async def test_emit_autonomy_trace_summarizes_long_multiline_output():
+    audit = _RecordingAudit()
+    result = _result(kind=ChannelKind.EVENT, ref="email", text="line one\nline two  " + "x" * 400)
+
+    await emit_autonomy_trace(
+        audit,
+        result=result,
+        source="event:email",
+        reason="inbound 'email' event",
+        delivery="suppressed",
+    )
+
+    action = audit.events[0].payload["action"]
+    assert "\n" not in action
+    assert action.startswith("line one line two")
+    assert len(action) <= 300
+    assert action.endswith("…")

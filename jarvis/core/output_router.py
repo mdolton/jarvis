@@ -26,8 +26,9 @@ from enum import IntEnum
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jarvis.agents.runner import AgentRunResult
+from jarvis.audit.logger import AuditLogger
 from jarvis.channels.base import ChannelAdapter, OutboundMessage
-from jarvis.core.types import ChannelKind
+from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
 from jarvis.persistence.repositories import NotificationRepo
 
 _log = logging.getLogger(__name__)
@@ -75,6 +76,48 @@ def _day_start(now: datetime) -> datetime:
 
 
 _DIGEST_ITEM_MAX_CHARS = 200
+
+_TRACE_ACTION_MAX_CHARS = 300
+
+
+def _trace_action(text: str) -> str:
+    """Terse single-line 'did X' summary of a run's final output."""
+    flat = " ".join(text.split())
+    if len(flat) > _TRACE_ACTION_MAX_CHARS:
+        return flat[: _TRACE_ACTION_MAX_CHARS - 1] + "…"
+    return flat
+
+
+async def emit_autonomy_trace(
+    audit: AuditLogger | None,
+    *,
+    result: AgentRunResult,
+    source: str,
+    reason: str,
+    delivery: str,
+) -> None:
+    """Record a 'did X because Y' audit trace for an autonomous run.
+
+    `delivery` says where the run's output actually went: 'discord',
+    'digest', 'suppressed', 'dashboard_only', or 'undelivered'. The audit
+    SSE feed tails this table, so emitting here is what makes autonomous
+    activity visible without spending notification budget.
+    """
+    if audit is None:
+        return
+    await audit.emit(
+        AuditEvent(
+            type=AuditEventType.AUTONOMY_TRACE,
+            conversation_id=result.conversation_id,
+            trigger_id=result.trigger_id,
+            payload={
+                "source": source,
+                "reason": reason,
+                "action": _trace_action(result.final_output),
+                "delivery": delivery,
+            },
+        )
+    )
 
 
 class NotificationGate:
