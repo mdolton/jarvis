@@ -43,7 +43,7 @@ def test_invoke_requires_config_and_db(config_dir, tmp_path, monkeypatch):
     # Monkeypatch AgentRunner.run to return a canned result.
     from jarvis.agents import runner as runner_mod
 
-    async def _fake_run(self, request):
+    async def _fake_run(self, request, stream=None):
         from uuid import uuid4
 
         from jarvis.core.types import ChannelKind
