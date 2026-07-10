@@ -189,3 +189,79 @@ async def test_emit_autonomy_trace_summarizes_long_multiline_output():
     assert action.startswith("line one line two")
     assert len(action) <= 300
     assert action.endswith("…")
+
+
+class _FakeGate:
+    """admit() mirrors NotificationGate's contract: cleaned text or None."""
+
+    def __init__(self, admit_result) -> None:
+        self._admit_result = admit_result
+        self.calls: list[dict] = []
+
+    async def admit(self, *, text: str, source: str):
+        self.calls.append({"text": text, "source": source})
+        return self._admit_result
+
+
+async def test_admitted_event_sends_with_provenance_and_traces_discord():
+    adapter = _RecordingAdapter()
+    audit = _RecordingAudit()
+    router = OutputRouter(
+        adapters=[adapter],
+        notification_gate=_FakeGate(admit_result="Filed the invoice."),
+        event_notify_ref="user-1",
+        audit=audit,
+    )
+
+    await router.route(_result(kind=ChannelKind.EVENT, ref="email", text="Filed the invoice."))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0].text == "⚙️ [event:email] Filed the invoice."
+    assert len(audit.events) == 1
+    assert audit.events[0].payload["delivery"] == "discord"
+    assert audit.events[0].payload["source"] == "event:email"
+
+
+async def test_queued_event_traces_digest():
+    adapter = _RecordingAdapter()
+    audit = _RecordingAudit()
+    router = OutputRouter(
+        adapters=[adapter],
+        notification_gate=_FakeGate(admit_result=None),
+        event_notify_ref="user-1",
+        audit=audit,
+    )
+
+    await router.route(_result(kind=ChannelKind.EVENT, ref="email", text="routine update"))
+
+    assert adapter.sent == []
+    assert audit.events[0].payload["delivery"] == "digest"
+
+
+async def test_silent_event_traces_suppressed_without_consulting_gate():
+    adapter = _RecordingAdapter()
+    audit = _RecordingAudit()
+    gate = _FakeGate(admit_result=None)
+    router = OutputRouter(
+        adapters=[adapter],
+        notification_gate=gate,
+        event_notify_ref="user-1",
+        audit=audit,
+    )
+
+    await router.route(_result(kind=ChannelKind.EVENT, ref="email", text="[SILENT] nothing"))
+
+    assert adapter.sent == []
+    assert gate.calls == []
+    assert audit.events[0].payload["delivery"] == "suppressed"
+
+
+async def test_ungated_event_traces_dashboard_only():
+    adapter = _RecordingAdapter()
+    audit = _RecordingAudit()
+    router = OutputRouter(adapters=[adapter], audit=audit)
+
+    await router.route(_result(kind=ChannelKind.EVENT, ref="email", text="hi"))
+
+    assert adapter.sent == []
+    assert audit.events[0].payload["delivery"] == "dashboard_only"

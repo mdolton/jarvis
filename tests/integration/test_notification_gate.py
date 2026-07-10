@@ -109,7 +109,8 @@ async def test_p1_delivers_immediately_even_when_budget_exhausted(factory):
 
     await router.route(_event_result("[P1] server on fire"))
     assert len(adapter.sent) == 2
-    assert adapter.sent[1].text == "server on fire"  # marker stripped
+    # Marker stripped; autonomous sends carry a provenance prefix.
+    assert adapter.sent[1].text == "⚙️ [event:email] server on fire"
 
 
 async def test_p2_p3_respect_daily_budget(factory):

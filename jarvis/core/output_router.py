@@ -206,10 +206,12 @@ class OutputRouter:
         adapters: Iterable[ChannelAdapter],
         notification_gate: NotificationGate | None = None,
         event_notify_ref: str | None = None,
+        audit: AuditLogger | None = None,
     ) -> None:
         self._by_kind: dict[str, ChannelAdapter] = {a.kind: a for a in adapters}
         self._gate = notification_gate
         self._event_notify_ref = event_notify_ref
+        self._audit = audit
 
     async def route(self, result: AgentRunResult) -> None:
         if result.channel_kind is ChannelKind.EVENT:
@@ -234,23 +236,34 @@ class OutputRouter:
         """Proactive delivery for event-triggered runs, subject to the gate.
 
         Without a gate, a notify target, and a Discord adapter, event results
-        stay dashboard-only (the pre-gate behavior).
+        stay dashboard-only (the pre-gate behavior). Every path emits an
+        autonomy trace so the run is never silent.
         """
-        if self._gate is None or self._event_notify_ref is None:
-            return
+        source = f"event:{result.channel_ref}"
+        reason = f"inbound '{result.channel_ref}' event"
+
+        async def _trace(delivery: str) -> None:
+            await emit_autonomy_trace(
+                self._audit, result=result, source=source, reason=reason, delivery=delivery
+            )
+
         adapter = self._by_kind.get(ChannelKind.DISCORD.value)
-        if adapter is None:
+        if self._gate is None or self._event_notify_ref is None or adapter is None:
+            await _trace("dashboard_only")
             return
-        text = await self._gate.admit(
-            text=result.final_output,
-            source=f"event:{result.channel_ref}",
-        )
+        priority, _ = classify_priority(result.final_output)
+        if priority is None:
+            await _trace("suppressed")
+            return
+        text = await self._gate.admit(text=result.final_output, source=source)
         if text is None:
+            await _trace("digest")
             return
         await adapter.send(
             OutboundMessage(
                 channel_kind=ChannelKind.DISCORD,
                 channel_ref=self._event_notify_ref,
-                text=text,
+                text=f"⚙️ [{source}] {text}",
             )
         )
+        await _trace("discord")
