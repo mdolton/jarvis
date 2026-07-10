@@ -76,24 +76,15 @@ class DocumentService:
         return self._vector_store.available
 
     async def ingest_path(self, path: Path) -> list[DocumentIngestOutcome]:
-        path = path.expanduser()
-        if path.is_dir():
-            files = sorted(
-                candidate
-                for candidate in path.rglob("*")
-                if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_SUFFIXES
-            )
-        else:
-            files = [path]
+        files = await asyncio.to_thread(_list_supported_files, path)
         return [await self.ingest_file(file) for file in files]
 
     async def ingest_file(self, path: Path) -> DocumentIngestOutcome:
-        path = path.expanduser()
-        source_ref = str(path.resolve())
-        try:
-            raw = await asyncio.to_thread(path.read_bytes)
-        except OSError as exc:
-            return await self._failed(source_ref, document_id=None, error=str(exc))
+        source_ref, raw, read_error = await asyncio.to_thread(_read_source, path)
+        if raw is None:
+            return await self._failed(
+                source_ref, document_id=None, error=read_error or "unreadable file"
+            )
 
         content_hash = hashlib.sha256(raw).hexdigest()
         async with self._session_factory() as session:
@@ -264,6 +255,26 @@ class DocumentService:
             await self._audit.emit(AuditEvent(type=event_type, payload=payload))
         except Exception:
             return
+
+
+def _list_supported_files(path: Path) -> list[Path]:
+    path = path.expanduser()
+    if not path.is_dir():
+        return [path]
+    return sorted(
+        candidate
+        for candidate in path.rglob("*")
+        if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_SUFFIXES
+    )
+
+
+def _read_source(path: Path) -> tuple[str, bytes | None, str | None]:
+    path = path.expanduser()
+    source_ref = str(path.resolve())
+    try:
+        return source_ref, path.read_bytes(), None
+    except OSError as exc:
+        return source_ref, None, str(exc)
 
 
 def _extract_text(path: Path, raw: bytes) -> str:

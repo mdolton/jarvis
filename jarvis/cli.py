@@ -76,8 +76,7 @@ async def _ingest_async(path: Path | None, config_dir: Path, db_url: str) -> Non
         for outcome in outcomes:
             detail = f" ({outcome.error})" if outcome.error else ""
             typer.echo(
-                f"{outcome.status:10s} {outcome.source_ref} "
-                f"[{outcome.chunk_count} chunks]{detail}"
+                f"{outcome.status:10s} {outcome.source_ref} [{outcome.chunk_count} chunks]{detail}"
             )
         failures = [o for o in outcomes if o.status in ("failed", "unindexed")]
         if failures:

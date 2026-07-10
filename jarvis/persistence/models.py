@@ -99,9 +99,7 @@ class ActionRow(Base):
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    __table_args__ = (
-        Index("ix_actions_status_created_at", "status", "created_at"),
-    )
+    __table_args__ = (Index("ix_actions_status_created_at", "status", "created_at"),)
 
 
 class MemoryPreferenceRow(Base):
@@ -284,6 +282,7 @@ class DigestTemplateRow(Base):
 
 class MCPProviderRow(Base):
     """Catalog entry: a secret-free service definition. stdio is NOT represented here."""
+
     __tablename__ = "mcp_providers"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -310,6 +309,7 @@ class MCPProviderRow(Base):
 
 class MCPConnectionRow(Base):
     """One credentialed account instance of a provider -> one live MCP server."""
+
     __tablename__ = "mcp_connections"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -338,9 +338,7 @@ class MCPConnectionRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime())
     updated_at: Mapped[datetime] = mapped_column(TZDateTime())
 
-    __table_args__ = (
-        Index("ix_mcp_connections_runtime_name_unique", "runtime_name", unique=True),
-    )
+    __table_args__ = (Index("ix_mcp_connections_runtime_name_unique", "runtime_name", unique=True),)
 
     provider: Mapped[MCPProviderRow] = relationship(back_populates="connections")
 
@@ -417,7 +415,4 @@ class NotificationRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
     digested_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
 
-    __table_args__ = (
-        Index("ix_notifications_status_created_at", "status", "created_at"),
-    )
-
+    __table_args__ = (Index("ix_notifications_status_created_at", "status", "created_at"),)

@@ -294,9 +294,7 @@ async def test_memory_service_hydration_failure_degrades_without_raising(factory
     assert "hydration failed" in ctx.error
 
 
-async def test_memory_service_recall_write_failure_preserves_recalled_context(
-    factory, monkeypatch
-):
+async def test_memory_service_recall_write_failure_preserves_recalled_context(factory, monkeypatch):
     conv, trigger, entry = await _seed_memory(factory)
 
     async def fail_record_many(self, *, conversation_id, trigger_id, recalled):
@@ -428,9 +426,7 @@ async def test_summarize_run_drops_semantic_duplicate_of_active(factory):
         async def judge(self, *, candidate, existing):
             return False
 
-    embeddings = SequencedEmbeddingProvider(
-        {"Run the test suite before each commit": [1.0, 0.0]}
-    )
+    embeddings = SequencedEmbeddingProvider({"Run the test suite before each commit": [1.0, 0.0]})
     dedup = PreferenceDeduplicator(
         embedding_provider=embeddings,
         judge=_NoJudge(),
@@ -495,8 +491,11 @@ async def test_summarize_run_keeps_distinct_preference(factory):
     )
 
     outcome = await service.summarize_run(
-        conversation_id=None, channel_kind="discord", channel_ref="c1",
-        user_prompt="u", assistant_output="a",
+        conversation_id=None,
+        channel_kind="discord",
+        channel_ref="c1",
+        user_prompt="u",
+        assistant_output="a",
     )
     assert outcome.preferences_created == 1
 
@@ -530,8 +529,11 @@ async def test_summarize_run_falls_back_when_dedup_embed_fails(factory):
     )
 
     outcome = await service.summarize_run(
-        conversation_id=None, channel_kind="discord", channel_ref="c1",
-        user_prompt="u", assistant_output="a",
+        conversation_id=None,
+        channel_kind="discord",
+        channel_ref="c1",
+        user_prompt="u",
+        assistant_output="a",
     )
     assert outcome.preferences_created == 1
 
@@ -574,8 +576,11 @@ async def test_summarize_run_dedupes_within_batch(factory):
     )
 
     outcome = await service.summarize_run(
-        conversation_id=None, channel_kind="discord", channel_ref="c1",
-        user_prompt="u", assistant_output="a",
+        conversation_id=None,
+        channel_kind="discord",
+        channel_ref="c1",
+        user_prompt="u",
+        assistant_output="a",
     )
     assert outcome.preferences_created == 1
 

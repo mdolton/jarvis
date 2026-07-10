@@ -218,7 +218,9 @@ class MemoryService:
                 AuditEventType.MEMORY_PREFERENCE_DEDUP_DROPPED,
                 conversation_id=conversation_id,
                 payload={
-                    "matched_preference_id": str(dropped.matched_id) if dropped.matched_id else None,
+                    "matched_preference_id": str(dropped.matched_id)
+                    if dropped.matched_id
+                    else None,
                     "matched_content": dropped.matched_content,
                     "score": dropped.score,
                     "method": dropped.method,
@@ -422,9 +424,7 @@ class MemoryService:
                 trigger_id=trigger_id,
                 payload={
                     "count": len(recalled),
-                    "memory_entry_ids": [
-                        str(memory.memory_entry_id) for memory in recalled
-                    ],
+                    "memory_entry_ids": [str(memory.memory_entry_id) for memory in recalled],
                 },
             )
         if recall_error is not None:

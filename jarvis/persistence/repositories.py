@@ -333,11 +333,7 @@ class MemoryPreferenceRepo:
     ) -> list[MemoryPreferenceRow]:
         existing = await self.existing_normalized_contents()
         missing = _dedupe_new_preferences(
-            [
-                item
-                for item in items
-                if _normalize_preference_content(item.content) not in existing
-            ]
+            [item for item in items if _normalize_preference_content(item.content) not in existing]
         )
         if not missing:
             return []
@@ -1074,8 +1070,14 @@ class MCPServerRepo:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def upsert(self, *, name: str, transport: str, source: str = "stdio",
-                     connection_id: "UUID | None" = None) -> MCPServerRow:
+    async def upsert(
+        self,
+        *,
+        name: str,
+        transport: str,
+        source: str = "stdio",
+        connection_id: "UUID | None" = None,
+    ) -> MCPServerRow:
         result = await self._session.execute(select(MCPServerRow).where(MCPServerRow.name == name))
         existing = result.scalar_one_or_none()
         if existing:
@@ -1086,8 +1088,13 @@ class MCPServerRepo:
             await self._session.refresh(existing)
             return existing
 
-        row = MCPServerRow(name=name, transport=transport, status="disconnected",
-                           source=source, connection_id=connection_id)
+        row = MCPServerRow(
+            name=name,
+            transport=transport,
+            status="disconnected",
+            source=source,
+            connection_id=connection_id,
+        )
         self._session.add(row)
         await self._session.commit()
         await self._session.refresh(row)

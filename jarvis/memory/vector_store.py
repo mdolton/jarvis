@@ -45,10 +45,7 @@ class MemoryVectorStore:
         with closing(self._connect()) as conn:
             with conn:
                 existing_dimensions = self._existing_dimensions(conn)
-                if (
-                    existing_dimensions is not None
-                    and existing_dimensions != self._dimensions
-                ):
+                if existing_dimensions is not None and existing_dimensions != self._dimensions:
                     self._reset_tables(conn)
                 conn.execute(
                     f"""

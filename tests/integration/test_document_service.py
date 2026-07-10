@@ -93,7 +93,7 @@ async def test_reingest_unchanged_file_is_idempotent(harness):
 
 
 async def test_changed_file_reindexes_and_drops_stale_chunks(harness):
-    service, factory, store, tmp_path = harness
+    service, factory, _store, tmp_path = harness
     note = _write_note(tmp_path)
     first = await service.ingest_file(note)
 
@@ -148,7 +148,7 @@ async def test_unavailable_vector_store_degrades_gracefully(harness):
 
 
 async def test_unindexed_document_is_retried_when_store_recovers(harness):
-    service, factory, store, tmp_path = harness
+    service, _factory, store, tmp_path = harness
     note = tmp_path / "retry.md"
     note.write_text("the spare car key hangs by the pantry door")
 
@@ -184,9 +184,7 @@ async def test_pdf_extraction(harness):
     writer = PdfWriter()
     page = writer.add_blank_page(width=200, height=200)
     content = StreamObject()
-    content.set_data(
-        b"BT /F1 12 Tf 10 100 Td (The projector remote lives in the red drawer) Tj ET"
-    )
+    content.set_data(b"BT /F1 12 Tf 10 100 Td (The projector remote lives in the red drawer) Tj ET")
     ref = writer._add_object(content)
     page[NameObject("/Contents")] = ref
     page[NameObject("/Resources")] = DictionaryObject(
