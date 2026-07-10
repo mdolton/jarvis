@@ -209,6 +209,7 @@ async def bootstrap(*, config_dir: Path | str, db_url: str) -> AppContext:
         adapters=channel_adapters,
         notification_gate=notification_gate,
         event_notify_ref=event_notify_ref,
+        audit=audit,
     )
 
     # Dispatcher gets the router so channel-triggered runs auto-reply.
