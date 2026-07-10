@@ -190,6 +190,49 @@ class MemoryRecallEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
 
 
+class DocumentRow(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_ref: Mapped[str] = mapped_column(String(512))
+    title: Mapped[str] = mapped_column(String(256))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="indexing", index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+    chunks: Mapped[list["DocumentChunkRow"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (Index("ix_documents_source_ref_unique", "source_ref", unique=True),)
+
+
+class DocumentChunkRow(Base):
+    __tablename__ = "document_chunks"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+
+    document: Mapped[DocumentRow] = relationship(back_populates="chunks")
+
+    __table_args__ = (
+        Index(
+            "ix_document_chunks_document_chunk_unique",
+            "document_id",
+            "chunk_index",
+            unique=True,
+        ),
+    )
+
+
 class ScheduleRow(Base):
     __tablename__ = "schedules"
 
