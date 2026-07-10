@@ -9,6 +9,9 @@ llm:
   request_timeout_sec: 60.0
 
 timezone: ${JARVIS_TIMEZONE}
+# Home location surfaced to agent runs so briefs can pull a local weather
+# forecast (weather MCP server geocodes it). Omit to skip weather context.
+# home_location: "Austin, Texas"
 idle_timeout_sec: 900
 max_concurrent_agents: 3
 log_level: INFO

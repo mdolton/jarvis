@@ -77,6 +77,39 @@ def test_assemble_memory_prompt_places_runtime_context_before_recalled_memory():
     assert prompt.endswith("do you have access to the ynab mcp server?")
 
 
+def test_assemble_memory_prompt_places_user_context_first():
+    ctx = MemoryContext(
+        preferences=["Prefer concise answers."],
+        recalled=[],
+        recall_available=True,
+    )
+
+    prompt = assemble_memory_prompt(
+        memory_context=ctx,
+        user_context="- Home location: Austin, Texas",
+        runtime_context="Current MCP servers:\n- weather: weather_forecast",
+        trigger_context="",
+        current_prompt="Prepare my daily brief.",
+    )
+
+    assert prompt.index("User context") < prompt.index("Standing preferences")
+    assert "- Home location: Austin, Texas" in prompt
+    assert prompt.endswith("Prepare my daily brief.")
+
+
+def test_assemble_memory_prompt_omits_blank_user_context():
+    ctx = MemoryContext(preferences=[], recalled=[], recall_available=True)
+
+    prompt = assemble_memory_prompt(
+        memory_context=ctx,
+        user_context="   ",
+        trigger_context="",
+        current_prompt="hello",
+    )
+
+    assert prompt == "hello"
+
+
 def test_assemble_memory_prompt_without_memory_returns_current_prompt_only():
     ctx = MemoryContext(preferences=[], recalled=[], recall_available=True)
 

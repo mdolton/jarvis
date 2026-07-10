@@ -793,6 +793,21 @@ class ScheduleRepo:
         )
         await self._session.commit()
 
+    async def replace_prompt_exact(self, *, old_prompt: str, new_prompt: str) -> int:
+        """Roll forward every schedule whose prompt exactly matches `old_prompt`.
+
+        Used by digest-template seeding: an exact match means the schedule was
+        created from a built-in template and never customized. Returns the
+        number of rows updated.
+        """
+        result = await self._session.execute(
+            update(ScheduleRow)
+            .where(ScheduleRow.prompt == old_prompt)
+            .values(prompt=new_prompt, updated_at=_utcnow())
+        )
+        await self._session.commit()
+        return result.rowcount or 0
+
     async def delete(self, schedule_id: UUID) -> None:
         row = await self._session.get(ScheduleRow, schedule_id)
         if row is not None:
@@ -898,6 +913,16 @@ class DigestTemplateRepo:
                 default_discord_user_id=default_discord_user_id,
                 updated_at=_utcnow(),
             )
+        )
+        await self._session.commit()
+
+    async def refresh_prompt(self, template_id: UUID, *, prompt: str) -> None:
+        """Replace only the prompt text (seed roll-forward), leaving user-
+        tunable fields (name, cron, output mode, ...) untouched."""
+        await self._session.execute(
+            update(DigestTemplateRow)
+            .where(DigestTemplateRow.id == template_id)
+            .values(prompt=prompt, updated_at=_utcnow())
         )
         await self._session.commit()
 
