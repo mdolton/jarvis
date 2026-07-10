@@ -136,3 +136,16 @@ def test_events_config_rejects_negative_window():
 
     with pytest.raises(ValidationError):
         EventsConfig(coalesce_window_sec=-1.0)
+
+
+def test_memory_document_defaults():
+    cfg = MemoryConfig()
+    assert cfg.documents_folder is None
+    assert cfg.document_chunk_chars == 1800
+    assert cfg.document_chunk_overlap == 200
+    assert cfg.max_document_results == 5
+
+
+def test_document_overlap_must_be_smaller_than_chunk():
+    with pytest.raises(ValidationError):
+        MemoryConfig(document_chunk_chars=300, document_chunk_overlap=300)
