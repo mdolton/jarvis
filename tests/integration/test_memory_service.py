@@ -38,7 +38,7 @@ class FakeVectorStore:
     async def search(self, embedding: list[float], *, limit: int) -> list[VectorSearchResult]:
         return [
             VectorSearchResult(
-                memory_entry_id=memory_entry_id,
+                entry_id=memory_entry_id,
                 distance=0.1,
                 score=self._score,
             )

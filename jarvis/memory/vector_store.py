@@ -13,14 +13,20 @@ import sqlite_vec
 from jarvis.memory.types import VectorSearchResult
 
 _VECTOR_DIMENSION_RE = re.compile(r"embedding\s+float\[(\d+)\]")
+_TABLE_PREFIX_RE = re.compile(r"[a-z][a-z0-9_]*\Z")
 
 
 class MemoryVectorStore:
-    def __init__(self, *, db_path: Path, dimensions: int) -> None:
+    def __init__(self, *, db_path: Path, dimensions: int, table_prefix: str = "memory") -> None:
         if dimensions < 1:
             raise ValueError("dimensions must be positive")
+        if not _TABLE_PREFIX_RE.match(table_prefix):
+            raise ValueError("table_prefix must be a lowercase identifier")
         self._db_path = db_path
         self._dimensions = dimensions
+        self._ids_table = f"{table_prefix}_vector_ids"
+        self._vectors_table = f"{table_prefix}_vectors"
+        self._id_column = f"{table_prefix}_entry_id"
         self.available = False
         self.last_error: str | None = None
 
@@ -45,23 +51,24 @@ class MemoryVectorStore:
                 ):
                     self._reset_tables(conn)
                 conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS memory_vector_ids (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self._ids_table} (
                         rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                        memory_entry_id TEXT NOT NULL UNIQUE
+                        {self._id_column} TEXT NOT NULL UNIQUE
                     )
                     """
                 )
                 conn.execute(
                     f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors
+                    CREATE VIRTUAL TABLE IF NOT EXISTS {self._vectors_table}
                     USING vec0(embedding float[{self._dimensions}])
                     """
                 )
 
     def _existing_dimensions(self, conn: sqlite3.Connection) -> int | None:
         row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name = 'memory_vectors'"
+            "SELECT sql FROM sqlite_master WHERE name = ?",
+            (self._vectors_table,),
         ).fetchone()
         if row is None or row[0] is None:
             return None
@@ -71,34 +78,53 @@ class MemoryVectorStore:
         return int(match.group(1))
 
     def _reset_tables(self, conn: sqlite3.Connection) -> None:
-        conn.execute("DROP TABLE IF EXISTS memory_vectors")
-        conn.execute("DROP TABLE IF EXISTS memory_vector_ids")
+        conn.execute(f"DROP TABLE IF EXISTS {self._vectors_table}")
+        conn.execute(f"DROP TABLE IF EXISTS {self._ids_table}")
 
-    async def upsert(self, memory_entry_id: UUID, embedding: list[float]) -> None:
+    async def upsert(self, entry_id: UUID, embedding: list[float]) -> None:
         if not self.available:
             return
-        await asyncio.to_thread(self._upsert_sync, memory_entry_id, embedding)
+        await asyncio.to_thread(self._upsert_sync, entry_id, embedding)
 
-    def _upsert_sync(self, memory_entry_id: UUID, embedding: list[float]) -> None:
+    def _upsert_sync(self, entry_id: UUID, embedding: list[float]) -> None:
         with closing(self._connect()) as conn:
             with conn:
                 conn.execute(
-                    "INSERT OR IGNORE INTO memory_vector_ids(memory_entry_id) VALUES (?)",
-                    (str(memory_entry_id),),
+                    f"INSERT OR IGNORE INTO {self._ids_table}({self._id_column}) VALUES (?)",
+                    (str(entry_id),),
                 )
                 row = conn.execute(
-                    "SELECT rowid FROM memory_vector_ids WHERE memory_entry_id = ?",
-                    (str(memory_entry_id),),
+                    f"SELECT rowid FROM {self._ids_table} WHERE {self._id_column} = ?",
+                    (str(entry_id),),
                 ).fetchone()
                 if row is None:
-                    raise RuntimeError("memory vector id mapping was not created")
+                    raise RuntimeError("vector id mapping was not created")
 
                 rowid = int(row[0])
-                conn.execute("DELETE FROM memory_vectors WHERE rowid = ?", (rowid,))
+                conn.execute(f"DELETE FROM {self._vectors_table} WHERE rowid = ?", (rowid,))
                 conn.execute(
-                    "INSERT INTO memory_vectors(rowid, embedding) VALUES (?, ?)",
+                    f"INSERT INTO {self._vectors_table}(rowid, embedding) VALUES (?, ?)",
                     (rowid, json.dumps(embedding)),
                 )
+
+    async def delete_many(self, entry_ids: list[UUID]) -> None:
+        if not self.available or not entry_ids:
+            return
+        await asyncio.to_thread(self._delete_many_sync, entry_ids)
+
+    def _delete_many_sync(self, entry_ids: list[UUID]) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                for entry_id in entry_ids:
+                    row = conn.execute(
+                        f"SELECT rowid FROM {self._ids_table} WHERE {self._id_column} = ?",
+                        (str(entry_id),),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    rowid = int(row[0])
+                    conn.execute(f"DELETE FROM {self._vectors_table} WHERE rowid = ?", (rowid,))
+                    conn.execute(f"DELETE FROM {self._ids_table} WHERE rowid = ?", (rowid,))
 
     async def search(
         self,
@@ -117,23 +143,23 @@ class MemoryVectorStore:
     ) -> list[VectorSearchResult]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                """
-                SELECT memory_vector_ids.memory_entry_id, memory_vectors.distance
-                FROM memory_vectors
-                JOIN memory_vector_ids ON memory_vector_ids.rowid = memory_vectors.rowid
-                WHERE memory_vectors.embedding MATCH ? AND k = ?
-                ORDER BY memory_vectors.distance
+                f"""
+                SELECT {self._ids_table}.{self._id_column}, {self._vectors_table}.distance
+                FROM {self._vectors_table}
+                JOIN {self._ids_table} ON {self._ids_table}.rowid = {self._vectors_table}.rowid
+                WHERE {self._vectors_table}.embedding MATCH ? AND k = ?
+                ORDER BY {self._vectors_table}.distance
                 """,
                 (json.dumps(embedding), limit),
             ).fetchall()
 
         return [
             VectorSearchResult(
-                memory_entry_id=UUID(memory_entry_id),
+                entry_id=UUID(entry_id),
                 distance=float(distance),
                 score=1.0 / (1.0 + float(distance)),
             )
-            for memory_entry_id, distance in rows
+            for entry_id, distance in rows
         ]
 
     def _connect(self) -> sqlite3.Connection:

@@ -40,7 +40,7 @@ class _FakeVectorStore:
             return []
         return [
             VectorSearchResult(
-                memory_entry_id=self.result_id,
+                entry_id=self.result_id,
                 distance=0.1,
                 score=0.91,
             )

@@ -491,7 +491,7 @@ class MemoryService:
         if not results:
             return [], None
 
-        result_by_id = {result.memory_entry_id: result for result in results}
+        result_by_id = {result.entry_id: result for result in results}
         async with self._session_factory() as session:
             entry_repo = MemoryEntryRepo(session)
             entries = await entry_repo.list_active_by_ids(list(result_by_id))

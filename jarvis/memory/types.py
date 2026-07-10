@@ -6,7 +6,7 @@ from uuid import UUID
 
 @dataclass(frozen=True, slots=True)
 class VectorSearchResult:
-    memory_entry_id: UUID
+    entry_id: UUID
     distance: float
     score: float
 
