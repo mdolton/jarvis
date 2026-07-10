@@ -23,6 +23,7 @@ from discord import app_commands
 
 from jarvis.channels.base import OutboundMessage
 from jarvis.channels.discord_commands import ModelCommandDeps, register_model_commands
+from jarvis.channels.discord_stream import DiscordMessageStream
 from jarvis.core.types import ChannelKind, ChannelMessage
 
 _log = logging.getLogger(__name__)
@@ -181,6 +182,25 @@ class DiscordAdapter:
             raise ValueError(f"channel_ref {msg.channel_ref!r} is not a Discord user id") from e
         user = await self._client.fetch_user(user_id)
         await user.send(msg.text)
+
+    async def open_stream(self, channel_ref: str) -> DiscordMessageStream | None:
+        """Open a live-editing draft stream to a DM. Best-effort: any failure
+        returns None and the caller falls back to a plain send()."""
+        if self._client is None or not self._ready.is_set():
+            return None
+        try:
+            user_id = int(channel_ref)
+        except ValueError:
+            return None
+        try:
+            user = await self._client.fetch_user(user_id)
+            channel = user.dm_channel or await user.create_dm()
+        except Exception:
+            _log.exception("failed to open discord stream; falling back to plain send")
+            return None
+        stream = DiscordMessageStream(channel=channel)
+        await stream.start()
+        return stream
 
     async def _on_message(self, message: discord.Message) -> None:
         if not isinstance(message.channel, discord.DMChannel):
