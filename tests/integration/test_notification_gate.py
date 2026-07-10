@@ -227,7 +227,7 @@ async def test_noteworthy_scheduled_send_is_gated_over_budget(factory):
         )
 
     assert len(adapter.sent) == 1  # budget of 1
-    assert adapter.sent[0].text == "thing 0"
+    assert adapter.sent[0].text == "⚙️ [schedule:watcher] thing 0"  # provenance prefix
 
     # The suppressed ones ride the next digest.
     await scheduled.route(
