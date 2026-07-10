@@ -82,9 +82,18 @@ class TriggerDispatcher:
         )
 
     async def _run(self, request: InvocationRequest) -> AgentRunResult:
-        async with self._sem:
-            result = await self._runner.run(request)
+        stream = None
         if self._output_router is not None:
+            stream = await self._output_router.open_stream(request)
+        try:
+            async with self._sem:
+                result = await self._runner.run(request, stream=stream)
+            if stream is not None:
+                await stream.finish(result.final_output)
+        finally:
+            if stream is not None:
+                await stream.close()  # idempotent; guarantees typing clears
+        if self._output_router is not None and not (stream is not None and stream.delivered):
             await self._output_router.route(result)
         return result
 

@@ -53,3 +53,47 @@ async def test_send_rejects_non_integer_channel_ref():
                 text="x",
             )
         )
+
+
+class _FakeTyping:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def test_open_stream_returns_started_stream():
+    adapter = DiscordAdapter(token="tok", allowed_user_ids={"111"})
+
+    channel = MagicMock()
+    channel.typing = MagicMock(return_value=_FakeTyping())
+    fake_user = MagicMock()
+    fake_user.dm_channel = None
+    fake_user.create_dm = AsyncMock(return_value=channel)
+    fake_client = MagicMock()
+    fake_client.fetch_user = AsyncMock(return_value=fake_user)
+    adapter._client = fake_client
+    adapter._ready.set()
+
+    stream = await adapter.open_stream("111")
+    assert stream is not None
+    fake_client.fetch_user.assert_awaited_once_with(111)
+    channel.typing.assert_called_once()  # start() entered typing
+    await stream.close()
+
+
+async def test_open_stream_returns_none_when_not_ready():
+    adapter = DiscordAdapter(token="tok", allowed_user_ids={"111"})
+    assert await adapter.open_stream("111") is None
+
+
+async def test_open_stream_returns_none_on_bad_ref_or_error():
+    adapter = DiscordAdapter(token="tok", allowed_user_ids={"111"})
+    fake_client = MagicMock()
+    fake_client.fetch_user = AsyncMock(side_effect=RuntimeError("boom"))
+    adapter._client = fake_client
+    adapter._ready.set()
+
+    assert await adapter.open_stream("not-a-number") is None
+    assert await adapter.open_stream("111") is None  # fetch_user error swallowed

@@ -28,7 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jarvis.agents.runner import AgentRunResult
 from jarvis.audit.logger import AuditLogger
 from jarvis.channels.base import ChannelAdapter, OutboundMessage
-from jarvis.core.types import AuditEvent, AuditEventType, ChannelKind
+from jarvis.core.streaming import RunStream
+from jarvis.core.types import (
+    AuditEvent,
+    AuditEventType,
+    ChannelKind,
+    ChannelMessage,
+    InvocationRequest,
+)
 from jarvis.persistence.repositories import NotificationRepo
 
 _log = logging.getLogger(__name__)
@@ -212,6 +219,23 @@ class OutputRouter:
         self._gate = notification_gate
         self._event_notify_ref = event_notify_ref
         self._audit = audit
+
+    async def open_stream(self, request: InvocationRequest) -> RunStream | None:
+        """Open a live output stream for a channel-message run, if the
+        originating adapter supports it. Never raises — a stream is an
+        enhancement; the plain route() send is the guaranteed path."""
+        trigger = request.trigger
+        if not isinstance(trigger, ChannelMessage):
+            return None
+        adapter = self._by_kind.get(trigger.channel_kind.value)
+        opener = getattr(adapter, "open_stream", None)
+        if opener is None:
+            return None
+        try:
+            return await opener(trigger.channel_ref)
+        except Exception:
+            _log.exception("open_stream failed; run continues without streaming")
+            return None
 
     async def route(self, result: AgentRunResult) -> None:
         if result.channel_kind is ChannelKind.EVENT:
