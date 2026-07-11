@@ -31,3 +31,6 @@ config/mcp-servers.yaml
 
 # Claude Code local settings
 .claude/
+
+# Playwright MCP browser profile / traces
+.playwright-mcp/
