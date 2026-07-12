@@ -1,6 +1,7 @@
 """Repositories — the only way core modules touch the database."""
 
 import re
+import secrets
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,6 +17,7 @@ from jarvis.mcp.descriptor import MCPToolDescriptor
 from jarvis.persistence.models import (
     ActionRow,
     AuditEventRow,
+    AuthCodeRow,
     ConversationRow,
     DigestTemplateRow,
     DocumentChunkRow,
@@ -28,9 +30,13 @@ from jarvis.persistence.models import (
     MemoryRecallEventRow,
     MessageRow,
     NotificationRow,
+    RecoveryCodeRow,
     ScheduleRow,
+    SessionRow,
     SettingRow,
     TriggerRow,
+    UserRow,
+    WebAuthnCredentialRow,
 )
 
 
@@ -1432,3 +1438,262 @@ class NotificationRepo:
             row.digested_at = at
         await self._session.commit()
         return rows
+
+
+class AuthRepo:
+    """Users, login codes, sessions, passkeys, and recovery codes.
+
+    Codes and session tokens are stored as SHA-256 hashes: they are only ever
+    compared, never read back, so no reversible encryption (Fernet is for the
+    read-back secrets in ``jarvis/oauth/crypto.py``). Single-use secrets are
+    consumed with one atomic compare-and-set UPDATE so concurrent redemption
+    attempts can never both succeed.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    # -- users ---------------------------------------------------------
+
+    async def get_or_create_user(self, email: str) -> UserRow:
+        """Fetch or create the user for `email`. Caller enforces the allow-list.
+
+        The WebAuthn user_handle is random bytes fixed at creation and never
+        rotated — rotating would orphan discoverable credentials — and never
+        derived from the email (W3C WebAuthn §14.6.1 forbids PII in it).
+        """
+        result = await self._session.execute(select(UserRow).where(UserRow.email == email))
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return existing
+        row = UserRow(
+            email=email,
+            user_handle=secrets.token_bytes(16),
+            created_at=_utcnow(),
+        )
+        self._session.add(row)
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            result = await self._session.execute(select(UserRow).where(UserRow.email == email))
+            return result.scalar_one()
+        await self._session.refresh(row)
+        return row
+
+    # -- login codes ---------------------------------------------------
+
+    async def create_auth_code(
+        self,
+        *,
+        user_id: UUID,
+        code_hash: str,
+        nonce_hash: str | None,
+        expires_at: datetime,
+        ip: str | None = None,
+    ) -> AuthCodeRow:
+        row = AuthCodeRow(
+            user_id=user_id,
+            code_hash=code_hash,
+            nonce_hash=nonce_hash,
+            expires_at=expires_at,
+            requested_ip=ip,
+            requested_at=_utcnow(),
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def consume_auth_code(self, code_hash: str) -> UUID | None:
+        """Redeem a login code exactly once; None if unknown, consumed, or expired.
+
+        A single CAS UPDATE (not read-then-write) — under concurrent redemption
+        exactly one caller gets the user_id back.
+        """
+        now = _utcnow()
+        result = await self._session.execute(
+            update(AuthCodeRow)
+            .where(
+                AuthCodeRow.code_hash == code_hash,
+                AuthCodeRow.consumed_at.is_(None),
+                AuthCodeRow.expires_at > now,
+            )
+            .values(consumed_at=now)
+            .returning(AuthCodeRow.user_id)
+        )
+        user_id = result.scalar_one_or_none()
+        await self._session.commit()
+        return user_id
+
+    # -- sessions ------------------------------------------------------
+
+    async def create_session(
+        self,
+        *,
+        user_id: UUID,
+        token_hash: str,
+        expires_at: datetime,
+        user_agent: str | None = None,
+        ip: str | None = None,
+    ) -> SessionRow:
+        now = _utcnow()
+        row = SessionRow(
+            user_id=user_id,
+            token_hash=token_hash,
+            created_at=now,
+            last_seen_at=now,
+            expires_at=expires_at,
+            last_auth_at=now,
+            user_agent=user_agent,
+            ip=ip,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def get_session_by_token_hash(self, token_hash: str) -> SessionRow | None:
+        result = await self._session.execute(
+            select(SessionRow).where(SessionRow.token_hash == token_hash)
+        )
+        return result.scalar_one_or_none()
+
+    async def touch_session(self, session_id: UUID) -> None:
+        await self._session.execute(
+            update(SessionRow).where(SessionRow.id == session_id).values(last_seen_at=_utcnow())
+        )
+        await self._session.commit()
+
+    async def revoke_session(self, session_id: UUID) -> None:
+        await self._session.execute(
+            update(SessionRow)
+            .where(SessionRow.id == session_id, SessionRow.revoked_at.is_(None))
+            .values(revoked_at=_utcnow())
+        )
+        await self._session.commit()
+
+    async def revoke_all_sessions_for_user(self, user_id: UUID) -> int:
+        result = await self._session.execute(
+            update(SessionRow)
+            .where(SessionRow.user_id == user_id, SessionRow.revoked_at.is_(None))
+            .values(revoked_at=_utcnow())
+        )
+        await self._session.commit()
+        return result.rowcount or 0
+
+    async def delete_expired_sessions_and_codes(self) -> int:
+        """Purge hard-expired sessions and dead (expired or consumed) login codes."""
+        now = _utcnow()
+        sessions = await self._session.execute(
+            delete(SessionRow).where(SessionRow.expires_at <= now)
+        )
+        codes = await self._session.execute(
+            delete(AuthCodeRow).where(
+                (AuthCodeRow.expires_at <= now) | (AuthCodeRow.consumed_at.is_not(None))
+            )
+        )
+        await self._session.commit()
+        return (sessions.rowcount or 0) + (codes.rowcount or 0)
+
+    # -- webauthn credentials ------------------------------------------
+
+    async def add_credential(
+        self,
+        *,
+        credential_id: str,
+        user_id: UUID,
+        public_key: bytes,
+        sign_count: int = 0,
+        transports: list | None = None,
+        aaguid: str | None = None,
+        backup_eligible: bool = False,
+        backup_state: bool = False,
+        name: str | None = None,
+    ) -> WebAuthnCredentialRow:
+        row = WebAuthnCredentialRow(
+            credential_id=credential_id,
+            user_id=user_id,
+            public_key=public_key,
+            sign_count=sign_count,
+            transports=transports,
+            aaguid=aaguid,
+            backup_eligible=backup_eligible,
+            backup_state=backup_state,
+            name=name,
+            created_at=_utcnow(),
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def get_credential(self, credential_id: str) -> WebAuthnCredentialRow | None:
+        return await self._session.get(WebAuthnCredentialRow, credential_id)
+
+    async def list_credentials_for_user(self, user_id: UUID) -> list[WebAuthnCredentialRow]:
+        result = await self._session.execute(
+            select(WebAuthnCredentialRow)
+            .where(WebAuthnCredentialRow.user_id == user_id)
+            .order_by(WebAuthnCredentialRow.created_at.asc())
+        )
+        return list(result.scalars())
+
+    async def record_credential_use(
+        self,
+        credential_id: str,
+        *,
+        sign_count: int,
+        backup_state: bool | None = None,
+    ) -> None:
+        values: dict = {"sign_count": sign_count, "last_used_at": _utcnow()}
+        if backup_state is not None:
+            values["backup_state"] = backup_state
+        await self._session.execute(
+            update(WebAuthnCredentialRow)
+            .where(WebAuthnCredentialRow.credential_id == credential_id)
+            .values(**values)
+        )
+        await self._session.commit()
+
+    async def rename_credential(self, credential_id: str, name: str) -> None:
+        await self._session.execute(
+            update(WebAuthnCredentialRow)
+            .where(WebAuthnCredentialRow.credential_id == credential_id)
+            .values(name=name)
+        )
+        await self._session.commit()
+
+    async def delete_credential(self, credential_id: str) -> None:
+        row = await self._session.get(WebAuthnCredentialRow, credential_id)
+        if row is not None:
+            await self._session.delete(row)
+            await self._session.commit()
+
+    # -- recovery codes ------------------------------------------------
+
+    async def create_recovery_codes(
+        self, user_id: UUID, code_hashes: list[str]
+    ) -> list[RecoveryCodeRow]:
+        rows = [RecoveryCodeRow(user_id=user_id, code_hash=code_hash) for code_hash in code_hashes]
+        self._session.add_all(rows)
+        await self._session.commit()
+        for row in rows:
+            await self._session.refresh(row)
+        return rows
+
+    async def consume_recovery_code(self, user_id: UUID, code_hash: str) -> bool:
+        """Redeem a recovery code exactly once (same atomic CAS as login codes)."""
+        result = await self._session.execute(
+            update(RecoveryCodeRow)
+            .where(
+                RecoveryCodeRow.user_id == user_id,
+                RecoveryCodeRow.code_hash == code_hash,
+                RecoveryCodeRow.consumed_at.is_(None),
+            )
+            .values(consumed_at=_utcnow())
+            .returning(RecoveryCodeRow.id)
+        )
+        consumed = result.scalar_one_or_none() is not None
+        await self._session.commit()
+        return consumed
