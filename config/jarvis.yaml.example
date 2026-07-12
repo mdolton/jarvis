@@ -48,3 +48,19 @@ memory:
   document_chunk_chars: 1800
   document_chunk_overlap: 200
   max_document_results: 5
+
+# Dashboard authentication (WebAuthn passkeys + emailed login codes).
+# Schema-only for now: nothing is enforced while enabled is false.
+auth:
+  enabled: false
+  # Closed allow-list of emails permitted to sign in. No open signup, ever.
+  allowed_emails: []
+  # WebAuthn Relying Party ID: the registrable domain, WITHOUT a port.
+  rp_id: localhost
+  rp_name: Jarvis
+  # Full browser origin (scheme + host + port) asserted in WebAuthn responses.
+  expected_origin: http://localhost:8080
+  session_ttl_days: 30
+  session_idle_timeout_days: 7
+  code_ttl_minutes: 10
+  step_up_window_minutes: 5

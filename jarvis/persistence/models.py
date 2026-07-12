@@ -416,3 +416,82 @@ class NotificationRow(Base):
     digested_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
 
     __table_args__ = (Index("ix_notifications_status_created_at", "status", "created_at"),)
+
+
+class UserRow(Base):
+    """A dashboard account. Existence is gated by the config allow-list."""
+
+    __tablename__ = "users"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    email: Mapped[str] = mapped_column(String(255), unique=True)
+    # WebAuthn user.id handle: random bytes fixed at creation. Never rotated
+    # (rotating orphans discoverable credentials) and never derived from the
+    # email or any other PII (W3C WebAuthn §14.6.1 is normative on this).
+    user_handle: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    disabled_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+
+class AuthCodeRow(Base):
+    """One emailed login code. Stored SHA-256 hashed; consumed via atomic CAS."""
+
+    __tablename__ = "auth_codes"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    nonce_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime())
+    consumed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    requested_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(TZDateTime())
+
+
+class SessionRow(Base):
+    """A dashboard login session, looked up by SHA-256 token hash."""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    last_seen_at: Mapped[datetime] = mapped_column(TZDateTime())
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    last_auth_at: Mapped[datetime] = mapped_column(TZDateTime())
+    user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (Index("ix_sessions_token_hash_unique", "token_hash", unique=True),)
+
+
+class WebAuthnCredentialRow(Base):
+    """A registered passkey. credential_id is the authenticator-issued ID (base64url)."""
+
+    __tablename__ = "webauthn_credentials"
+
+    credential_id: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0)
+    transports: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    aaguid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    backup_eligible: Mapped[bool] = mapped_column(default=False)
+    backup_state: Mapped[bool] = mapped_column(default=False)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    last_used_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+
+class RecoveryCodeRow(Base):
+    """One single-use recovery code. Stored SHA-256 hashed; consumed via atomic CAS."""
+
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    consumed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)

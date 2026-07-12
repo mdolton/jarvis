@@ -66,10 +66,32 @@ class EventsConfig(_StrictModel):
     coalesce_window_sec: float = Field(default=30.0, ge=0.0)
 
 
+class AuthConfig(_StrictModel):
+    """Dashboard authentication (WebAuthn passkeys + emailed login codes).
+
+    Schema-only for now: nothing is enforced until `enabled` is flipped on.
+    Note rp_id and expected_origin are NOT interchangeable — rp_id is the
+    registrable domain with no port; expected_origin is the full browser
+    origin (scheme + host + port) asserted in WebAuthn responses.
+    """
+
+    enabled: bool = False
+    # Closed allow-list of emails permitted to sign in. No open signup, ever.
+    allowed_emails: list[str] = Field(default_factory=list)
+    rp_id: str = "localhost"
+    rp_name: str = "Jarvis"
+    expected_origin: str = "http://localhost:8080"
+    session_ttl_days: int = Field(default=30, ge=1)
+    session_idle_timeout_days: int = Field(default=7, ge=1)
+    code_ttl_minutes: int = Field(default=10, ge=1)
+    step_up_window_minutes: int = Field(default=5, ge=1)
+
+
 class JarvisConfig(_StrictModel):
     llm: LLMConfig
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     timezone: str = "UTC"
     # Free-text home location ("Austin, Texas") surfaced to every agent run as
     # user context, so briefs can fetch a local weather forecast without a
