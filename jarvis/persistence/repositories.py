@@ -1481,6 +1481,9 @@ class AuthRepo:
         await self._session.refresh(row)
         return row
 
+    async def get_user(self, user_id: UUID) -> UserRow | None:
+        return await self._session.get(UserRow, user_id)
+
     # -- login codes ---------------------------------------------------
 
     async def create_auth_code(
@@ -1558,6 +1561,27 @@ class AuthRepo:
             select(SessionRow).where(SessionRow.token_hash == token_hash)
         )
         return result.scalar_one_or_none()
+
+    async def rotate_session_token(self, token_hash: str, *, new_token_hash: str) -> bool:
+        """Swap a live session's token hash (rotation at an authentication event).
+
+        Same CAS shape as consume_auth_code: matching on the old hash of a
+        non-revoked session makes concurrent rotations yield one winner.
+        """
+        now = _utcnow()
+        result = await self._session.execute(
+            update(SessionRow)
+            .where(
+                SessionRow.token_hash == token_hash,
+                SessionRow.revoked_at.is_(None),
+                SessionRow.expires_at > now,
+            )
+            .values(token_hash=new_token_hash, last_auth_at=now)
+            .returning(SessionRow.id)
+        )
+        rotated = result.scalar_one_or_none() is not None
+        await self._session.commit()
+        return rotated
 
     async def touch_session(self, session_id: UUID) -> None:
         await self._session.execute(

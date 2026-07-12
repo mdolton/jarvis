@@ -82,7 +82,7 @@ async def client(tmp_path):
     ctx = SimpleNamespace(session_factory=factory)
     app = create_app(app_context=ctx)
     yield (
-        TestClient(app),
+        TestClient(app, headers={"origin": "http://testserver"}),
         pending.id,
         active.id,
         rejected_preference.id,
@@ -95,7 +95,16 @@ async def client(tmp_path):
 
 
 def test_memory_page_lists_preferences_entries_and_evidence(client):
-    c, pending_id, active_id, rejected_preference_id, archived_preference_id, active_entry_id, archived_entry_id, _ = client
+    (
+        c,
+        pending_id,
+        active_id,
+        rejected_preference_id,
+        archived_preference_id,
+        active_entry_id,
+        archived_entry_id,
+        _,
+    ) = client
 
     resp = c.get("/memory")
 
@@ -175,7 +184,9 @@ def test_preference_routes_update_state_and_redirect(client):
 
 def test_preference_routes_reject_invalid_transition_and_missing_ids(client):
     c, _, active_id, rejected_preference_id, archived_preference_id, _, _, _ = client
-    safe_client = TestClient(c.app, raise_server_exceptions=False)
+    safe_client = TestClient(
+        c.app, raise_server_exceptions=False, headers={"origin": "http://testserver"}
+    )
 
     invalid_reject = safe_client.post(
         f"/memory/preferences/{active_id}/reject",
@@ -206,7 +217,9 @@ def test_preference_routes_reject_invalid_transition_and_missing_ids(client):
 
 def test_entry_archive_rejects_missing_and_already_archived_rows(client):
     c, _, _, _, _, _, archived_entry_id, _ = client
-    safe_client = TestClient(c.app, raise_server_exceptions=False)
+    safe_client = TestClient(
+        c.app, raise_server_exceptions=False, headers={"origin": "http://testserver"}
+    )
 
     archived = safe_client.post(
         f"/memory/entries/{archived_entry_id}/archive",
@@ -293,7 +306,7 @@ async def memory_client(tmp_path):
     )
 
     app = create_app(app_context=ctx)
-    client = TestClient(app)
+    client = TestClient(app, headers={"origin": "http://testserver"})
     yield client, dup
     await engine.dispose()
 
@@ -326,7 +339,7 @@ async def memory_client_no_service(tmp_path):
     ctx.memory_service = None
 
     app = create_app(app_context=ctx)
-    client = TestClient(app)
+    client = TestClient(app, headers={"origin": "http://testserver"})
     yield client
     await engine.dispose()
 
@@ -350,7 +363,7 @@ async def memory_client_failing_service(tmp_path):
     ctx.memory_service.find_duplicate_preferences = AsyncMock(side_effect=RuntimeError("boom"))
 
     app = create_app(app_context=ctx)
-    client = TestClient(app)
+    client = TestClient(app, headers={"origin": "http://testserver"})
     yield client
     await engine.dispose()
 

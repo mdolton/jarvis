@@ -29,7 +29,7 @@ async def client_and_factory(tmp_path):
     )
 
     app = create_app(app_context=ctx)
-    client = TestClient(app)
+    client = TestClient(app, headers={"origin": "http://testserver"})
     yield client, factory
 
     await engine.dispose()

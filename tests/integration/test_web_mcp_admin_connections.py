@@ -31,15 +31,17 @@ async def client(tmp_path):
     ctx.mcp_manager.connect_connection = AsyncMock()
     ctx.mcp_manager.disconnect = AsyncMock()
     app = create_app(app_context=ctx)
-    c = TestClient(app)
+    c = TestClient(app, headers={"origin": "http://testserver"})
     yield c
     await engine.dispose()
 
 
 def test_add_connection_creates_row(client):
-    resp = client.post("/mcp/connections/add",
-                       data={"provider_key": "calendar", "label": "Work"},
-                       follow_redirects=False)
+    resp = client.post(
+        "/mcp/connections/add",
+        data={"provider_key": "calendar", "label": "Work"},
+        follow_redirects=False,
+    )
     assert resp.status_code == 303
     assert "Work" in client.get("/mcp").text
 
@@ -93,11 +95,15 @@ def test_add_http_connection_encrypts_headers_and_calls_manager(client):
 
 
 def test_disable_then_enable_connection(client):
-    client.post("/mcp/connections/add", data={"provider_key": "gmail", "label": "Personal"},
-                follow_redirects=False)
+    client.post(
+        "/mcp/connections/add",
+        data={"provider_key": "gmail", "label": "Personal"},
+        follow_redirects=False,
+    )
     page = client.get("/mcp").text
     import re
-    cid = re.search(r'/mcp/connections/([0-9a-f-]{36})/disable', page).group(1)
+
+    cid = re.search(r"/mcp/connections/([0-9a-f-]{36})/disable", page).group(1)
     assert client.post(f"/mcp/connections/{cid}/disable", follow_redirects=False).status_code == 303
     client.app.state.ctx.mcp_manager.disconnect.assert_awaited()
     assert client.post(f"/mcp/connections/{cid}/enable", follow_redirects=False).status_code == 303

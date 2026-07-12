@@ -29,7 +29,7 @@ async def client(tmp_path):
     ctx.mcp_manager = MagicMock()
     ctx.mcp_manager.disconnect = AsyncMock()
     app = create_app(app_context=ctx)
-    c = TestClient(app)
+    c = TestClient(app, headers={"origin": "http://testserver"})
     c._factory = factory
     yield c
     await engine.dispose()

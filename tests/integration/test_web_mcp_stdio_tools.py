@@ -37,7 +37,7 @@ async def client_and_factory(tmp_path):
     ctx.audit.emit = AsyncMock()
     ctx.mcp_manager = MagicMock()
     app = create_app(app_context=ctx)
-    yield TestClient(app), factory, ctx
+    yield TestClient(app, headers={"origin": "http://testserver"}), factory, ctx
     await engine.dispose()
 
 

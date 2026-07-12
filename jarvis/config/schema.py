@@ -78,6 +78,10 @@ class AuthConfig(_StrictModel):
     enabled: bool = False
     # Closed allow-list of emails permitted to sign in. No open signup, ever.
     allowed_emails: list[str] = Field(default_factory=list)
+    # Secure + __Host- prefixed session cookie. The __Host- prefix requires
+    # Secure/Path=/ and no Domain, so the cookie will not set over plain http —
+    # right behind TLS, wrong for local dev on http://localhost (set False there).
+    secure_cookies: bool = True
     rp_id: str = "localhost"
     rp_name: str = "Jarvis"
     expected_origin: str = "http://localhost:8080"

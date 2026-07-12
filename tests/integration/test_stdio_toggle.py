@@ -30,7 +30,7 @@ async def client(tmp_path):
     ctx.config = MagicMock()
     ctx.config.mcp_servers.servers = []
     app = create_app(app_context=ctx)
-    c = TestClient(app)
+    c = TestClient(app, headers={"origin": "http://testserver"})
     c._factory = factory
     yield c
     await engine.dispose()

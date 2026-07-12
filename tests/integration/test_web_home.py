@@ -28,7 +28,7 @@ def _mock_context():
 def test_home_page_renders_status(tmp_path):
     ctx = _mock_context()
     app = create_app(app_context=ctx)
-    client = TestClient(app)
+    client = TestClient(app, headers={"origin": "http://testserver"})
     resp = client.get("/")
     assert resp.status_code == 200
     assert "qwen2.5" in resp.text
@@ -38,7 +38,7 @@ def test_home_page_renders_status(tmp_path):
 def test_home_manual_run_executes_prompt(tmp_path):
     ctx = _mock_context()
     app = create_app(app_context=ctx)
-    client = TestClient(app)
+    client = TestClient(app, headers={"origin": "http://testserver"})
 
     resp = client.post("/manual-runs", data={"prompt": "summarize today"})
 
@@ -53,7 +53,7 @@ def test_home_manual_run_executes_prompt(tmp_path):
 def test_home_page_renders_diagnostics(tmp_path):
     ctx = _mock_context()
     app = create_app(app_context=ctx)
-    client = TestClient(app)
+    client = TestClient(app, headers={"origin": "http://testserver"})
 
     resp = client.get("/")
 

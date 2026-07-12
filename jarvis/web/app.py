@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 
+from jarvis.web.auth_middleware import SessionAuthMiddleware
 from jarvis.web.security import SameOriginUnsafeMethodMiddleware
 from jarvis.web.time_format import configured_timezone, format_server_local
 
@@ -29,6 +30,9 @@ def create_app(*, app_context=None) -> FastAPI:
     """
     app = FastAPI(title="Jarvis Dashboard", docs_url=None, redoc_url=None)
     app.add_middleware(SameOriginUnsafeMethodMiddleware)
+    # Added last = runs first: the session gate sees every request before the
+    # same-origin check does.
+    app.add_middleware(SessionAuthMiddleware)
 
     # Attach context so route handlers can access repos, config, etc.
     app.state.ctx = app_context
@@ -43,8 +47,10 @@ def create_app(*, app_context=None) -> FastAPI:
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     # Register routes.
+    from jarvis.web.routes.auth import router as auth_router
     from jarvis.web.routes.health import router as health_router
 
+    app.include_router(auth_router)
     app.include_router(health_router)
 
     from jarvis.web.routes.home import router as home_router
