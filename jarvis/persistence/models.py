@@ -495,3 +495,27 @@ class RecoveryCodeRow(Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     code_hash: Mapped[str] = mapped_column(String(64))
     consumed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+
+
+class WebAuthnChallengeRow(Base):
+    """One outstanding WebAuthn ceremony challenge, stored server-side.
+
+    The client is only ever handed the row id; the challenge bytes the
+    authenticator must sign are read back from here at verification, never
+    from anything the client echoes. Single-use (consumed via atomic CAS)
+    with a short TTL. user_id is set for registration ceremonies (binding
+    the challenge to the enrolling session's user) and NULL for logins,
+    where the user is unknown until the discoverable credential answers.
+    """
+
+    __tablename__ = "webauthn_challenges"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(16))  # "register" | "login"
+    user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    challenge: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime())
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime())
+    consumed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)

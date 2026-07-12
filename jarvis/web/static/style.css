@@ -395,3 +395,14 @@ code {
   background: var(--err-bg);
   color: var(--err-fg);
 }
+
+.recovery-codes {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 1.05rem;
+  letter-spacing: 0.05em;
+  line-height: 1.7;
+  user-select: all;
+}

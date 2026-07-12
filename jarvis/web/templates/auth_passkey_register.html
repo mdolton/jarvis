@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Jarvis — set up a passkey</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <main class="auth-card" id="enroll-card">
+        <h1>Set up a passkey</h1>
+        {% if enrolled %}
+        <p class="auth-hint">Add another passkey for <strong>{{ email }}</strong>
+        — for example on a second device.</p>
+        {% else %}
+        <p class="auth-hint">You&rsquo;re signed in as <strong>{{ email }}</strong>.
+        Emailed codes are only for enrollment and recovery, so a passkey is
+        required before you can use the dashboard. It takes a few seconds:
+        your browser will ask for a fingerprint, face, or PIN.</p>
+        {% endif %}
+        <form id="enroll-form" onsubmit="return false">
+            <input type="text" id="passkey-name" maxlength="128"
+                   placeholder="Name this passkey (e.g. MacBook Touch ID)">
+            <button type="submit" id="passkey-create">Create a passkey</button>
+        </form>
+        <p class="auth-error" id="passkey-error" hidden></p>
+        <p class="auth-hint" id="passkey-unsupported" hidden>This browser
+        doesn&rsquo;t support passkeys. Try a current Chrome, Firefox, Safari,
+        or Edge.</p>
+        <form method="post" action="/auth/logout">
+            <button type="submit" class="btn-danger">Sign out</button>
+        </form>
+    </main>
+
+    <template id="recovery-template">
+        <h1>Save your recovery codes</h1>
+        <p class="auth-hint">These 8 one-time codes are the backstop if you
+        lose every passkey and can&rsquo;t receive email. <strong>They are
+        shown only once</strong> — store them somewhere safe (a password
+        manager works).</p>
+        <pre class="recovery-codes" id="recovery-codes"></pre>
+        <button type="button" id="recovery-copy">Copy codes</button>
+        <p class="auth-hint"><a href="/">I&rsquo;ve saved them — continue to
+        the dashboard</a></p>
+    </template>
+
+    <script src="/static/passkeys.js"></script>
+    <script>
+    (function () {
+        var form = document.getElementById("enroll-form");
+        var err = document.getElementById("passkey-error");
+
+        if (!window.jarvisPasskeys || !jarvisPasskeys.supported()) {
+            form.hidden = true;
+            document.getElementById("passkey-unsupported").hidden = false;
+            return;
+        }
+
+        form.addEventListener("submit", async function () {
+            err.hidden = true;
+            var result;
+            try {
+                result = await jarvisPasskeys.register(
+                    document.getElementById("passkey-name").value.trim());
+            } catch (e) {
+                if (e.name === "AbortError" || e.name === "NotAllowedError") return;
+                err.textContent = e.message || "Passkey setup failed. Try again.";
+                err.hidden = false;
+                return;
+            }
+            if (result.recovery_codes && result.recovery_codes.length) {
+                showRecoveryCodes(result.recovery_codes);
+            } else {
+                window.location.assign("/");
+            }
+        });
+
+        function showRecoveryCodes(codes) {
+            var card = document.getElementById("enroll-card");
+            card.replaceChildren(
+                document.getElementById("recovery-template").content.cloneNode(true));
+            document.getElementById("recovery-codes").textContent = codes.join("\n");
+            document.getElementById("recovery-copy").addEventListener("click", function () {
+                navigator.clipboard.writeText(codes.join("\n"));
+                this.textContent = "Copied";
+            });
+        }
+    })();
+    </script>
+</body>
+</html>

@@ -36,6 +36,7 @@ from jarvis.persistence.models import (
     SettingRow,
     TriggerRow,
     UserRow,
+    WebAuthnChallengeRow,
     WebAuthnCredentialRow,
 )
 
@@ -1683,7 +1684,8 @@ class AuthRepo:
         return result.rowcount or 0
 
     async def delete_expired_sessions_and_codes(self) -> int:
-        """Purge hard-expired sessions and dead (expired or consumed) login codes."""
+        """Purge hard-expired sessions and dead (expired or consumed) login
+        codes and WebAuthn challenges."""
         now = _utcnow()
         sessions = await self._session.execute(
             delete(SessionRow).where(SessionRow.expires_at <= now)
@@ -1693,8 +1695,14 @@ class AuthRepo:
                 (AuthCodeRow.expires_at <= now) | (AuthCodeRow.consumed_at.is_not(None))
             )
         )
+        challenges = await self._session.execute(
+            delete(WebAuthnChallengeRow).where(
+                (WebAuthnChallengeRow.expires_at <= now)
+                | (WebAuthnChallengeRow.consumed_at.is_not(None))
+            )
+        )
         await self._session.commit()
-        return (sessions.rowcount or 0) + (codes.rowcount or 0)
+        return (sessions.rowcount or 0) + (codes.rowcount or 0) + (challenges.rowcount or 0)
 
     # -- webauthn credentials ------------------------------------------
 
@@ -1797,3 +1805,64 @@ class AuthRepo:
         consumed = result.scalar_one_or_none() is not None
         await self._session.commit()
         return consumed
+
+    async def has_recovery_codes(self, user_id: UUID) -> bool:
+        result = await self._session.execute(
+            select(RecoveryCodeRow.id).where(RecoveryCodeRow.user_id == user_id).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def has_credentials(self, user_id: UUID) -> bool:
+        result = await self._session.execute(
+            select(WebAuthnCredentialRow.credential_id)
+            .where(WebAuthnCredentialRow.user_id == user_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    # -- webauthn challenges -------------------------------------------
+
+    async def create_challenge(
+        self,
+        *,
+        kind: str,
+        challenge: bytes,
+        expires_at: datetime,
+        user_id: UUID | None = None,
+    ) -> WebAuthnChallengeRow:
+        row = WebAuthnChallengeRow(
+            kind=kind,
+            user_id=user_id,
+            challenge=challenge,
+            created_at=_utcnow(),
+            expires_at=expires_at,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def consume_challenge(
+        self, challenge_id: UUID, *, kind: str
+    ) -> tuple[bytes, UUID | None] | None:
+        """Redeem a ceremony challenge exactly once; None if unknown, wrong
+        kind, consumed, or expired.
+
+        Returns (challenge bytes, bound user_id) — the server-stored value the
+        signed clientDataJSON must be verified against; nothing the client
+        echoes is trusted. Same atomic CAS shape as consume_auth_code.
+        """
+        result = await self._session.execute(
+            update(WebAuthnChallengeRow)
+            .where(
+                WebAuthnChallengeRow.id == challenge_id,
+                WebAuthnChallengeRow.kind == kind,
+                WebAuthnChallengeRow.consumed_at.is_(None),
+                WebAuthnChallengeRow.expires_at > _utcnow(),
+            )
+            .values(consumed_at=_utcnow())
+            .returning(WebAuthnChallengeRow.challenge, WebAuthnChallengeRow.user_id)
+        )
+        row = result.one_or_none()
+        await self._session.commit()
+        return (row.challenge, row.user_id) if row is not None else None

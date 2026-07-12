@@ -190,9 +190,12 @@ async def test_full_login_flow_issues_session(factory):
         assert verified.headers["location"] == "/"
         assert "jarvis_session" in verified.cookies
 
-        # The session actually authenticates a protected route.
+        # The session is live, but a freshly-enrolled account has no passkey
+        # yet, so the middleware forces it to enrollment — NOT back to login.
         home = await client.get("/", follow_redirects=False)
-        assert home.status_code != 302
+        assert home.status_code == 302
+        assert home.headers["location"] == "/auth/passkey/register"
+        assert (await client.get("/auth/passkey/register")).status_code == 200
 
     # The code was consumed: replaying it in the same browser fails.
     async with factory() as session:
