@@ -47,7 +47,7 @@ async def _make_connection(factory, *, provider_key: str, runtime_name: str):
 
 def make_app(ctx) -> TestClient:
     app = create_app(app_context=ctx)
-    return TestClient(app)
+    return TestClient(app, headers={"origin": "http://testserver"})
 
 
 def make_flow(factory, handler, *, base_url="http://localhost:8080"):
@@ -104,9 +104,7 @@ async def test_connect_returns_302_to_consent_url(factory):
 
 
 async def test_connect_unknown_connection_returns_404(factory):
-    flow = make_flow(
-        factory, lambda r: httpx.Response(404)
-    )
+    flow = make_flow(factory, lambda r: httpx.Response(404))
     ctx = make_ctx(factory, flow)
     client = make_app(ctx)
     # Bad UUID -> 404.
@@ -140,7 +138,9 @@ async def test_callback_happy_path_renders_success_and_swaps_server(factory):
         if request.url.path == "/oauth/register":
             return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
         if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+            return httpx.Response(
+                200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+            )
         return httpx.Response(404)
 
     flow = make_flow(factory, handler)
@@ -247,7 +247,9 @@ async def test_disconnect_revokes_even_if_remove_fails(factory):
         if request.url.path == "/oauth/register":
             return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
         if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+            return httpx.Response(
+                200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+            )
         if request.url.path == "/oauth/revoke":
             return httpx.Response(200)
         return httpx.Response(404)
@@ -282,7 +284,9 @@ async def test_callback_marks_needs_reauth_when_attach_fails(factory):
         if request.url.path == "/oauth/register":
             return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
         if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+            return httpx.Response(
+                200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+            )
         return httpx.Response(404)
 
     flow = make_flow(factory, handler)
@@ -354,7 +358,9 @@ async def test_disconnect_revokes_and_removes(factory):
         if request.url.path == "/oauth/register":
             return httpx.Response(201, json={"client_id": "cid", "client_secret": "sec"})
         if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600})
+            return httpx.Response(
+                200, json={"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}
+            )
         if request.url.path == "/oauth/revoke":
             return httpx.Response(200)
         return httpx.Response(404)

@@ -67,7 +67,7 @@ async def client(tmp_path):
     ctx.catalog = ProviderCatalog(factory)
 
     app = create_app(app_context=ctx)
-    yield TestClient(app)
+    yield TestClient(app, headers={"origin": "http://testserver"})
     await engine.dispose()
 
 
@@ -135,7 +135,7 @@ async def client_with_slotted_ctx(tmp_path):
             catalog=ProviderCatalog(factory),
         )
     )
-    yield TestClient(app), mcp_manager
+    yield TestClient(app, headers={"origin": "http://testserver"}), mcp_manager
     await engine.dispose()
 
 
@@ -171,7 +171,7 @@ async def client_with_providers(tmp_path):
     ctx.session_factory = factory
     ctx.catalog = ProviderCatalog(factory)
     app = create_app(app_context=ctx)
-    yield TestClient(app), factory
+    yield TestClient(app, headers={"origin": "http://testserver"}), factory
     await engine.dispose()
 
 
@@ -211,7 +211,7 @@ async def client_with_connection(tmp_path):
     ctx.session_factory = factory
     ctx.catalog = ProviderCatalog(factory)
     app = create_app(app_context=ctx)
-    yield TestClient(app), cid
+    yield TestClient(app, headers={"origin": "http://testserver"}), cid
     await engine.dispose()
 
 
@@ -254,7 +254,7 @@ async def client_with_needs_reauth(tmp_path):
     ctx.session_factory = factory
     ctx.catalog = ProviderCatalog(factory)
     app = create_app(app_context=ctx)
-    yield TestClient(app), cid
+    yield TestClient(app, headers={"origin": "http://testserver"}), cid
     await engine.dispose()
 
 

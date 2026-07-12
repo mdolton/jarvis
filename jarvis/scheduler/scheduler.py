@@ -120,6 +120,17 @@ class Scheduler:
         await self._aps.__aenter__()
         await self._aps.start_in_background()
 
+        from jarvis.scheduler.auth_jobs import auth_session_cleanup
+
+        # Daily prune of expired dashboard sessions and dead login codes so
+        # the auth tables don't grow forever.
+        await self._aps.add_schedule(
+            auth_session_cleanup,
+            CronTrigger(hour=4, minute=0),
+            kwargs={"session_factory": self._session_factory},
+            id="auth_session_cleanup",
+        )
+
         if self._oauth_flow is not None and self._oauth_mcp_manager is not None:
             from apscheduler.triggers.interval import IntervalTrigger
 

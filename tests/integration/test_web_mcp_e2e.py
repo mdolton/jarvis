@@ -53,7 +53,7 @@ async def client(tmp_path):
         catalog=ctx.catalog,
     )
     app = create_app(app_context=ctx)
-    yield TestClient(app)
+    yield TestClient(app, headers={"origin": "http://testserver"})
     await engine.dispose()
 
 

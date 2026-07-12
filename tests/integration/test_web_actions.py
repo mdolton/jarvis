@@ -60,7 +60,14 @@ async def client(tmp_path):
         action_service=SimpleNamespace(approve=AsyncMock(), reject=AsyncMock()),
     )
     app = create_app(app_context=ctx)
-    yield TestClient(app), pending.id, failed.id, conversation.id, trigger.id, ctx
+    yield (
+        TestClient(app, headers={"origin": "http://testserver"}),
+        pending.id,
+        failed.id,
+        conversation.id,
+        trigger.id,
+        ctx,
+    )
     await engine.dispose()
 
 
@@ -149,7 +156,9 @@ def test_reject_posts_to_service(client):
 def test_direct_approve_post_for_non_pending_action_returns_conflict(client):
     c, _, action_id, _, _, ctx = client
     ctx.action_service.approve.side_effect = ValueError("not pending")
-    safe_client = TestClient(c.app, raise_server_exceptions=False)
+    safe_client = TestClient(
+        c.app, raise_server_exceptions=False, headers={"origin": "http://testserver"}
+    )
 
     resp = safe_client.post(f"/actions/{action_id}/approve", follow_redirects=False)
 
@@ -162,7 +171,9 @@ def test_direct_approve_post_for_non_pending_action_returns_conflict(client):
 def test_direct_reject_post_for_non_pending_action_returns_conflict(client):
     c, _, action_id, _, _, ctx = client
     ctx.action_service.reject.side_effect = ValueError("not pending")
-    safe_client = TestClient(c.app, raise_server_exceptions=False)
+    safe_client = TestClient(
+        c.app, raise_server_exceptions=False, headers={"origin": "http://testserver"}
+    )
 
     resp = safe_client.post(
         f"/actions/{action_id}/reject",

@@ -42,7 +42,7 @@ async def client(tmp_path):
     ctx.config.secrets_key = generate_key().encode()
     ctx.oauth_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     app = create_app(app_context=ctx)
-    yield TestClient(app)
+    yield TestClient(app, headers={"origin": "http://testserver"})
     await engine.dispose()
 
 
