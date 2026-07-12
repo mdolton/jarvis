@@ -50,9 +50,9 @@ async def test_consume_auth_code_roundtrip(session_factory):
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
             ip="127.0.0.1",
         )
-        assert await repo.consume_auth_code(_hash("123456")) == user.id
+        assert await repo.consume_auth_code(_hash("123456"), nonce_hash=_hash("nonce")) == user.id
         # Second redemption of the same code must fail.
-        assert await repo.consume_auth_code(_hash("123456")) is None
+        assert await repo.consume_auth_code(_hash("123456"), nonce_hash=_hash("nonce")) is None
 
 
 async def test_consume_auth_code_rejects_expired_and_unknown(session_factory):
@@ -67,6 +67,75 @@ async def test_consume_auth_code_rejects_expired_and_unknown(session_factory):
         )
         assert await repo.consume_auth_code(_hash("stale")) is None
         assert await repo.consume_auth_code(_hash("never-issued")) is None
+
+
+async def test_consume_auth_code_requires_exact_nonce_match(session_factory):
+    async with session_factory() as session:
+        repo = AuthRepo(session)
+        user = await repo.get_or_create_user("me@example.com")
+        await repo.create_auth_code(
+            user_id=user.id,
+            code_hash=_hash("bound"),
+            nonce_hash=_hash("browser-a"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        # Wrong nonce and missing nonce both miss; the exact nonce redeems.
+        assert await repo.consume_auth_code(_hash("bound"), nonce_hash=_hash("browser-b")) is None
+        assert await repo.consume_auth_code(_hash("bound")) is None
+        assert (
+            await repo.consume_auth_code(_hash("bound"), nonce_hash=_hash("browser-a")) == user.id
+        )
+
+
+async def test_replace_auth_code_invalidates_and_carries_attempts(session_factory):
+    async with session_factory() as session:
+        repo = AuthRepo(session)
+        user = await repo.get_or_create_user("me@example.com")
+        await repo.create_auth_code(
+            user_id=user.id,
+            code_hash=_hash("old"),
+            nonce_hash=_hash("nonce-old"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        for _ in range(3):
+            await repo.record_code_attempt(_hash("nonce-old"))
+
+        replaced = await repo.replace_auth_code(
+            user_id=user.id,
+            code_hash=_hash("new"),
+            nonce_hash=_hash("nonce-new"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        # The old code is dead, and the guess budget did NOT reset.
+        assert await repo.consume_auth_code(_hash("old"), nonce_hash=_hash("nonce-old")) is None
+        assert replaced.attempts == 3
+
+
+async def test_record_code_attempt_and_max_attempts_gate(session_factory):
+    async with session_factory() as session:
+        repo = AuthRepo(session)
+        user = await repo.get_or_create_user("me@example.com")
+        await repo.create_auth_code(
+            user_id=user.id,
+            code_hash=_hash("guarded"),
+            nonce_hash=_hash("nonce"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        assert await repo.record_code_attempt(_hash("wrong-nonce")) is None
+        for expected in (1, 2, 3):
+            assert await repo.record_code_attempt(_hash("nonce")) == expected
+        assert (
+            await repo.consume_auth_code(
+                _hash("guarded"), nonce_hash=_hash("nonce"), max_attempts=2
+            )
+            is None
+        )
+        assert (
+            await repo.consume_auth_code(
+                _hash("guarded"), nonce_hash=_hash("nonce"), max_attempts=3
+            )
+            == user.id
+        )
 
 
 async def test_concurrent_consume_auth_code_single_winner(session_factory):

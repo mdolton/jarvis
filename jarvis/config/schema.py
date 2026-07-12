@@ -91,11 +91,80 @@ class AuthConfig(_StrictModel):
     step_up_window_minutes: int = Field(default=5, ge=1)
 
 
+class MailConfig(_StrictModel):
+    """Outbound mail for login codes.
+
+    Mailtrap is TWO products, and wiring the wrong one fails silently:
+    - Email SANDBOX (sandbox.smtp.mailtrap.io) is a FAKE SMTP server. It
+      captures mail into a web inbox and never delivers it — every send
+      returns 250 OK while no login code ever reaches anyone.
+    - Email SENDING (live.smtp.mailtrap.io / send.api.mailtrap.io) is the
+      real transactional delivery product.
+    The validators below keep the two unmistakably distinct and refuse to
+    start production (auth.enabled) pointed at the sandbox — see
+    JarvisConfig._no_sandbox_mail_when_auth_enabled.
+
+    Live sending only works from a VERIFIED domain (from_addr must be on
+    it). An unverified demo domain can only mail the Mailtrap registration
+    address — fine for one person, silently broken for the second.
+    """
+
+    provider: Literal["mailtrap_api", "mailtrap_smtp", "console"] = "console"
+    # Mailtrap API token (${JARVIS_MAILTRAP_TOKEN}). Auth header per
+    # https://docs.mailtrap.io/developers/authentication: either
+    # `Api-Token: <token>` or `Authorization: Bearer <token>`.
+    api_token: str | None = None
+    # SMTP path only. sandbox.smtp.mailtrap.io captures; live.smtp.mailtrap.io
+    # delivers. The `sandbox` flag must agree with the host chosen here.
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    # Live SMTP authenticates as user "api" with the api_token as password;
+    # sandbox inboxes have their own credentials. Both default from api_token.
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    # Sender address — must be on the verified sending domain or nothing sends.
+    from_addr: str = "jarvis@localhost"
+    # Explicit declaration that mail is being CAPTURED, not delivered.
+    sandbox: bool = False
+
+    @model_validator(mode="after")
+    def _mailtrap_products_kept_distinct(self) -> "MailConfig":
+        if self.provider == "mailtrap_api":
+            if not self.api_token:
+                raise ValueError("mail.provider mailtrap_api requires mail.api_token")
+            if self.sandbox:
+                raise ValueError(
+                    "mail.sandbox is only supported over SMTP (sandbox.smtp.mailtrap.io); "
+                    "the send API is live delivery only — use mailtrap_smtp or console"
+                )
+        if self.provider == "mailtrap_smtp":
+            if not self.smtp_host:
+                raise ValueError("mail.provider mailtrap_smtp requires mail.smtp_host")
+            looks_sandbox = "sandbox" in self.smtp_host
+            if looks_sandbox and not self.sandbox:
+                raise ValueError(
+                    f"mail.smtp_host {self.smtp_host!r} is the Mailtrap SANDBOX: it captures "
+                    "mail and NEVER delivers it. If that is intentional (local dev) set "
+                    "mail.sandbox: true; production must use live.smtp.mailtrap.io"
+                )
+            if self.sandbox and not looks_sandbox:
+                raise ValueError(
+                    f"mail.sandbox is true but smtp_host {self.smtp_host!r} does not look "
+                    "like a sandbox host — pick one: the flag and the host must agree"
+                )
+            if not (self.smtp_password or self.api_token):
+                raise ValueError(
+                    "mail.provider mailtrap_smtp requires mail.smtp_password or mail.api_token"
+                )
+        return self
+
+
 class JarvisConfig(_StrictModel):
     llm: LLMConfig
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    mail: MailConfig = Field(default_factory=MailConfig)
     timezone: str = "UTC"
     # Free-text home location ("Austin, Texas") surfaced to every agent run as
     # user context, so briefs can fetch a local weather forecast without a
@@ -108,6 +177,26 @@ class JarvisConfig(_StrictModel):
     # Max unsolicited pings per UTC day (P1 bypasses but still spends allowance);
     # sub-threshold notifications roll into the next scheduled digest.
     notification_daily_budget: int = Field(default=5, ge=1)
+    # Which peers uvicorn trusts to set X-Forwarded-For — the reverse proxy's
+    # IP ONLY. Trusting "*" lets anyone spoof their client IP and walk past
+    # per-IP login rate limiting. None keeps uvicorn's own safe default
+    # (loopback only).
+    forwarded_allow_ips: str | None = None
+
+    @model_validator(mode="after")
+    def _proxy_and_mail_traps(self) -> "JarvisConfig":
+        if self.forwarded_allow_ips is not None and "*" in self.forwarded_allow_ips:
+            raise ValueError(
+                "forwarded_allow_ips must be the reverse proxy's IP(s), never '*': "
+                "trusting X-Forwarded-For from anyone makes per-IP rate limiting spoofable"
+            )
+        if self.auth.enabled and self.mail.sandbox:
+            raise ValueError(
+                "auth.enabled with mail.sandbox: the Mailtrap sandbox CAPTURES mail and "
+                "never delivers it, so every login code would silently vanish while sends "
+                "report success. Point mail at Email Sending (live) before enabling auth."
+            )
+        return self
 
 
 # --------------------------------------------------------------------
