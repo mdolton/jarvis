@@ -365,3 +365,33 @@ code {
     width: 100%;
   }
 }
+
+/* Auth pages (login / verify) — standalone, no topbar. */
+.auth-card {
+  max-width: 22rem;
+  margin: 14vh auto 0;
+  padding: 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.auth-card h1 { margin: 0; }
+
+.auth-card form {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.auth-hint { margin: 0; color: var(--muted); }
+.auth-hint a { color: var(--accent); }
+
+.auth-error {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 4px;
+  background: var(--err-bg);
+  color: var(--err-fg);
+}

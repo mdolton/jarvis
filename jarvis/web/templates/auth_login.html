@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Jarvis — sign in</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <main class="auth-card">
+        <h1>Jarvis</h1>
+        <p class="auth-hint">Enter your email address and we&rsquo;ll send you a
+        one-time sign-in code.</p>
+        <form method="post" action="/auth/login">
+            <input type="email" name="email" placeholder="you@example.com"
+                   required autofocus autocomplete="email">
+            <button type="submit">Email me a code</button>
+        </form>
+    </main>
+</body>
+</html>

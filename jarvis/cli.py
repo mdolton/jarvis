@@ -136,6 +136,10 @@ async def _serve_async(
             host="0.0.0.0",
             port=8080,
             log_level="warning",
+            # Only the reverse proxy may set X-Forwarded-For (per-IP login
+            # rate limiting is spoofable otherwise). None keeps uvicorn's
+            # loopback-only default; the schema rejects "*".
+            forwarded_allow_ips=ctx.config.jarvis.forwarded_allow_ips,
         )
         uvi_server = uvicorn.Server(uvi_config)
         uvi_task = asyncio.create_task(uvi_server.serve(), name="uvicorn")

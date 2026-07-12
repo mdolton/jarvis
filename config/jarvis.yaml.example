@@ -16,6 +16,10 @@ idle_timeout_sec: 900
 max_concurrent_agents: 3
 log_level: INFO
 default_schedule_output_mode: discord
+# Peers uvicorn trusts to set X-Forwarded-For: the reverse proxy's IP ONLY,
+# NEVER "*" (a spoofable client IP defeats per-IP login rate limiting).
+# Leave unset when no proxy is in front (uvicorn then trusts loopback only).
+# forwarded_allow_ips: "172.18.0.2"
 
 # Inbound event webhook (POST /events/webhook). Without a token the endpoint
 # is disabled (404). Uncomment and set JARVIS_EVENTS_WEBHOOK_TOKEN to enable;
@@ -67,3 +71,26 @@ auth:
   session_idle_timeout_days: 7
   code_ttl_minutes: 10
   step_up_window_minutes: 5
+
+# Outbound mail for emailed login codes.
+#
+# ⚠ MAILTRAP IS TWO PRODUCTS — the wrong one fails SILENTLY:
+#   - Email SENDING (send.api.mailtrap.io / live.smtp.mailtrap.io) delivers
+#     real mail. This is the one production needs.
+#   - Email SANDBOX (sandbox.smtp.mailtrap.io) is a fake SMTP server: it
+#     CAPTURES mail into a web inbox and NEVER delivers it, while returning
+#     success on every send. Production pointed at the sandbox = every login
+#     code silently vanishes. Startup refuses that combination.
+# The sending domain must be VERIFIED in Mailtrap (from_addr on that domain)
+# or nothing sends; an unverified demo domain can only mail the registration
+# address — works for one person, breaks silently for the second.
+mail:
+  # "console" logs codes to the app log (local dev). Use "mailtrap_api" in
+  # production (async HTTP; SMTP is the fallback path).
+  provider: console
+  # api_token: ${JARVIS_MAILTRAP_TOKEN}
+  # from_addr: jarvis@your-verified-domain.example
+  # SMTP path only — the sandbox flag must agree with the host:
+  # smtp_host: live.smtp.mailtrap.io
+  # smtp_port: 587
+  # sandbox: false

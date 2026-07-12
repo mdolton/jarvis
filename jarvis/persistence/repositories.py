@@ -1508,24 +1508,100 @@ class AuthRepo:
         await self._session.refresh(row)
         return row
 
-    async def consume_auth_code(self, code_hash: str) -> UUID | None:
-        """Redeem a login code exactly once; None if unknown, consumed, or expired.
+    async def replace_auth_code(
+        self,
+        *,
+        user_id: UUID,
+        code_hash: str,
+        nonce_hash: str | None,
+        expires_at: datetime,
+        ip: str | None = None,
+    ) -> AuthCodeRow:
+        """Invalidate the user's outstanding codes and issue a new one.
 
-        A single CAS UPDATE (not read-then-write) — under concurrent redemption
-        exactly one caller gets the user_id back.
+        The new row INHERITS the highest attempt count among the codes it
+        replaces: re-requesting a code must never refill the guess budget,
+        or an attacker could reset the 5-attempt lockout at will.
+        """
+        now = _utcnow()
+        live = (
+            AuthCodeRow.user_id == user_id,
+            AuthCodeRow.consumed_at.is_(None),
+            AuthCodeRow.expires_at > now,
+        )
+        carried = (
+            await self._session.execute(select(func.max(AuthCodeRow.attempts)).where(*live))
+        ).scalar_one_or_none() or 0
+        await self._session.execute(update(AuthCodeRow).where(*live).values(consumed_at=now))
+        row = AuthCodeRow(
+            user_id=user_id,
+            code_hash=code_hash,
+            nonce_hash=nonce_hash,
+            expires_at=expires_at,
+            attempts=carried,
+            requested_ip=ip,
+            requested_at=now,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        await self._session.refresh(row)
+        return row
+
+    async def record_code_attempt(self, nonce_hash: str) -> int | None:
+        """+1 attempt on the live code bound to this nonce; returns the new count.
+
+        None when no live code matches the nonce — a mismatched nonce never
+        burns the real code's attempts (and can never redeem it either).
         """
         now = _utcnow()
         result = await self._session.execute(
             update(AuthCodeRow)
             .where(
+                AuthCodeRow.nonce_hash == nonce_hash,
+                AuthCodeRow.consumed_at.is_(None),
+                AuthCodeRow.expires_at > now,
+            )
+            .values(attempts=AuthCodeRow.attempts + 1)
+            .returning(AuthCodeRow.attempts)
+        )
+        attempts = result.scalar_one_or_none()
+        await self._session.commit()
+        return attempts
+
+    async def consume_auth_code(
+        self,
+        code_hash: str,
+        *,
+        nonce_hash: str | None = None,
+        max_attempts: int | None = None,
+    ) -> UUID | None:
+        """Redeem a login code exactly once; None if unknown, consumed, or expired.
+
+        A single CAS UPDATE (not read-then-write) — under concurrent redemption
+        exactly one caller gets the user_id back. The row's nonce_hash must
+        equal `nonce_hash` exactly (None matches only nonce-less codes), and
+        with `max_attempts` set the code is dead once attempts exceed it.
+        """
+        now = _utcnow()
+        nonce_matches = (
+            AuthCodeRow.nonce_hash.is_(None)
+            if nonce_hash is None
+            else AuthCodeRow.nonce_hash == nonce_hash
+        )
+        stmt = (
+            update(AuthCodeRow)
+            .where(
                 AuthCodeRow.code_hash == code_hash,
+                nonce_matches,
                 AuthCodeRow.consumed_at.is_(None),
                 AuthCodeRow.expires_at > now,
             )
             .values(consumed_at=now)
             .returning(AuthCodeRow.user_id)
         )
-        user_id = result.scalar_one_or_none()
+        if max_attempts is not None:
+            stmt = stmt.where(AuthCodeRow.attempts <= max_attempts)
+        user_id = (await self._session.execute(stmt)).scalar_one_or_none()
         await self._session.commit()
         return user_id
 
