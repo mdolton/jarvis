@@ -54,7 +54,7 @@ memory:
   max_document_results: 5
 
 # Dashboard authentication (WebAuthn passkeys + emailed login codes).
-# Schema-only for now: nothing is enforced while enabled is false.
+# Nothing is enforced while enabled is false.
 auth:
   enabled: false
   # Closed allow-list of emails permitted to sign in. No open signup, ever.
@@ -62,10 +62,19 @@ auth:
   # Secure, __Host- prefixed session cookie. Requires TLS — set false for
   # local development on plain http://localhost or the cookie will never set.
   secure_cookies: true
-  # WebAuthn Relying Party ID: the registrable domain, WITHOUT a port.
+  # WebAuthn Relying Party ID: the registrable domain, WITHOUT a port. It
+  # must be a DOMAIN — IP addresses are prohibited by the WebAuthn spec, so
+  # passkeys will NOT work at http://192.168.x.x:8080; only on the real
+  # (reverse-proxied, HTTPS) domain, or on localhost, which is the explicit
+  # exception to the HTTPS requirement. Passkeys are BOUND to this rp_id:
+  # credentials registered against localhost in development will not work in
+  # production and must be re-registered there (and vice versa).
   rp_id: localhost
   rp_name: Jarvis
-  # Full browser origin (scheme + host + port) asserted in WebAuthn responses.
+  # Full browser origin (scheme + host + port) asserted in WebAuthn
+  # responses. NOT interchangeable with rp_id: the port is EXCLUDED from
+  # rp_id but INCLUDED here — a port mismatch here is the single most common
+  # WebAuthn integration error.
   expected_origin: http://localhost:8080
   session_ttl_days: 30
   session_idle_timeout_days: 7

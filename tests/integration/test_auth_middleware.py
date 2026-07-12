@@ -51,9 +51,19 @@ def _client(app) -> httpx.AsyncClient:
 
 
 async def _login(factory, auth_cfg: AuthConfig) -> str:
-    """Create a user + session directly; returns the raw token."""
+    """Create an ENROLLED user + session directly; returns the raw token.
+
+    The dummy passkey matters: an authenticated user with zero credentials is
+    force-redirected to enrollment (see test_passkeys.py), so a bare session
+    would never reach a protected route.
+    """
     async with factory() as session:
-        user = await AuthRepo(session).get_or_create_user("me@example.com")
+        repo = AuthRepo(session)
+        user = await repo.get_or_create_user("me@example.com")
+        if not await repo.has_credentials(user.id):
+            await repo.add_credential(
+                credential_id="test-credential", user_id=user.id, public_key=b"pk"
+            )
     manager = SessionManager(session_factory=factory, config=auth_cfg)
     return await manager.issue_session(user.id)
 

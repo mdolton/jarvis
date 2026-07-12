@@ -14,6 +14,7 @@ from starlette.responses import PlainTextResponse, RedirectResponse
 
 from jarvis.auth.sessions import SessionManager
 from jarvis.config.schema import AuthConfig
+from jarvis.persistence.repositories import AuthRepo
 
 # The ONLY paths reachable without a session:
 #   /healthz         — Docker healthcheck + monitoring
@@ -26,6 +27,7 @@ _EXEMPT_EXACT = {"/healthz", "/events/webhook"}
 _EXEMPT_PREFIXES = ("/auth/", "/static/")
 
 LOGIN_PATH = "/auth/login"
+REGISTER_PATH = "/auth/passkey/register"
 
 
 def auth_config(request: Request) -> AuthConfig | None:
@@ -53,6 +55,22 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
         user = await manager.validate(raw_token) if raw_token else None
         if user is not None:
             request.state.user = user
+            # Mandatory enrollment: an emailed code establishes the account,
+            # but NIST SP 800-63B §3.1.3.1 prohibits email as an out-of-band
+            # AUTHENTICATOR, so "emailed code only" must never be a steady
+            # state — a user with zero passkeys can go nowhere but the
+            # enrollment page (its routes live under the /auth/ exemption)
+            # until one is registered.
+            async with request.app.state.ctx.session_factory() as session:
+                enrolled = await AuthRepo(session).has_credentials(user.id)
+            if not enrolled:
+                if request.headers.get("hx-request"):
+                    return PlainTextResponse(
+                        "passkey enrollment required",
+                        status_code=401,
+                        headers={"HX-Redirect": REGISTER_PATH},
+                    )
+                return RedirectResponse(REGISTER_PATH, status_code=302)
             return await call_next(request)
 
         if request.headers.get("hx-request"):

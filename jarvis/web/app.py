@@ -49,9 +49,11 @@ def create_app(*, app_context=None) -> FastAPI:
     # Register routes.
     from jarvis.web.routes.auth import router as auth_router
     from jarvis.web.routes.health import router as health_router
+    from jarvis.web.routes.passkeys import router as passkeys_router
 
     app.include_router(auth_router)
     app.include_router(health_router)
+    app.include_router(passkeys_router)
 
     from jarvis.web.routes.home import router as home_router
 

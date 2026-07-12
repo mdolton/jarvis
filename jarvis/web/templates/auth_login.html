@@ -9,13 +9,49 @@
 <body>
     <main class="auth-card">
         <h1>Jarvis</h1>
-        <p class="auth-hint">Enter your email address and we&rsquo;ll send you a
-        one-time sign-in code.</p>
+        <p class="auth-hint">Sign in with your passkey. No passkey on this
+        device? Fall back to an emailed one-time code.</p>
+        <button type="button" id="passkey-signin" hidden>Sign in with a passkey</button>
+        <p class="auth-error" id="passkey-error" hidden></p>
         <form method="post" action="/auth/login">
+            <!-- autocomplete="username webauthn" arms conditional UI: the
+                 browser offers saved passkeys in this field's autofill. -->
             <input type="email" name="email" placeholder="you@example.com"
-                   required autofocus autocomplete="email">
+                   required autofocus autocomplete="username webauthn">
             <button type="submit">Email me a code</button>
         </form>
     </main>
+    <script src="/static/passkeys.js"></script>
+    <script>
+    (async function () {
+        if (!window.jarvisPasskeys || !jarvisPasskeys.supported()) return;
+        var btn = document.getElementById("passkey-signin");
+        var err = document.getElementById("passkey-error");
+        btn.hidden = false;
+        var conditionalAbort = null;
+
+        btn.addEventListener("click", async function () {
+            if (conditionalAbort) conditionalAbort.abort();
+            err.hidden = true;
+            try {
+                await jarvisPasskeys.login();
+            } catch (e) {
+                if (e.name === "AbortError" || e.name === "NotAllowedError") return;
+                err.textContent = e.message || "Passkey sign-in failed.";
+                err.hidden = false;
+            }
+        });
+
+        // Conditional UI: offer passkeys via autofill on the email field so
+        // the passkey is the path of least resistance. Silently ignore
+        // dismissal/abort — the emailed-code form still works.
+        if (await jarvisPasskeys.conditionalLoginAvailable()) {
+            conditionalAbort = new AbortController();
+            jarvisPasskeys
+                .login({ conditional: true, signal: conditionalAbort.signal })
+                .catch(function () {});
+        }
+    })();
+    </script>
 </body>
 </html>
