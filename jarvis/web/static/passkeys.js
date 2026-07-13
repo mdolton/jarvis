@@ -20,9 +20,15 @@
   }
 
   async function postJSON(url, body) {
+    const headers = { "Content-Type": "application/json" };
+    // Synchronizer token, minted into the page at render time (see
+    // jarvis/web/csrf.py). Empty pre-login — the server only demands it on
+    // requests that carry a session cookie.
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta && meta.content) headers["X-CSRF-Token"] = meta.content;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: headers,
       body: JSON.stringify(body || {}),
     });
     const data = await resp.json().catch(() => ({}));

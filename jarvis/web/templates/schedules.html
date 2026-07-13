@@ -26,6 +26,7 @@
 <p class="badge badge-warn">{{ template_warning }}</p>
 {% endif %}
 <form method="post" action="/schedules" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input name="name" placeholder="Name" value="{{ selected_template.name if selected_template else '' }}" required>
     <input name="description" placeholder="Description" value="{{ selected_template.description if selected_template else '' }}">
     <input name="cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" value="{{ selected_template.default_cron_expr if selected_template else '' }}" required>
@@ -92,12 +93,15 @@
             </td>
             <td class="actions">
                 <form method="post" action="/schedules/{{ s.id }}/run" class="inline-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button>Run now</button>
                 </form>
                 <form method="post" action="/schedules/{{ s.id }}/toggle" class="inline-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button>{{ "Disable" if s.enabled else "Enable" }}</button>
                 </form>
                 <form method="post" action="/schedules/{{ s.id }}/delete" class="inline-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button class="btn-danger">Delete</button>
                 </form>
             </td>

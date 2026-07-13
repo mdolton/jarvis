@@ -52,7 +52,7 @@ class StepUpUnauthenticated(Exception):
 
 
 async def emit_step_up_event(
-    ctx, type_: AuditEventType, *, user_email: str, path: str, method: str, **extra
+    ctx, type_: AuditEventType, *, user_email: str, request: Request, **extra
 ) -> None:
     """Audit-trail a step-up challenge/success/failure (tolerates mocked ctx)."""
     emit = getattr(getattr(ctx, "audit", None), "emit", None)
@@ -60,7 +60,14 @@ async def emit_step_up_event(
         await emit(
             AuditEvent(
                 type=type_,
-                payload={"user": user_email, "path": path, "method": method, **extra},
+                payload={
+                    "user": user_email,
+                    "path": request.url.path,
+                    "method": request.method,
+                    "ip": request.client.host if request.client else None,
+                    "user_agent": request.headers.get("user-agent"),
+                    **extra,
+                },
             )
         )
 
@@ -111,8 +118,7 @@ async def require_step_up(request: Request) -> None:
         ctx,
         AuditEventType.AUTH_STEP_UP_CHALLENGED,
         user_email=user.email,
-        path=request.url.path,
-        method=request.method,
+        request=request,
     )
     raise StepUpRequired(form_fields=await _replayable_form(request))
 

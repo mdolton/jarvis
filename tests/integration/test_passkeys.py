@@ -33,6 +33,7 @@ from jarvis.persistence.models import RecoveryCodeRow, WebAuthnChallengeRow
 from jarvis.persistence.repositories import AuthRepo
 from jarvis.web.app import create_app
 from jarvis.web.auth_middleware import REGISTER_PATH
+from jarvis.web.csrf import csrf_token_for_session
 
 # rp_id/expected_origin left at defaults (localhost / http://localhost:8080);
 # the soft authenticator signs for those unless a test says otherwise.
@@ -154,6 +155,14 @@ async def _login_session(factory, email: str = "me@example.com") -> str:
     return await SessionManager(session_factory=factory, config=AUTH_ON).issue_session(user.id)
 
 
+async def _sign_in(client, factory, email: str = "me@example.com") -> str:
+    """Session cookie + matching CSRF header (unsafe methods demand both)."""
+    raw = await _login_session(factory, email)
+    client.cookies.set("jarvis_session", raw)
+    client.headers["X-CSRF-Token"] = csrf_token_for_session(raw)
+    return raw
+
+
 async def _register(client, soft: SoftAuthenticator, name: str | None = None) -> httpx.Response:
     begin = (await client.post("/auth/passkey/register/begin", headers=POST_HEADERS)).json()
     return await client.post(
@@ -170,7 +179,7 @@ async def _register(client, soft: SoftAuthenticator, name: str | None = None) ->
 async def _enrolled_client(app, factory) -> tuple[httpx.AsyncClient, SoftAuthenticator]:
     """A signed-in client that has completed passkey enrollment."""
     client = _client(app)
-    client.cookies.set("jarvis_session", await _login_session(factory))
+    await _sign_in(client, factory)
     soft = SoftAuthenticator()
     resp = await _register(client, soft)
     assert resp.status_code == 200, resp.text
@@ -196,7 +205,7 @@ async def test_registration_requires_authenticated_session(factory):
 async def test_registration_ceremony_end_to_end(factory):
     app = _app(factory)
     async with _client(app) as client:
-        client.cookies.set("jarvis_session", await _login_session(factory))
+        await _sign_in(client, factory)
 
         begin = await client.post("/auth/passkey/register/begin", headers=POST_HEADERS)
         assert begin.status_code == 200
@@ -232,7 +241,7 @@ async def test_registration_ceremony_end_to_end(factory):
 async def test_first_enrollment_mints_recovery_codes_shown_once_stored_hashed(factory):
     app = _app(factory)
     async with _client(app) as client:
-        client.cookies.set("jarvis_session", await _login_session(factory))
+        await _sign_in(client, factory)
         first = await _register(client, SoftAuthenticator())
         second = await _register(client, SoftAuthenticator())
 
@@ -316,7 +325,7 @@ async def test_login_ceremony_end_to_end(factory):
 
 async def _login_attempt(client, soft: SoftAuthenticator, **soft_kwargs) -> httpx.Response:
     begin = (await client.post("/auth/passkey/login/begin", headers=POST_HEADERS)).json()
-    return await client.post(
+    resp = await client.post(
         "/auth/passkey/login/complete",
         json={
             "challenge_id": begin["challenge_id"],
@@ -324,6 +333,12 @@ async def _login_attempt(client, soft: SoftAuthenticator, **soft_kwargs) -> http
         },
         headers=POST_HEADERS,
     )
+    # Success issues a NEW session; refresh the CSRF header to match (the
+    # browser equivalent: the post-login navigation re-renders the token).
+    new_raw = resp.cookies.get("jarvis_session")
+    if new_raw:
+        client.headers["X-CSRF-Token"] = csrf_token_for_session(new_raw)
+    return resp
 
 
 async def test_login_challenge_is_single_use(factory):
@@ -350,7 +365,7 @@ async def test_login_challenge_is_single_use(factory):
 async def test_registration_challenge_is_single_use(factory):
     app = _app(factory)
     async with _client(app) as client:
-        client.cookies.set("jarvis_session", await _login_session(factory))
+        await _sign_in(client, factory)
         begin = (await client.post("/auth/passkey/register/begin", headers=POST_HEADERS)).json()
         payload = {
             "challenge_id": begin["challenge_id"],
@@ -369,7 +384,7 @@ async def test_registration_challenge_is_single_use(factory):
 async def test_expired_challenge_rejected(factory):
     app = _app(factory)
     async with _client(app) as client:
-        client.cookies.set("jarvis_session", await _login_session(factory))
+        await _sign_in(client, factory)
         begin = (await client.post("/auth/passkey/register/begin", headers=POST_HEADERS)).json()
 
         async with factory() as session:  # the 5-minute TTL elapses
@@ -460,7 +475,7 @@ async def test_zero_credential_user_is_forced_to_enrollment(factory):
     §3.1.3.1): with no passkey every page redirects to enrollment."""
     app = _app(factory)
     async with _client(app) as client:
-        client.cookies.set("jarvis_session", await _login_session(factory))
+        await _sign_in(client, factory)
 
         page = await client.get("/whoami")
         assert page.status_code == 302
@@ -524,7 +539,7 @@ async def test_cannot_manage_another_users_credential(factory):
 
     # mallory: separate account, own passkey (to get past forced enrollment).
     async with _client(app) as mallory:
-        mallory.cookies.set("jarvis_session", await _login_session(factory, "m@example.com"))
+        await _sign_in(mallory, factory, "m@example.com")
         assert (await _register(mallory, SoftAuthenticator())).status_code == 200
         await mallory.post(
             "/settings/passkeys/rename",

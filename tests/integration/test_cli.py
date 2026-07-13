@@ -186,3 +186,50 @@ def test_ingest_command_without_path_or_config_folder_errors(config_dir, tmp_pat
     )
     assert result.exit_code == 2
     assert "documents_folder" in result.output
+
+
+def test_serve_passes_forwarded_allow_ips_to_uvicorn(config_dir, tmp_path, monkeypatch):
+    """The config's forwarded_allow_ips must reach uvicorn.Config — dropping
+    it silently reverts to loopback trust and, behind a proxy, makes every
+    request look like it comes from the proxy (or worse, spoofable)."""
+    import asyncio
+
+    import uvicorn
+
+    (config_dir / "jarvis.yaml").write_text(
+        """
+llm:
+  base_url: http://x/v1
+  api_key: x
+  model: m
+forwarded_allow_ips: "198.51.100.7"
+"""
+    )
+
+    captured: dict = {}
+    real_config = uvicorn.Config
+
+    def _capturing_config(*args, **kwargs):
+        captured.update(kwargs)
+        return real_config(*args, **kwargs)
+
+    monkeypatch.setattr(uvicorn, "Config", _capturing_config)
+
+    async def _fake_uvicorn_serve(self):
+        return None
+
+    monkeypatch.setattr(uvicorn.Server, "serve", _fake_uvicorn_serve)
+
+    from jarvis.cli import _serve_async
+
+    async def _drive() -> None:
+        stop_event = asyncio.Event()
+        stop_event.set()  # shut down immediately after startup
+        await _serve_async(
+            config_dir=config_dir,
+            db_url=f"sqlite+aiosqlite:///{tmp_path}/jarvis.db",
+            stop_event=stop_event,
+        )
+
+    asyncio.run(_drive())
+    assert captured["forwarded_allow_ips"] == "198.51.100.7"

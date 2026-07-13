@@ -6,9 +6,12 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from jarvis.config.schema import AuthConfig
 from jarvis.web.auth_middleware import SessionAuthMiddleware
-from jarvis.web.security import SameOriginUnsafeMethodMiddleware
+from jarvis.web.csrf import CSRFTokenMiddleware, csrf_token_for_session, session_cookie_value
+from jarvis.web.security import SameOriginUnsafeMethodMiddleware, SecurityHeadersMiddleware
 from jarvis.web.step_up import install_step_up_handlers
 from jarvis.web.time_format import configured_timezone, format_server_local
 
@@ -25,15 +28,41 @@ def _localtime_filter(context, value, fmt: str = "%Y-%m-%d %H:%M") -> str:
     return format_server_local(value, fmt, timezone=configured_timezone(app_context))
 
 
+def _csrf_context(request) -> dict:
+    """Expose the session's CSRF token to every template render."""
+    raw_session = session_cookie_value(request)
+    token = csrf_token_for_session(raw_session) if raw_session else None
+    return {"csrf_token": token or ""}
+
+
 def create_app(*, app_context=None) -> FastAPI:
     """Build the FastAPI app. `app_context` is the bootstrap AppContext —
     None is tolerated for healthz-only testing.
     """
     app = FastAPI(title="Jarvis Dashboard", docs_url=None, redoc_url=None)
+    # Middleware, innermost first (add_middleware wraps outward): CSRF token
+    # check, then same-origin, then the session gate (it must see every
+    # request before the origin/CSRF checks), then the Host allow-list, with
+    # the header stamp outermost so every response — including middleware
+    # 4xxes — carries the security headers.
+    app.add_middleware(CSRFTokenMiddleware)
     app.add_middleware(SameOriginUnsafeMethodMiddleware)
-    # Added last = runs first: the session gate sees every request before the
-    # same-origin check does.
     app.add_middleware(SessionAuthMiddleware)
+
+    jarvis_cfg = getattr(getattr(app_context, "config", None), "jarvis", None)
+    trusted_hosts = getattr(jarvis_cfg, "trusted_hosts", None)
+    if isinstance(trusted_hosts, list) and trusted_hosts:
+        # Loopback stays allowed: the in-container Docker healthcheck hits
+        # the app by localhost, not the public domain.
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=[*trusted_hosts, "localhost", "127.0.0.1"],
+        )
+
+    auth_cfg = getattr(jarvis_cfg, "auth", None)
+    hsts = isinstance(auth_cfg, AuthConfig) and auth_cfg.secure_cookies
+    app.add_middleware(SecurityHeadersMiddleware, hsts=hsts)
+
     # Step-up (fresh passkey assertion) challenges raised by require_step_up.
     install_step_up_handlers(app)
 
@@ -41,7 +70,7 @@ def create_app(*, app_context=None) -> FastAPI:
     app.state.ctx = app_context
 
     # Templates.
-    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR), context_processors=[_csrf_context])
     templates.env.filters["localtime"] = _localtime_filter
     app.state.templates = templates
 

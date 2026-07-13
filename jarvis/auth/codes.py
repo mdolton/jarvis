@@ -102,6 +102,28 @@ class LoginCodeService:
             return
         async with self._session_factory() as session:
             repo = AuthRepo(session)
+            # Global in-flight cap: every live code is a guessable secret, so
+            # the pool across all users stays bounded no matter how the
+            # per-address/per-IP buckets are gamed. Off the request path like
+            # everything else here, so the requester sees nothing.
+            if await repo.count_active_auth_codes() >= self._config.max_inflight_codes:
+                logger.warning(
+                    "global in-flight login code cap (%d) reached; not issuing",
+                    self._config.max_inflight_codes,
+                )
+                await AuditRepo(session).write_many(
+                    [
+                        AuditEvent(
+                            type=AuditEventType.AUTH_RATE_LIMITED,
+                            payload={
+                                "scope": "global_inflight_codes",
+                                "email": request.email,
+                                "ip": request.ip,
+                            },
+                        )
+                    ]
+                )
+                return
             user = await repo.get_or_create_user(request.email)
             if user.disabled_at is not None:
                 logger.info("login code requested for disabled user; ignoring")

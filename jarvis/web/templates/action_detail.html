@@ -52,9 +52,11 @@
 
 {% if action.status == "pending" %}
 <form method="post" action="/actions/{{ action.id }}/approve" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit">Approve</button>
 </form>
 <form method="post" action="/actions/{{ action.id }}/reject" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <textarea name="reason" rows="3" placeholder="Reason for rejection"></textarea>
     <button type="submit" class="btn-danger">Reject</button>
 </form>

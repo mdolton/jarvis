@@ -55,3 +55,56 @@ class RateLimiter:
             for key, (tokens, updated) in self._buckets.items()
             if now - updated < full_after
         }
+
+
+class ExponentialBackoff:
+    """Per-key lockout that doubles with every failure past `free_failures`.
+
+    The token buckets above cap sustained REQUEST volume; this punishes
+    repeated login FAILURES specifically: the first `free_failures` misses
+    cost nothing (typos happen), then each further miss blocks the key for
+    base_delay_sec * 2^n, capped at max_delay_sec. A success resets the key.
+
+    allowed(key) is a pure read — a request arriving during a lockout is
+    denied without extending it (only real failures escalate).
+    """
+
+    def __init__(
+        self,
+        *,
+        free_failures: int = 3,
+        base_delay_sec: float = 1.0,
+        max_delay_sec: float = 900.0,
+        clock: Callable[[], float] = time.monotonic,
+        max_keys: int = 4096,
+    ) -> None:
+        self._free_failures = free_failures
+        self._base_delay = base_delay_sec
+        self._max_delay = max_delay_sec
+        self._clock = clock
+        self._max_keys = max_keys
+        # key -> (consecutive_failures, blocked_until_timestamp)
+        self._entries: dict[str, tuple[int, float]] = {}
+
+    def allowed(self, key: str) -> bool:
+        entry = self._entries.get(key)
+        return entry is None or self._clock() >= entry[1]
+
+    def record_failure(self, key: str) -> None:
+        failures = self._entries.get(key, (0, 0.0))[0] + 1
+        over = failures - self._free_failures
+        delay = 0.0 if over <= 0 else min(self._base_delay * 2 ** (over - 1), self._max_delay)
+        self._entries[key] = (failures, self._clock() + delay)
+        if len(self._entries) > self._max_keys:
+            self._prune(self._clock())
+
+    def reset(self, key: str) -> None:
+        self._entries.pop(key, None)
+
+    def _prune(self, now: float) -> None:
+        """Drop keys whose lockout expired more than a full max delay ago."""
+        self._entries = {
+            key: (failures, blocked_until)
+            for key, (failures, blocked_until) in self._entries.items()
+            if now - blocked_until < self._max_delay
+        }

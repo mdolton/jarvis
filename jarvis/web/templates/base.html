@@ -4,11 +4,21 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Jarvis{% endblock %}</title>
+    <!-- allowEval:false lets the CSP drop 'unsafe-eval' (nothing here uses
+         hx-on / hx-vals js: — grep before turning it back on).
+         includeIndicatorStyles:false stops htmx injecting an inline <style>
+         for hx-indicator, which style-src 'self' blocks; if indicators are
+         ever wanted, put the .htmx-indicator rules in style.css instead. -->
+    <meta name="htmx-config" content='{"allowEval": false, "includeIndicatorStyles": false}'>
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/static/style.css">
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+    <script src="/static/htmx.min.js"></script>
+    <script src="/static/htmx-ext-sse.js"></script>
 </head>
-<body>
+<!-- Body-level hx-headers: every hx-post/hx-delete on the page inherits the
+     CSRF header without per-element annotation. -->
+<body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
     <header class="topbar">
         <a class="brand" href="/">Jarvis</a>
         <nav>

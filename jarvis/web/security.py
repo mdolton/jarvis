@@ -9,6 +9,52 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
+# Everything is same-origin and self-hosted (htmx is vendored into /static),
+# so 'self' covers scripts, styles, and the SSE stream. No 'unsafe-eval':
+# htmx only needs it for hx-on / hx-vals js: expressions — the templates use
+# neither, and base.html pins htmx.config.allowEval=false so a future
+# template can't quietly start depending on eval. No 'unsafe-inline': all
+# script blocks and style= attributes live in static files. data: images
+# allowed for favicons/embeds.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "font-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Stamp browser-hardening headers on every response (outermost layer,
+    so even middleware-generated 4xx responses carry them).
+
+    HSTS is opt-in via `hsts` (wired to auth.secure_cookies — the app's "we
+    are behind TLS" signal): pinning Strict-Transport-Security on a plain-http
+    dev instance would lock the browser out of http://localhost.
+    """
+
+    def __init__(self, app, *, hsts: bool) -> None:
+        super().__init__(app)
+        self._hsts = hsts
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        headers = response.headers
+        headers.setdefault("X-Content-Type-Options", "nosniff")
+        headers.setdefault("X-Frame-Options", "DENY")
+        headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        if self._hsts:
+            # Two years + includeSubDomains, per hstspreload.org guidance.
+            headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+        return response
+
 
 class SameOriginUnsafeMethodMiddleware(BaseHTTPMiddleware):
     """Reject browser unsafe-method requests from a different origin.

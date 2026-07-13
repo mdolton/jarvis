@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Audit Log</h1>
 
-<form method="get" action="/audit" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+<form method="get" action="/audit" class="filter-form">
     <select name="type">
         <option value="">All types</option>
         {% for t in all_types %}

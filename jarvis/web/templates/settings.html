@@ -11,7 +11,8 @@
     <tr>
         <th>LLM model</th>
         <td>
-            <form method="post" action="/settings/model" style="display:inline">
+            <form method="post" action="/settings/model" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <select name="model">
                     <option value="" {% if not model_selection %}selected{% endif %}>
                         Default (from config: {{ config_model }})
