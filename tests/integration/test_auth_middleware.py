@@ -13,6 +13,7 @@ from jarvis.config.schema import AuthConfig
 from jarvis.persistence.db import Base
 from jarvis.persistence.repositories import AuthRepo
 from jarvis.web.app import create_app
+from jarvis.web.csrf import csrf_token_for_session
 
 # secure_cookies=False → plain "jarvis_session" cookie; tests speak http.
 AUTH_ON = AuthConfig(enabled=True, secure_cookies=False)
@@ -135,7 +136,10 @@ async def test_logout_revokes_session_and_clears_cookie(factory):
     raw = await _login(factory, AUTH_ON)
     async with _client(_app(factory, AUTH_ON)) as client:
         client.cookies.set("jarvis_session", raw)
-        resp = await client.post("/auth/logout", headers={"origin": "http://testserver"})
+        resp = await client.post(
+            "/auth/logout",
+            headers={"origin": "http://testserver", "X-CSRF-Token": csrf_token_for_session(raw)},
+        )
     assert resp.status_code == 302
     assert 'jarvis_session=""' in resp.headers.get("set-cookie", "")
     assert await SessionManager(session_factory=factory, config=AUTH_ON).validate(raw) is None

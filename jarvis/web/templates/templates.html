@@ -11,6 +11,7 @@
 <section class="section-block">
 <h2>Create Template</h2>
 <form method="post" action="/templates" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input name="name" placeholder="Name" required>
     <input name="description" placeholder="Description">
     <input name="category" placeholder="Category" required>
@@ -58,10 +59,12 @@
             <td class="actions">
                 <a href="/schedules?template_id={{ t.id }}">Create schedule</a>
                 <form method="post" action="/templates/{{ t.id }}/clone" class="inline-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit">Clone</button>
                 </form>
                 {% if not t.built_in %}
                     <form method="post" action="/templates/{{ t.id }}/disable" class="inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit" class="btn-danger">Disable</button>
                     </form>
                 {% endif %}

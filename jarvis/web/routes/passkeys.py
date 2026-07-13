@@ -22,7 +22,9 @@ from jarvis.auth.sessions import SessionManager, hash_token
 from jarvis.core.types import AuditEventType
 from jarvis.persistence.models import UserRow
 from jarvis.persistence.repositories import AuthRepo
+from jarvis.web.auth_audit import audit_auth, request_meta
 from jarvis.web.auth_middleware import LOGIN_PATH, REGISTER_PATH, auth_config
+from jarvis.web.routes.auth import _auth_flow
 from jarvis.web.step_up import emit_step_up_event, require_step_up
 
 logger = logging.getLogger(__name__)
@@ -110,13 +112,28 @@ async def register_complete(request: Request):
         return _failed(400)
     challenge_id, credential, body = parsed
     name = str(body.get("name") or "")[:128] or None
+    ctx = request.app.state.ctx
     try:
         result = await service.complete_registration(
             user, challenge_id=challenge_id, credential=credential, name=name
         )
     except PasskeyError as exc:
         logger.info("passkey registration rejected for %s: %s", user.email, exc)
+        await audit_auth(
+            ctx,
+            AuditEventType.AUTH_PASSKEY_REGISTRATION_FAILED,
+            email=user.email,
+            **request_meta(request),
+        )
         return _failed(400)
+    await audit_auth(
+        ctx,
+        AuditEventType.AUTH_PASSKEY_REGISTERED,
+        email=user.email,
+        credential_id=result.credential.credential_id,
+        name=name,
+        **request_meta(request),
+    )
     return JSONResponse(
         {
             "verified": True,
@@ -145,6 +162,15 @@ async def login_complete(request: Request):
     manager = _session_manager(request)
     if service is None or manager is None:
         return _failed(401)
+    ctx = request.app.state.ctx
+    flow = _auth_flow(request)
+    ip = (request.client.host if request.client else None) or "unknown"
+    meta = request_meta(request)
+    # Same per-IP failure backoff as the code path — one lockout covers both
+    # ways to fail a login.
+    if not flow.login_backoff.allowed(ip):
+        await audit_auth(ctx, AuditEventType.AUTH_RATE_LIMITED, scope="login_backoff", **meta)
+        return _failed(401)
     parsed = await _ceremony_input(request)
     if parsed is None:
         return _failed(400)
@@ -153,7 +179,13 @@ async def login_complete(request: Request):
         user = await service.complete_login(challenge_id=challenge_id, credential=credential)
     except PasskeyError as exc:
         logger.info("passkey login rejected: %s", exc)
+        flow.login_backoff.record_failure(ip)
+        await audit_auth(ctx, AuditEventType.AUTH_LOGIN_FAILED, method="passkey", **meta)
         return _failed(401)
+    flow.login_backoff.reset(ip)
+    await audit_auth(
+        ctx, AuditEventType.AUTH_LOGIN_SUCCEEDED, method="passkey", email=user.email, **meta
+    )
     raw = await manager.issue_session(user.id, request)
     response = JSONResponse({"verified": True, "redirect": "/"})
     manager.set_session_cookie(response, raw)
@@ -195,8 +227,7 @@ async def step_up_complete(request: Request):
             ctx,
             AuditEventType.AUTH_STEP_UP_FAILED,
             user_email=user.email,
-            path=request.url.path,
-            method=request.method,
+            request=request,
             reason=reason,
         )
 
@@ -223,8 +254,7 @@ async def step_up_complete(request: Request):
         ctx,
         AuditEventType.AUTH_STEP_UP_SUCCEEDED,
         user_email=user.email,
-        path=request.url.path,
-        method=request.method,
+        request=request,
     )
     return JSONResponse({"verified": True})
 
@@ -275,4 +305,11 @@ async def delete_passkey(request: Request, credential_id: str = Form("")):
     if row is not None:
         async with request.app.state.ctx.session_factory() as session:
             await AuthRepo(session).delete_credential(credential_id)
+        await audit_auth(
+            request.app.state.ctx,
+            AuditEventType.AUTH_PASSKEY_DELETED,
+            email=request.state.user.email,
+            credential_id=credential_id,
+            **request_meta(request),
+        )
     return RedirectResponse("/settings/passkeys", status_code=303)

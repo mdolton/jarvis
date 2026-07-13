@@ -70,6 +70,7 @@
 <section class="section-block">
 <h2>Manual Run</h2>
 <form method="post" action="/manual-runs" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <textarea name="prompt" placeholder="Ask Jarvis to run something now" rows="4" required>{{ manual_prompt or "" }}</textarea>
     <button type="submit">Run</button>
 </form>

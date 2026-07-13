@@ -9,6 +9,7 @@
     <tr><td><code>{{ t.name }}</code></td><td>{{ t.description or '—' }}</td>
     <td>{{ '✓' if t.read_only_hint else '—' }}</td><td>{{ '⚠' if t.destructive_hint else '—' }}</td>
     <td><form method="post" action="/mcp/tools/{{ t.id }}/policy" data-policy-tool="{{ t.name }}" class="inline-form policy-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <select name="policy_override">
         <option value="" {% if not t.policy_override %}selected{% endif %}>auto-detect</option>
         <option value="allow" {% if t.policy_override=='allow' %}selected{% endif %}>allow</option>
@@ -41,15 +42,19 @@
           {% if not c.authorized or c.auth_status == 'needs_reauth' %}
             <a class="btn" href="/oauth/connect/{{ c.id }}">Connect</a>
           {% else %}
-            <form method="post" action="/oauth/disconnect/{{ c.id }}" class="inline-form"><button type="submit">Disconnect</button></form>
+            <form method="post" action="/oauth/disconnect/{{ c.id }}" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Disconnect</button></form>
           {% endif %}
         {% endif %}
         {% if c.enabled %}
-          <form method="post" action="/mcp/connections/{{ c.id }}/disable" class="inline-form"><button type="submit">Disable</button></form>
+          <form method="post" action="/mcp/connections/{{ c.id }}/disable" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Disable</button></form>
         {% else %}
-          <form method="post" action="/mcp/connections/{{ c.id }}/enable" class="inline-form"><button type="submit">Enable</button></form>
+          <form method="post" action="/mcp/connections/{{ c.id }}/enable" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Enable</button></form>
         {% endif %}
-        <form method="post" action="/mcp/connections/{{ c.id }}/remove" class="inline-form"><button type="submit">Remove</button></form>
+        <form method="post" action="/mcp/connections/{{ c.id }}/remove" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Remove</button></form>
         </span>
       </summary>
       <div class="conn-details">
@@ -61,6 +66,7 @@
 
     <details class="add-form"><summary>Add connection</summary>
     <form method="post" action="/mcp/connections/add" class="stacked-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="provider_key" value="{{ p.key }}">
       <label>Label <input name="label" required placeholder="Personal"></label>
       {% if p.kind == 'oauth' %}
@@ -77,13 +83,15 @@
     </form></details>
 
     {% if not p.builtin %}
-    <form method="post" action="/mcp/providers/{{ p.key }}/remove" class="inline-form"><button type="submit">Remove provider</button></form>
+    <form method="post" action="/mcp/providers/{{ p.key }}/remove" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Remove provider</button></form>
     {% endif %}
   </div>
   {% endfor %}
 
   <details class="add-form"><summary>Add provider</summary>
   <form method="post" action="/mcp/providers/add" class="stacked-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Key <input name="key" required placeholder="notion"></label>
     <label>Display name <input name="display_name" required></label>
     <label>Kind <select name="kind"><option>oauth</option><option>http</option><option>sse</option></select></label>
@@ -103,14 +111,17 @@
   <div class="server-block">
     <h3>{{ srv.name }} <span class="badge {% if srv.status=='connected' %}badge-ok{% elif srv.status=='error' %}badge-err{% else %}badge-warn{% endif %}">{{ srv.status }}</span></h3>
     {% if srv.enabled %}
-      <form method="post" action="/mcp/stdio/{{ srv.name }}/disable" class="inline-form"><button type="submit">Disable</button></form>
+      <form method="post" action="/mcp/stdio/{{ srv.name }}/disable" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Disable</button></form>
     {% else %}
-      <form method="post" action="/mcp/stdio/{{ srv.name }}/enable" class="inline-form"><button type="submit">Enable</button></form>
+      <form method="post" action="/mcp/stdio/{{ srv.name }}/enable" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Enable</button></form>
     {% endif %}
     {% if srv.last_error %}<pre>{{ srv.last_error }}</pre>{% endif %}
     {{ tools_table(srv.tools) }}
     {% if srv.tools %}
     <form method="post" action="/mcp/stdio/{{ srv.name }}/tools/allow-all" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit">Allow all tools</button>
     </form>
     {% endif %}

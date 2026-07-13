@@ -88,6 +88,15 @@ class AuditEventType(StrEnum):
     DOCUMENT_INGESTED = "document.ingested"
     DOCUMENT_FAILED = "document.failed"
     AUTH_MAIL_SEND_FAILED = "auth.mail_send_failed"
+    AUTH_LOGIN_CODE_REQUESTED = "auth.login_code_requested"
+    AUTH_LOGIN_SUCCEEDED = "auth.login_succeeded"
+    AUTH_LOGIN_FAILED = "auth.login_failed"
+    AUTH_PASSKEY_REGISTERED = "auth.passkey_registered"
+    AUTH_PASSKEY_REGISTRATION_FAILED = "auth.passkey_registration_failed"
+    AUTH_PASSKEY_DELETED = "auth.passkey_deleted"
+    AUTH_LOGOUT = "auth.logout"
+    AUTH_SESSIONS_REVOKED = "auth.sessions_revoked"
+    AUTH_RATE_LIMITED = "auth.rate_limited"
 
 
 class MessageRole(StrEnum):

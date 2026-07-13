@@ -22,6 +22,7 @@ from jarvis.persistence.db import Base
 from jarvis.persistence.models import SessionRow
 from jarvis.persistence.repositories import AuthRepo
 from jarvis.web.app import create_app
+from jarvis.web.csrf import csrf_token_for_session
 from tests.integration.test_passkeys import SoftAuthenticator
 
 AUTH_ON = AuthConfig(enabled=True, secure_cookies=False, allowed_emails=["me@example.com"])
@@ -63,6 +64,8 @@ async def _enrolled_client(app, factory) -> tuple[httpx.AsyncClient, SoftAuthent
     raw = await SessionManager(session_factory=factory, config=AUTH_ON).issue_session(user.id)
     client = _client(app)
     client.cookies.set("jarvis_session", raw)
+    # Session-cookie'd unsafe requests must carry the CSRF synchronizer token.
+    client.headers["X-CSRF-Token"] = csrf_token_for_session(raw)
     begin = (await client.post("/auth/passkey/register/begin", headers=POST_HEADERS)).json()
     soft = SoftAuthenticator()
     resp = await client.post(
@@ -123,6 +126,24 @@ async def test_stale_session_challenged_with_replay_form(factory):
     assert 'name="model" value="alpha"' in resp.text
     ctx.model_store.set.assert_not_awaited()
     assert AuditEventType.AUTH_STEP_UP_CHALLENGED in _audited(ctx)
+
+
+async def test_replay_form_survives_form_field_csrf(factory):
+    """A plain browser form authenticates CSRF via the hidden field, not the
+    header — the middleware must parse the body WITHOUT eating it, or the
+    challenge page echoes an empty replay form and the replayed POST dies on
+    the missing csrf_token (found live in a real browser: form() without
+    body() consumes the stream uncached)."""
+    app, _ctx = _app(factory)
+    client, _ = await _enrolled_client(app, factory)
+    token = client.headers.pop("X-CSRF-Token")  # force the form-field path
+    await _make_stale(factory)
+    resp = await client.post(
+        "/settings/model", data={"model": "alpha", "csrf_token": token}, headers=POST_HEADERS
+    )
+    assert resp.status_code == 401
+    assert 'name="model" value="alpha"' in resp.text
+    assert f'name="csrf_token" value="{token}"' in resp.text  # replay stays CSRF-valid
 
 
 async def test_stale_session_htmx_gets_401_hx_trigger(factory):

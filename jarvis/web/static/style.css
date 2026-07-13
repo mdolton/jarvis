@@ -163,6 +163,13 @@ form { margin: 0; }
 
 .policy-form select { width: 9.5rem; }
 
+/* Horizontal filter bar (e.g. the audit type/limit form). */
+.filter-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
 input, select, textarea {
   width: 100%;
   min-height: 2.25rem;

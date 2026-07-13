@@ -22,6 +22,7 @@ bound to the domain it was registered on — a passkey created on
     <tr>
         <td>
             <form method="post" action="/settings/passkeys/rename" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="credential_id" value="{{ cred.credential_id }}">
                 <input type="text" name="name" value="{{ cred.name or '' }}"
                        placeholder="unnamed" maxlength="128">
@@ -36,7 +37,8 @@ bound to the domain it was registered on — a passkey created on
         </td>
         <td>
             <form method="post" action="/settings/passkeys/delete" class="inline-form"
-                  onsubmit="return confirm('Delete this passkey? {% if credentials | length == 1 %}It is your last one — you will be sent back to enrollment on your next page load.{% endif %}')">
+                  data-confirm="Delete this passkey? {% if credentials | length == 1 %}It is your last one — you will be sent back to enrollment on your next page load.{% endif %}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="credential_id" value="{{ cred.credential_id }}">
                 <button type="submit" class="btn-danger">Delete</button>
             </form>
@@ -53,29 +55,7 @@ bound to the domain it was registered on — a passkey created on
 </p>
 
 <script src="/static/passkeys.js"></script>
-<script>
-(function () {
-    var btn = document.getElementById("passkey-add");
-    var err = document.getElementById("passkey-error");
-    if (!window.jarvisPasskeys || !jarvisPasskeys.supported()) {
-        btn.disabled = true;
-        btn.textContent = "Passkeys unsupported in this browser";
-        return;
-    }
-    btn.addEventListener("click", async function () {
-        err.hidden = true;
-        try {
-            var name = prompt("Name this passkey (e.g. Pixel fingerprint)") || "";
-            await jarvisPasskeys.register(name.trim());
-            window.location.reload();
-        } catch (e) {
-            if (e.name === "AbortError" || e.name === "NotAllowedError") return;
-            err.textContent = e.message || "Passkey setup failed.";
-            err.hidden = false;
-        }
-    });
-})();
-</script>
+<script src="/static/settings_passkeys.js"></script>
 
 {% endif %}
 {% endblock %}

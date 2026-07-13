@@ -26,6 +26,7 @@ from jarvis.persistence.db import Base
 from jarvis.persistence.models import UserRow
 from jarvis.persistence.repositories import AuditRepo, AuthRepo
 from jarvis.web.app import create_app
+from jarvis.web.csrf import csrf_token_for_session
 from jarvis.web.routes.auth import NONCE_COOKIE, AuthFlow
 
 AUTH_ON = AuthConfig(
@@ -211,6 +212,10 @@ async def test_code_is_consume_once(factory):
         await _request_code(client)
         code = mailer.last_code()
         first = await client.post("/auth/verify", data={"code": code}, headers=ORIGIN)
+        # Drop the session issued by the first verify: the replay models a
+        # code reuse attempt from elsewhere, not the logged-in browser (which
+        # would be CSRF-gated before the code is even looked at).
+        client.cookies.delete("jarvis_session")
         replay = await client.post("/auth/verify", data={"code": code}, headers=ORIGIN)
     assert first.status_code == 303
     assert replay.status_code == 200
@@ -337,7 +342,10 @@ async def test_logout_all_revokes_every_session(factory):
 
     async with _client(_app(factory, CapturingMailer())) as client:
         client.cookies.set("jarvis_session", laptop)
-        resp = await client.post("/auth/logout-all", headers=ORIGIN)
+        resp = await client.post(
+            "/auth/logout-all",
+            headers={**ORIGIN, "X-CSRF-Token": csrf_token_for_session(laptop)},
+        )
     assert resp.status_code == 302
     assert await manager.validate(laptop) is None
     assert await manager.validate(phone) is None

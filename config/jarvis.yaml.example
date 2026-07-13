@@ -16,10 +16,19 @@ idle_timeout_sec: 900
 max_concurrent_agents: 3
 log_level: INFO
 default_schedule_output_mode: discord
-# Peers uvicorn trusts to set X-Forwarded-For: the reverse proxy's IP ONLY,
-# NEVER "*" (a spoofable client IP defeats per-IP login rate limiting).
-# Leave unset when no proxy is in front (uvicorn then trusts loopback only).
+# ⚠ Peers uvicorn trusts to set X-Forwarded-For: the reverse proxy's IP ONLY,
+# NEVER "*" (config validation rejects it). If uvicorn trusts X-Forwarded-For
+# from arbitrary sources, anyone can spoof their client IP and walk straight
+# past per-IP login rate limiting, failure backoff, and the audit trail's IP
+# column. Leave unset when no proxy is in front (uvicorn then trusts
+# loopback only).
 # forwarded_allow_ips: "172.18.0.2"
+
+# Host-header allow-list: the public domain(s) the dashboard is served on.
+# Requests with any other Host get 400. localhost/127.0.0.1 are always
+# allowed on top (the in-container Docker healthcheck uses them). Leave
+# unset for local dev.
+# trusted_hosts: ["jarvis.example.com"]
 
 # Inbound event webhook (POST /events/webhook). Without a token the endpoint
 # is disabled (404). Uncomment and set JARVIS_EVENTS_WEBHOOK_TOKEN to enable;
@@ -80,6 +89,10 @@ auth:
   session_idle_timeout_days: 7
   code_ttl_minutes: 10
   step_up_window_minutes: 5
+  # Global cap on outstanding (unconsumed, unexpired) login codes across all
+  # users — bounds the standing pool of guessable secrets no matter how the
+  # per-address/per-IP request buckets are gamed.
+  max_inflight_codes: 20
 
 # Outbound mail for emailed login codes.
 #

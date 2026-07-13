@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Jarvis — sign in</title>
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -14,6 +15,7 @@
         <button type="button" id="passkey-signin" hidden>Sign in with a passkey</button>
         <p class="auth-error" id="passkey-error" hidden></p>
         <form method="post" action="/auth/login">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <!-- autocomplete="username webauthn" arms conditional UI: the
                  browser offers saved passkeys in this field's autofill. -->
             <input type="email" name="email" placeholder="you@example.com"
@@ -22,36 +24,6 @@
         </form>
     </main>
     <script src="/static/passkeys.js"></script>
-    <script>
-    (async function () {
-        if (!window.jarvisPasskeys || !jarvisPasskeys.supported()) return;
-        var btn = document.getElementById("passkey-signin");
-        var err = document.getElementById("passkey-error");
-        btn.hidden = false;
-        var conditionalAbort = null;
-
-        btn.addEventListener("click", async function () {
-            if (conditionalAbort) conditionalAbort.abort();
-            err.hidden = true;
-            try {
-                await jarvisPasskeys.login();
-            } catch (e) {
-                if (e.name === "AbortError" || e.name === "NotAllowedError") return;
-                err.textContent = e.message || "Passkey sign-in failed.";
-                err.hidden = false;
-            }
-        });
-
-        // Conditional UI: offer passkeys via autofill on the email field so
-        // the passkey is the path of least resistance. Silently ignore
-        // dismissal/abort — the emailed-code form still works.
-        if (await jarvisPasskeys.conditionalLoginAvailable()) {
-            conditionalAbort = new AbortController();
-            jarvisPasskeys
-                .login({ conditional: true, signal: conditionalAbort.signal })
-                .catch(function () {});
-        }
-    })();
-    </script>
+    <script src="/static/auth_login.js"></script>
 </body>
 </html>

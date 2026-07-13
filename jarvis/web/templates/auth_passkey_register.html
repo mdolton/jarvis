@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Jarvis — set up a passkey</title>
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -18,7 +19,7 @@
         required before you can use the dashboard. It takes a few seconds:
         your browser will ask for a fingerprint, face, or PIN.</p>
         {% endif %}
-        <form id="enroll-form" onsubmit="return false">
+        <form id="enroll-form">
             <input type="text" id="passkey-name" maxlength="128"
                    placeholder="Name this passkey (e.g. MacBook Touch ID)">
             <button type="submit" id="passkey-create">Create a passkey</button>
@@ -28,6 +29,7 @@
         doesn&rsquo;t support passkeys. Try a current Chrome, Firefox, Safari,
         or Edge.</p>
         <form method="post" action="/auth/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn-danger">Sign out</button>
         </form>
     </main>
@@ -45,47 +47,6 @@
     </template>
 
     <script src="/static/passkeys.js"></script>
-    <script>
-    (function () {
-        var form = document.getElementById("enroll-form");
-        var err = document.getElementById("passkey-error");
-
-        if (!window.jarvisPasskeys || !jarvisPasskeys.supported()) {
-            form.hidden = true;
-            document.getElementById("passkey-unsupported").hidden = false;
-            return;
-        }
-
-        form.addEventListener("submit", async function () {
-            err.hidden = true;
-            var result;
-            try {
-                result = await jarvisPasskeys.register(
-                    document.getElementById("passkey-name").value.trim());
-            } catch (e) {
-                if (e.name === "AbortError" || e.name === "NotAllowedError") return;
-                err.textContent = e.message || "Passkey setup failed. Try again.";
-                err.hidden = false;
-                return;
-            }
-            if (result.recovery_codes && result.recovery_codes.length) {
-                showRecoveryCodes(result.recovery_codes);
-            } else {
-                window.location.assign("/");
-            }
-        });
-
-        function showRecoveryCodes(codes) {
-            var card = document.getElementById("enroll-card");
-            card.replaceChildren(
-                document.getElementById("recovery-template").content.cloneNode(true));
-            document.getElementById("recovery-codes").textContent = codes.join("\n");
-            document.getElementById("recovery-copy").addEventListener("click", function () {
-                navigator.clipboard.writeText(codes.join("\n"));
-                this.textContent = "Copied";
-            });
-        }
-    })();
-    </script>
+    <script src="/static/auth_register.js"></script>
 </body>
 </html>

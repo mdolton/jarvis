@@ -89,6 +89,11 @@ class AuthConfig(_StrictModel):
     session_idle_timeout_days: int = Field(default=7, ge=1)
     code_ttl_minutes: int = Field(default=10, ge=1)
     step_up_window_minutes: int = Field(default=5, ge=1)
+    # Global cap on outstanding (unconsumed, unexpired) login codes across
+    # all users. The per-address/per-IP buckets bound the request RATE; this
+    # bounds the standing attack surface (each live code is a guessable
+    # secret). Generous for a closed allow-list — hitting it means abuse.
+    max_inflight_codes: int = Field(default=20, ge=1)
 
 
 class MailConfig(_StrictModel):
@@ -182,6 +187,10 @@ class JarvisConfig(_StrictModel):
     # per-IP login rate limiting. None keeps uvicorn's own safe default
     # (loopback only).
     forwarded_allow_ips: str | None = None
+    # Host header allow-list (the public domain, e.g. ["jarvis.example.com"]).
+    # None disables the check (local dev). Loopback names are always allowed
+    # on top so the in-container Docker healthcheck keeps working.
+    trusted_hosts: list[str] | None = None
 
     @model_validator(mode="after")
     def _proxy_and_mail_traps(self) -> "JarvisConfig":

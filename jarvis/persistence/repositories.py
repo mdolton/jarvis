@@ -1548,6 +1548,16 @@ class AuthRepo:
         await self._session.refresh(row)
         return row
 
+    async def count_active_auth_codes(self) -> int:
+        """Unconsumed, unexpired codes across ALL users — the global
+        in-flight pool that codes.py caps before issuing another."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(AuthCodeRow)
+            .where(AuthCodeRow.consumed_at.is_(None), AuthCodeRow.expires_at > _utcnow())
+        )
+        return int(result.scalar_one())
+
     async def record_code_attempt(self, nonce_hash: str) -> int | None:
         """+1 attempt on the live code bound to this nonce; returns the new count.
 
