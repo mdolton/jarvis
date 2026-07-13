@@ -2,12 +2,13 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.core.types import AuditEventType
 from jarvis.persistence.repositories import AuditRepo, DigestTemplateRepo, ScheduleRepo
 from jarvis.scheduler.scheduler import validate_schedule_timing
+from jarvis.web.step_up import require_step_up
 
 router = APIRouter()
 
@@ -58,7 +59,7 @@ async def schedule_list(request: Request, template_id: str | None = Query(defaul
     )
 
 
-@router.post("/schedules")
+@router.post("/schedules", dependencies=[Depends(require_step_up)])
 async def schedule_create(
     request: Request,
     name: str = Form(...),
@@ -93,7 +94,7 @@ async def schedule_create(
     return RedirectResponse(url="/schedules", status_code=303)
 
 
-@router.post("/schedules/{schedule_id}/toggle")
+@router.post("/schedules/{schedule_id}/toggle", dependencies=[Depends(require_step_up)])
 async def schedule_toggle(request: Request, schedule_id: UUID):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
@@ -109,14 +110,14 @@ async def schedule_toggle(request: Request, schedule_id: UUID):
     return RedirectResponse(url="/schedules", status_code=303)
 
 
-@router.post("/schedules/{schedule_id}/run")
+@router.post("/schedules/{schedule_id}/run", dependencies=[Depends(require_step_up)])
 async def schedule_run_now(request: Request, schedule_id: UUID):
     ctx = request.app.state.ctx
     await ctx.scheduler.fire_now(schedule_id)
     return RedirectResponse(url="/schedules", status_code=303)
 
 
-@router.post("/schedules/{schedule_id}/delete")
+@router.post("/schedules/{schedule_id}/delete", dependencies=[Depends(require_step_up)])
 async def schedule_delete(request: Request, schedule_id: UUID):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:

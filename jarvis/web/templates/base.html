@@ -27,5 +27,16 @@
     <main>
         {% block content %}{% endblock %}
     </main>
+    <dialog id="step-up-modal" class="step-up-modal">
+        <h2>Confirm it's you</h2>
+        <p>This action touches sensitive settings and needs a fresh passkey confirmation.</p>
+        <p id="step-up-error" class="step-up-error"></p>
+        <div class="step-up-buttons">
+            <button id="step-up-confirm" type="button">Confirm with passkey</button>
+            <button id="step-up-cancel" type="button">Cancel</button>
+        </div>
+    </dialog>
+    <script src="/static/passkeys.js"></script>
+    <script src="/static/step_up.js"></script>
 </body>
 </html>

@@ -2,11 +2,12 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo, SettingsRepo
+from jarvis.web.step_up import require_step_up
 
 router = APIRouter()
 
@@ -75,7 +76,7 @@ async def mcp_page(request: Request):
     )
 
 
-@router.post("/mcp/tools/{tool_id}/policy")
+@router.post("/mcp/tools/{tool_id}/policy", dependencies=[Depends(require_step_up)])
 async def set_tool_policy(
     request: Request,
     tool_id: UUID,

@@ -6,10 +6,11 @@ import asyncio
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.persistence.repositories import ActionRepo
+from jarvis.web.step_up import require_step_up
 
 router = APIRouter()
 
@@ -46,7 +47,7 @@ async def action_detail(request: Request, action_id: UUID):
     )
 
 
-@router.post("/actions/{action_id}/approve")
+@router.post("/actions/{action_id}/approve", dependencies=[Depends(require_step_up)])
 async def approve_action(request: Request, action_id: UUID):
     try:
         await asyncio.shield(request.app.state.ctx.action_service.approve(action_id))
@@ -55,7 +56,7 @@ async def approve_action(request: Request, action_id: UUID):
     return RedirectResponse(url=f"/actions/{action_id}", status_code=303)
 
 
-@router.post("/actions/{action_id}/reject")
+@router.post("/actions/{action_id}/reject", dependencies=[Depends(require_step_up)])
 async def reject_action(request: Request, action_id: UUID, reason: str = Form("")):
     try:
         await asyncio.shield(

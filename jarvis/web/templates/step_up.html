@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Confirm it's you — Jarvis{% endblock %}
+{% block content %}
+<section class="step-up-page" id="step-up-page"
+         data-method="{{ method }}" data-action="{{ action }}">
+    <h1>Confirm it's you</h1>
+    <p>
+        This action touches sensitive settings and needs a fresh passkey
+        confirmation. Your submission is kept and re-sent once you confirm.
+    </p>
+    {% if fields is none and method != "GET" %}
+    <p>
+        This request couldn't be replayed automatically — after confirming,
+        go back and retry the action.
+    </p>
+    {% endif %}
+    <p id="step-up-page-error" class="step-up-error"></p>
+    <button id="step-up-page-confirm" type="button">Confirm with passkey</button>
+    {% if fields is not none and method != "GET" %}
+    <form id="step-up-replay" method="post" action="{{ action }}" hidden>
+        {% for name, value in fields %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+    </form>
+    {% endif %}
+</section>
+{% endblock %}

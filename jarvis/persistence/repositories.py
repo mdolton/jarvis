@@ -1660,6 +1660,28 @@ class AuthRepo:
         await self._session.commit()
         return rotated
 
+    async def refresh_session_last_auth(self, token_hash: str) -> bool:
+        """Stamp last_auth_at = now on a live session (step-up re-authentication).
+
+        Unlike rotate_session_token this keeps the token: step-up happens
+        mid-page from background fetches, and swapping the cookie under
+        concurrent in-flight requests would race them against the old token.
+        """
+        now = _utcnow()
+        result = await self._session.execute(
+            update(SessionRow)
+            .where(
+                SessionRow.token_hash == token_hash,
+                SessionRow.revoked_at.is_(None),
+                SessionRow.expires_at > now,
+            )
+            .values(last_auth_at=now)
+            .returning(SessionRow.id)
+        )
+        refreshed = result.scalar_one_or_none() is not None
+        await self._session.commit()
+        return refreshed
+
     async def touch_session(self, session_id: UUID) -> None:
         await self._session.execute(
             update(SessionRow).where(SessionRow.id == session_id).values(last_seen_at=_utcnow())

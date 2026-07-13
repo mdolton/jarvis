@@ -4,11 +4,12 @@ import asyncio
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from jarvis.oauth.flow import DCRUnsupportedError, OAuthCallbackError, OAuthDiscoveryError
 from jarvis.oauth.store import MCPConnectionRepo
+from jarvis.web.step_up import require_step_up
 
 router = APIRouter(prefix="/oauth")
 _log = logging.getLogger(__name__)
@@ -24,9 +25,7 @@ async def oauth_callback(request: Request):
 
     if error is not None:
         error_description = qp.get("error_description", "")
-        _log.warning(
-            "oauth callback returned error=%r description=%r", error, error_description
-        )
+        _log.warning("oauth callback returned error=%r description=%r", error, error_description)
         # Best-effort: sweep any matching pending row but don't fail if absent.
         state = qp.get("state")
         if state:
@@ -98,18 +97,14 @@ async def oauth_callback(request: Request):
             # running after this wait gives up — a timeout is "still in
             # progress", never a failure. Do not touch connection status; the
             # dashboard's runtime status reflects the eventual outcome.
-            _log.warning(
-                "post-callback MCP attach still pending for %s", result.runtime_name
-            )
+            _log.warning("post-callback MCP attach still pending for %s", result.runtime_name)
             return templates.TemplateResponse(
                 request,
                 "oauth_callback.html",
                 {"outcome": "pending", "provider": entry.display_name, "message": ""},
             )
         except Exception as e:
-            _log.exception(
-                "post-callback MCP attach failed for %s", result.runtime_name
-            )
+            _log.exception("post-callback MCP attach failed for %s", result.runtime_name)
             # Tokens are stored but the server never came up. Don't leave the
             # connection claiming "connected" with no tools — flag it so the
             # dashboard tells the truth and the user can retry.
@@ -137,12 +132,17 @@ async def oauth_callback(request: Request):
     )
 
 
-@router.get("/connect/{connection_id}")
+# /callback is deliberately NOT step-up gated: it arrives as a cross-site
+# top-level redirect from the provider and only completes a flow whose start
+# (/connect) already demanded a fresh assertion moments earlier.
+@router.get("/connect/{connection_id}", dependencies=[Depends(require_step_up)])
 async def oauth_connect(connection_id: str, request: Request):
     try:
         cid = UUID(connection_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}") from None
+        raise HTTPException(
+            status_code=404, detail=f"unknown connection {connection_id!r}"
+        ) from None
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
         conn = await MCPConnectionRepo(session).get(cid)
@@ -161,12 +161,14 @@ async def oauth_connect(connection_id: str, request: Request):
     return RedirectResponse(consent_url, status_code=302)
 
 
-@router.post("/disconnect/{connection_id}")
+@router.post("/disconnect/{connection_id}", dependencies=[Depends(require_step_up)])
 async def oauth_disconnect(connection_id: str, request: Request):
     try:
         cid = UUID(connection_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail=f"unknown connection {connection_id!r}") from None
+        raise HTTPException(
+            status_code=404, detail=f"unknown connection {connection_id!r}"
+        ) from None
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
         conn = await MCPConnectionRepo(session).get(cid)

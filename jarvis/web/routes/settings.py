@@ -1,9 +1,10 @@
 """GET /settings — config view with live model selection; POST /settings/model."""
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.core.types import AuditEvent, AuditEventType
+from jarvis.web.step_up import require_step_up
 
 router = APIRouter()
 
@@ -34,7 +35,7 @@ async def settings_page(request: Request):
     )
 
 
-@router.post("/settings/model")
+@router.post("/settings/model", dependencies=[Depends(require_step_up)])
 async def set_model(request: Request, model: str = Form("")):
     ctx = request.app.state.ctx
     old = ctx.model_store.current()

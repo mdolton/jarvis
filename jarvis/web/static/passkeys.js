@@ -108,6 +108,19 @@
     return done;
   }
 
+  /* Step-up: re-assert the CURRENT session's passkey for a sensitive route.
+     Resolves with {verified: true}; the server stamps last_auth_at. */
+  async function stepUp() {
+    const begin = await postJSON("/auth/step-up/begin");
+    const cred = await navigator.credentials.get({
+      publicKey: decodeRequestOptions(begin.options),
+    });
+    return postJSON("/auth/step-up/complete", {
+      challenge_id: begin.challenge_id,
+      credential: serializeAssertion(cred),
+    });
+  }
+
   async function conditionalLoginAvailable() {
     return !!(
       window.PublicKeyCredential &&
@@ -120,6 +133,7 @@
     supported: function () { return !!window.PublicKeyCredential; },
     register: register,
     login: login,
+    stepUp: stepUp,
     conditionalLoginAvailable: conditionalLoginAvailable,
   };
 })();

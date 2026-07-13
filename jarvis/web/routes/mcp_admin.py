@@ -1,8 +1,9 @@
 """Provider / connection / stdio mutation endpoints for the MCP tab."""
+
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from jarvis.core.types import AuditEvent, AuditEventType
@@ -11,6 +12,7 @@ from jarvis.oauth.crypto import encrypt_blob
 from jarvis.oauth.discovery import DiscoveryResult, discover_provider
 from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
 from jarvis.persistence.repositories import MCPServerRepo, MCPToolRepo, SettingsRepo
+from jarvis.web.step_up import require_step_up
 
 router = APIRouter()
 
@@ -35,16 +37,19 @@ def _redirect():
 async def _emit(ctx, action: str, **payload):
     emit = getattr(getattr(ctx, "audit", None), "emit", None)
     if emit is not None:
-        await emit(AuditEvent(type=AuditEventType.MCP_CONFIG_CHANGED,
-                              payload={"action": action, **payload}))
+        await emit(
+            AuditEvent(
+                type=AuditEventType.MCP_CONFIG_CHANGED, payload={"action": action, **payload}
+            )
+        )
 
 
-@router.post("/mcp/providers/add")
+@router.post("/mcp/providers/add", dependencies=[Depends(require_step_up)])
 async def add_provider(
     request: Request,
     key: str = Form(...),
     display_name: str = Form(...),
-    kind: str = Form(...),            # 'oauth' | 'http' | 'sse'
+    kind: str = Form(...),  # 'oauth' | 'http' | 'sse'
     mcp_url: str = Form(...),
     auth_mode: str = Form("dcr"),
     oauth_metadata_url: str = Form(""),
@@ -62,11 +67,16 @@ async def add_provider(
         if await repo.get(key) is not None:
             raise HTTPException(400, f"provider {key!r} already exists")
         await repo.upsert(
-            key=key, display_name=display_name.strip(), kind=kind, mcp_url=mcp_url.strip(),
+            key=key,
+            display_name=display_name.strip(),
+            kind=kind,
+            mcp_url=mcp_url.strip(),
             builtin=False,
             auth_mode=(auth_mode if kind == "oauth" else None),
             oauth_metadata_url=(oauth_metadata_url.strip() or None) if kind == "oauth" else None,
-            pkce=True, send_resource_indicator=True, extra_auth_params={},
+            pkce=True,
+            send_resource_indicator=True,
+            extra_auth_params={},
             default_scopes=default_scopes.split() if default_scopes.strip() else [],
             header_names=[h.strip() for h in header_names.split(",") if h.strip()],
         )
@@ -74,7 +84,9 @@ async def add_provider(
     return _redirect()
 
 
-@router.post("/mcp/providers/discover", response_class=HTMLResponse)
+@router.post(
+    "/mcp/providers/discover", response_class=HTMLResponse, dependencies=[Depends(require_step_up)]
+)
 async def discover_provider_endpoint(request: Request, mcp_url: str = Form(...)):
     """Probe an MCP URL for OAuth metadata; return an HTMX fragment that prefills
     the Add Provider form. Never fails the request — discovery is best-effort."""
@@ -87,9 +99,12 @@ async def discover_provider_endpoint(request: Request, mcp_url: str = Form(...))
     return templates.TemplateResponse(request, "_provider_discovery.html", {"r": result})
 
 
-@router.post("/mcp/providers/{provider_key}/edit-credentials")
+@router.post(
+    "/mcp/providers/{provider_key}/edit-credentials", dependencies=[Depends(require_step_up)]
+)
 async def edit_provider_credentials(
-    request: Request, provider_key: str,
+    request: Request,
+    provider_key: str,
     client_id: str = Form(...),
     client_secret: str = Form(""),
 ):
@@ -112,7 +127,7 @@ async def edit_provider_credentials(
     return _redirect()
 
 
-@router.post("/mcp/providers/{provider_key}/remove")
+@router.post("/mcp/providers/{provider_key}/remove", dependencies=[Depends(require_step_up)])
 async def remove_provider(request: Request, provider_key: str):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
@@ -129,7 +144,7 @@ async def remove_provider(request: Request, provider_key: str):
     return _redirect()
 
 
-@router.post("/mcp/connections/add")
+@router.post("/mcp/connections/add", dependencies=[Depends(require_step_up)])
 async def add_connection(
     request: Request,
     provider_key: str = Form(...),
@@ -164,9 +179,15 @@ async def add_connection(
 
     async with ctx.session_factory() as session:
         conn = await MCPConnectionRepo(session).create(
-            provider_key=provider_key, label=label.strip() or "Default", runtime_name=rt,
-            client_id_enc=cid_enc, client_secret_enc=sec_enc, scopes=scope_list,
-            url_override=url_override.strip() or None, headers_enc=headers_enc)
+            provider_key=provider_key,
+            label=label.strip() or "Default",
+            runtime_name=rt,
+            client_id_enc=cid_enc,
+            client_secret_enc=sec_enc,
+            scopes=scope_list,
+            url_override=url_override.strip() or None,
+            headers_enc=headers_enc,
+        )
         conn_id = conn.id
     await _emit(ctx, "connection.add", provider_key=provider_key, runtime_name=rt)
 
@@ -180,7 +201,7 @@ async def add_connection(
     return _redirect()
 
 
-@router.post("/mcp/connections/{connection_id}/enable")
+@router.post("/mcp/connections/{connection_id}/enable", dependencies=[Depends(require_step_up)])
 async def enable_connection(request: Request, connection_id: UUID):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
@@ -197,7 +218,7 @@ async def enable_connection(request: Request, connection_id: UUID):
     return _redirect()
 
 
-@router.post("/mcp/connections/{connection_id}/disable")
+@router.post("/mcp/connections/{connection_id}/disable", dependencies=[Depends(require_step_up)])
 async def disable_connection(request: Request, connection_id: UUID):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
@@ -214,7 +235,7 @@ async def disable_connection(request: Request, connection_id: UUID):
     return _redirect()
 
 
-@router.post("/mcp/connections/{connection_id}/remove")
+@router.post("/mcp/connections/{connection_id}/remove", dependencies=[Depends(require_step_up)])
 async def remove_connection(request: Request, connection_id: UUID):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
@@ -236,7 +257,7 @@ async def remove_connection(request: Request, connection_id: UUID):
     return _redirect()
 
 
-@router.post("/mcp/stdio/{name}/disable")
+@router.post("/mcp/stdio/{name}/disable", dependencies=[Depends(require_step_up)])
 async def disable_stdio(request: Request, name: str):
     ctx = request.app.state.ctx
     await _set_stdio_disabled(ctx, name, True)
@@ -248,7 +269,7 @@ async def disable_stdio(request: Request, name: str):
     return _redirect()
 
 
-@router.post("/mcp/stdio/{name}/enable")
+@router.post("/mcp/stdio/{name}/enable", dependencies=[Depends(require_step_up)])
 async def enable_stdio(request: Request, name: str):
     ctx = request.app.state.ctx
     await _set_stdio_disabled(ctx, name, False)
@@ -262,14 +283,12 @@ async def enable_stdio(request: Request, name: str):
     return _redirect()
 
 
-@router.post("/mcp/stdio/{name}/tools/allow-all")
+@router.post("/mcp/stdio/{name}/tools/allow-all", dependencies=[Depends(require_step_up)])
 async def allow_all_stdio_tools(request: Request, name: str):
     ctx = request.app.state.ctx
     async with ctx.session_factory() as session:
         servers = await MCPServerRepo(session).list_all()
-        row = next(
-            (s for s in servers if s.name == name and s.source == "stdio"), None
-        )
+        row = next((s for s in servers if s.name == name and s.source == "stdio"), None)
         if row is None:
             raise HTTPException(404, "stdio server not found")
         await MCPToolRepo(session).set_policy_override_for_server(row.id, "allow")
