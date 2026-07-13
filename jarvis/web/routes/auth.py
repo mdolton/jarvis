@@ -14,7 +14,7 @@ the wire, because the mail send is the timing oracle (CVE-2026-26185).
 
 from dataclasses import dataclass
 
-from fastapi import APIRouter, BackgroundTasks, Form, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from jarvis.auth.codes import LoginCodeService
@@ -23,6 +23,7 @@ from jarvis.auth.ratelimit import RateLimiter
 from jarvis.auth.sessions import SessionManager
 from jarvis.persistence.repositories import AuthRepo
 from jarvis.web.auth_middleware import LOGIN_PATH, auth_config
+from jarvis.web.step_up import require_step_up
 
 router = APIRouter()
 
@@ -174,7 +175,7 @@ async def logout(request: Request):
     return response
 
 
-@router.post("/auth/logout-all")
+@router.post("/auth/logout-all", dependencies=[Depends(require_step_up)])
 async def logout_all(request: Request):
     """Revoke every session for the signed-in user ("sign out all devices")."""
     response = RedirectResponse(LOGIN_PATH, status_code=302)

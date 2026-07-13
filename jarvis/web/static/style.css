@@ -406,3 +406,37 @@ code {
   line-height: 1.7;
   user-select: all;
 }
+
+/* Step-up re-authentication (modal for htmx swaps, page for full posts). */
+.step-up-modal {
+  max-width: 24rem;
+  padding: 1.5rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.step-up-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+.step-up-modal h2 { margin-top: 0; }
+.step-up-buttons { display: flex; gap: 0.6rem; }
+
+.step-up-error {
+  margin: 0;
+  color: var(--err-fg);
+}
+
+.step-up-error:empty { display: none; }
+
+.step-up-page {
+  max-width: 28rem;
+  margin: 10vh auto 0;
+  padding: 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.step-up-page h1 { margin: 0; }

@@ -14,14 +14,16 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from jarvis.auth.passkeys import PasskeyError, PasskeyService
-from jarvis.auth.sessions import SessionManager
+from jarvis.auth.sessions import SessionManager, hash_token
+from jarvis.core.types import AuditEventType
 from jarvis.persistence.models import UserRow
 from jarvis.persistence.repositories import AuthRepo
 from jarvis.web.auth_middleware import LOGIN_PATH, REGISTER_PATH, auth_config
+from jarvis.web.step_up import emit_step_up_event, require_step_up
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,75 @@ async def login_complete(request: Request):
     return response
 
 
+# -- step-up (fresh assertion for sensitive routes) --------------------
+#
+# Same login ceremony, but bound to the CURRENT session: the asserting user
+# must be the session's user, and success stamps sessions.last_auth_at so
+# require_step_up passes for the next step_up_window_minutes.
+
+
+@router.post("/auth/step-up/begin")
+async def step_up_begin(request: Request):
+    user = await _session_user(request)
+    service = _passkey_service(request)
+    if user is None or service is None:
+        return _failed(401)
+    options_json, challenge_id = await service.begin_login()
+    return JSONResponse({"challenge_id": str(challenge_id), "options": json.loads(options_json)})
+
+
+@router.post("/auth/step-up/complete")
+async def step_up_complete(request: Request):
+    user = await _session_user(request)
+    service = _passkey_service(request)
+    manager = _session_manager(request)
+    if user is None or service is None or manager is None:
+        return _failed(401)
+    parsed = await _ceremony_input(request)
+    if parsed is None:
+        return _failed(400)
+    challenge_id, credential, _ = parsed
+    ctx = request.app.state.ctx
+
+    async def _audit_failure(reason: str) -> None:
+        await emit_step_up_event(
+            ctx,
+            AuditEventType.AUTH_STEP_UP_FAILED,
+            user_email=user.email,
+            path=request.url.path,
+            method=request.method,
+            reason=reason,
+        )
+
+    try:
+        asserted = await service.complete_login(challenge_id=challenge_id, credential=credential)
+    except PasskeyError as exc:
+        logger.info("step-up assertion rejected for %s: %s", user.email, exc)
+        await _audit_failure("assertion failed")
+        return _failed(401)
+    if asserted.id != user.id:
+        logger.info(
+            "step-up assertion by %s does not match session user %s", asserted.email, user.email
+        )
+        await _audit_failure("credential belongs to a different user")
+        return _failed(401)
+
+    raw_token = request.cookies.get(manager.cookie_name)
+    async with ctx.session_factory() as session:
+        refreshed = await AuthRepo(session).refresh_session_last_auth(hash_token(raw_token))
+    if not refreshed:
+        await _audit_failure("session no longer live")
+        return _failed(401)
+    await emit_step_up_event(
+        ctx,
+        AuditEventType.AUTH_STEP_UP_SUCCEEDED,
+        user_email=user.email,
+        path=request.url.path,
+        method=request.method,
+    )
+    return JSONResponse({"verified": True})
+
+
 # -- management (behind the session middleware) ------------------------
 
 
@@ -189,7 +260,7 @@ async def _owned_credential(request: Request, credential_id: str):
     return row if row is not None and row.user_id == user.id else None
 
 
-@router.post("/settings/passkeys/rename")
+@router.post("/settings/passkeys/rename", dependencies=[Depends(require_step_up)])
 async def rename_passkey(request: Request, credential_id: str = Form(""), name: str = Form("")):
     row = await _owned_credential(request, credential_id)
     if row is not None and name.strip():
@@ -198,7 +269,7 @@ async def rename_passkey(request: Request, credential_id: str = Form(""), name: 
     return RedirectResponse("/settings/passkeys", status_code=303)
 
 
-@router.post("/settings/passkeys/delete")
+@router.post("/settings/passkeys/delete", dependencies=[Depends(require_step_up)])
 async def delete_passkey(request: Request, credential_id: str = Form("")):
     row = await _owned_credential(request, credential_id)
     if row is not None:

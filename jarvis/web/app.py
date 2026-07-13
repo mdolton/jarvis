@@ -9,6 +9,7 @@ from jinja2 import pass_context
 
 from jarvis.web.auth_middleware import SessionAuthMiddleware
 from jarvis.web.security import SameOriginUnsafeMethodMiddleware
+from jarvis.web.step_up import install_step_up_handlers
 from jarvis.web.time_format import configured_timezone, format_server_local
 
 _HERE = Path(__file__).parent
@@ -33,6 +34,8 @@ def create_app(*, app_context=None) -> FastAPI:
     # Added last = runs first: the session gate sees every request before the
     # same-origin check does.
     app.add_middleware(SessionAuthMiddleware)
+    # Step-up (fresh passkey assertion) challenges raised by require_step_up.
+    install_step_up_handlers(app)
 
     # Attach context so route handlers can access repos, config, etc.
     app.state.ctx = app_context
