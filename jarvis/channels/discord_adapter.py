@@ -4,7 +4,8 @@ Lifecycle:
   - start(dispatcher): begin a supervised connection loop and wait until the
     gateway is ready (or a short startup grace elapses).
   - stop(): signal the supervisor to exit and close the active client.
-  - send(msg): fetch the user by ID and call user.send(text).
+  - send(msg): fetch the user by ID and send the text, split into
+    Discord-sized messages.
 
 Supervision: the gateway connection runs under `_run_supervised`, which rebuilds
 the client and reconnects (with capped exponential backoff) if `client.start`
@@ -24,6 +25,7 @@ from discord import app_commands
 from jarvis.channels.base import OutboundMessage
 from jarvis.channels.discord_commands import ModelCommandDeps, register_model_commands
 from jarvis.channels.discord_stream import DiscordMessageStream
+from jarvis.channels.discord_text import chunk_message
 from jarvis.core.types import ChannelKind, ChannelMessage
 
 _log = logging.getLogger(__name__)
@@ -181,7 +183,19 @@ class DiscordAdapter:
         except ValueError as e:
             raise ValueError(f"channel_ref {msg.channel_ref!r} is not a Discord user id") from e
         user = await self._client.fetch_user(user_id)
-        await user.send(msg.text)
+        # Scheduled runs never stream (OutputRouter.open_stream serves channel
+        # messages only), so this — not DiscordMessageStream.finish — is the
+        # path a daily brief takes. An unsplit brief over 2000 chars is
+        # rejected wholesale: HTTPException 50035, the run recorded as failed,
+        # and the whole digest lost.
+        chunks = chunk_message(msg.text)
+        if not chunks:
+            # Empty result: send as-is so Discord's rejection still surfaces as
+            # a failed run, rather than quietly delivering nothing at all.
+            await user.send(msg.text)
+            return
+        for chunk in chunks:
+            await user.send(chunk)
 
     async def open_stream(self, channel_ref: str) -> DiscordMessageStream | None:
         """Open a live-editing draft stream to a DM. Best-effort: any failure

@@ -28,6 +28,50 @@ async def test_send_fetches_user_and_calls_send():
     fake_user.send.assert_awaited_once_with("hello back")
 
 
+def _adapter_with_user():
+    adapter = DiscordAdapter(token="tok", allowed_user_ids={"111"})
+    fake_user = MagicMock()
+    fake_user.send = AsyncMock()
+    fake_client = MagicMock()
+    fake_client.fetch_user = AsyncMock(return_value=fake_user)
+    adapter._client = fake_client
+    return adapter, fake_user
+
+
+async def _send(adapter, text: str):
+    await adapter.send(
+        OutboundMessage(channel_kind=ChannelKind.DISCORD, channel_ref="111", text=text)
+    )
+
+
+async def test_send_splits_text_over_the_discord_limit():
+    """A daily brief over 2000 chars used to be rejected wholesale (HTTP 400,
+    error code 50035) and the run recorded as failed. Scheduled runs never
+    stream, so this path — not DiscordMessageStream — carries the brief."""
+    adapter, user = _adapter_with_user()
+    brief = "\n".join(f"- item {i} " + "z" * 120 for i in range(50))
+
+    await _send(adapter, brief)
+
+    sent = [c.args[0] for c in user.send.await_args_list]
+    assert len(sent) > 1
+    assert all(len(chunk) <= 2000 for chunk in sent)
+    assert "\n".join(sent) == brief  # nothing dropped across the seam
+
+
+async def test_send_under_the_limit_stays_a_single_message():
+    adapter, user = _adapter_with_user()
+    await _send(adapter, "short brief")
+    user.send.assert_awaited_once_with("short brief")
+
+
+async def test_send_of_empty_text_still_reaches_discord():
+    """An empty result must surface as a failed run, not vanish silently."""
+    adapter, user = _adapter_with_user()
+    await _send(adapter, "   ")
+    user.send.assert_awaited_once_with("   ")
+
+
 async def test_send_before_start_raises():
     adapter = DiscordAdapter(token="tok", allowed_user_ids={"111"})
 

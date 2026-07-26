@@ -19,15 +19,11 @@ import asyncio
 import logging
 from collections.abc import Callable
 
+from jarvis.channels.discord_text import chunk_message
+
 _log = logging.getLogger(__name__)
 
-_MESSAGE_LIMIT = 2000
 _PREVIEW_LIMIT = 1900  # streaming cap; leaves room for the status line
-
-
-def _chunks(text: str, limit: int = _MESSAGE_LIMIT) -> list[str]:
-    text = text.strip()
-    return [text[i : i + limit] for i in range(0, len(text), limit)]
 
 
 class DiscordMessageStream:
@@ -73,7 +69,7 @@ class DiscordMessageStream:
             return
         self._closed = True
         await self._stop_typing()
-        chunks = _chunks(final_text)
+        chunks = chunk_message(final_text)
         if not chunks:
             return
         try:
