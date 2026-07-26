@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -7,6 +8,8 @@ from agents import Agent, ModelRetrySettings, ModelSettings, RetryPolicyContext
 
 from jarvis.config.schema import LLMConfig
 from jarvis.core.types import ScheduledTrigger
+
+_log = logging.getLogger(__name__)
 
 # One resample after a server-side failure, then give up. The failure this
 # guards is a bad *sample*, not a bad request, so a second attempt is cheap
@@ -63,10 +66,40 @@ def resolve_model(
     return config_default
 
 
+def resolve_mcp_scope(trigger) -> tuple[str, ...] | None:
+    """Which MCP servers this run may use; None means all of them.
+
+    Only scheduled triggers carry a scope. An empty list is treated as "no
+    scope set" rather than "no servers": a schedule saved with nothing ticked
+    should keep working, not silently lose every tool.
+    """
+    if isinstance(trigger, ScheduledTrigger) and trigger.mcp_servers:
+        return tuple(trigger.mcp_servers)
+    return None
+
+
+def _scoped_servers(provider: Callable[..., list], scope: tuple[str, ...] | None) -> list:
+    if scope is None:
+        return provider()
+    servers = provider(only=scope)
+    missing = set(scope) - {getattr(s, "name", None) for s in servers}
+    if len(servers) < len(scope):
+        # Named servers that no longer exist are dropped rather than fatal, but
+        # running with a smaller tool surface than the schedule asked for is
+        # exactly the kind of thing that should not pass unremarked.
+        _log.warning(
+            "scheduled run scoped to %d MCP server(s) but only %d are connected%s",
+            len(scope),
+            len(servers),
+            f" (unmatched: {sorted(n for n in missing if n)})" if missing else "",
+        )
+    return servers
+
+
 def build_agent(
     *,
     llm_config: LLMConfig,
-    mcp_servers_provider: Callable[[], list],
+    mcp_servers_provider: Callable[..., list],
     trigger=None,
     explicit_model: Any = None,
     model_provider: Callable[[], str] | None = None,
@@ -82,7 +115,7 @@ def build_agent(
     agent = Agent(
         name="jarvis",
         instructions=system_prompt(),
-        mcp_servers=mcp_servers_provider(),
+        mcp_servers=_scoped_servers(mcp_servers_provider, resolve_mcp_scope(trigger)),
         model=model,
         tools=list(tools or []),
         model_settings=ModelSettings(

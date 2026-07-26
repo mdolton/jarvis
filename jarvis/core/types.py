@@ -132,6 +132,9 @@ class ScheduledTrigger(_ModelBase):
     prompt: str
     output_mode: Literal["discord", "dashboard_only", "discord_if_noteworthy"]
     model: str | None = None
+    # Allow-list of MCP server names, mirroring ScheduleRow.mcp_servers. None
+    # or empty means every connected server.
+    mcp_servers: tuple[str, ...] | None = None
     timezone: str | None = None
     fired_at: datetime | None = None
 

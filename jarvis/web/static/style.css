@@ -447,3 +447,33 @@ code {
 }
 
 .step-up-page h1 { margin: 0; }
+
+.scope-picker {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.scope-picker legend {
+  padding: 0 0.35rem;
+  font-size: 0.86rem;
+}
+
+.scope-picker .muted { margin: 0; }
+
+.scope-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: 0.9rem;
+}
+
+.scope-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  max-width: 22rem;
+}

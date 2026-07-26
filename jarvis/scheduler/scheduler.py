@@ -257,6 +257,7 @@ class Scheduler:
             prompt = row.prompt
             output_mode = row.output_mode
             model = row.model
+            mcp_servers = tuple(row.mcp_servers) if row.mcp_servers else None
             timezone = row.timezone
             schedule_name = row.name
             notify_on_error = row.notify_on_error
@@ -283,6 +284,7 @@ class Scheduler:
             prompt=prompt,
             output_mode=output_mode,
             model=model,
+            mcp_servers=mcp_servers,
             timezone=timezone,
             fired_at=fired_at,
         )

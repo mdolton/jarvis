@@ -845,6 +845,7 @@ class ScheduleRepo:
         notify_on_error: bool,
         enabled: bool,
         model: str | None = None,
+        mcp_servers: list[str] | None = None,
         discord_user_id: str | None = None,
     ) -> ScheduleRow:
         now = _utcnow()
@@ -856,6 +857,9 @@ class ScheduleRepo:
             prompt=prompt,
             output_mode=output_mode,
             model=model,
+            # Store None, not [], so "all servers" has exactly one
+            # representation in the DB and reads the same as a pre-0017 row.
+            mcp_servers=list(mcp_servers) if mcp_servers else None,
             discord_user_id=discord_user_id,
             notify_on_error=notify_on_error,
             enabled=enabled,

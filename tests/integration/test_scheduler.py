@@ -1,4 +1,5 @@
 """Scheduler integration tests. Use fire_now to trigger immediately."""
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 
@@ -488,3 +489,84 @@ async def test_on_created_ignores_disabled_row(infra):
         assert scheduler.active_job_count() == 0
     finally:
         await scheduler.stop()
+
+
+async def test_schedule_mcp_scope_reaches_the_server_provider(infra):
+    """End-to-end plumbing: the row's allow-list must survive into the call
+    that selects MCP servers for the agent."""
+    _, factory, audit = infra
+    calls = []
+
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=provider,
+        discord_adapter=None,
+    )
+
+    async with factory() as s:
+        sched = await ScheduleRepo(s).create(
+            name="scoped",
+            description="",
+            cron_expr=_far_future_cron_expr(),
+            timezone="America/Los_Angeles",
+            prompt="brief me",
+            output_mode="dashboard_only",
+            notify_on_error=True,
+            enabled=True,
+            mcp_servers=["weather", "calendar"],
+        )
+        sched_id = sched.id
+
+    await scheduler.start()
+    try:
+        await scheduler.fire_now(sched_id)
+    finally:
+        await scheduler.stop()
+
+    assert calls == [{"only": ("weather", "calendar")}]
+
+
+async def test_schedule_without_scope_calls_the_provider_unfiltered(infra):
+    _, factory, audit = infra
+    calls = []
+
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=provider,
+        discord_adapter=None,
+    )
+
+    async with factory() as s:
+        sched = await ScheduleRepo(s).create(
+            name="unscoped",
+            description="",
+            cron_expr=_far_future_cron_expr(),
+            timezone="America/Los_Angeles",
+            prompt="brief me",
+            output_mode="dashboard_only",
+            notify_on_error=True,
+            enabled=True,
+        )
+        sched_id = sched.id
+
+    await scheduler.start()
+    try:
+        await scheduler.fire_now(sched_id)
+    finally:
+        await scheduler.stop()
+
+    assert calls == [{}]
