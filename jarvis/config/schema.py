@@ -20,7 +20,10 @@ class LLMConfig(_StrictModel):
     base_url: str
     api_key: str
     model: str
-    request_timeout_sec: float = 60.0
+    # Budget for one whole non-streamed LLM turn (scheduled runs never stream),
+    # so it must cover reasoning tokens and a cold model load, not just
+    # time-to-first-token. JarvisConfig.idle_timeout_sec bounds the full run.
+    request_timeout_sec: float = 600.0
 
 
 class MemoryConfig(_StrictModel):
