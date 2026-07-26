@@ -22,6 +22,13 @@ def build_llm_client(cfg: LLMConfig) -> AsyncOpenAI:
         base_url=cfg.base_url,
         api_key=cfg.api_key,
         timeout=cfg.request_timeout_sec,
+        # No client-side retries. Scheduled runs are not streamed (see
+        # OutputRouter.open_stream), so a request timeout means the endpoint
+        # spent the full budget generating — resubmitting the identical prompt
+        # to an already-saturated local server just triples the load and pushes
+        # the run past the outer run_timeout_sec guard, where the real
+        # APITimeoutError is replaced by a bare TimeoutError.
+        max_retries=0,
     )
 
 

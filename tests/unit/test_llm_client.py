@@ -26,3 +26,14 @@ def test_build_llm_client_request_timeout_applied():
     # In openai 2.31.0 the SDK stores timeout as a plain float (not an httpx
     # Timeout object), so we assert equality against the scalar value.
     assert client.timeout == 30.0
+
+
+def test_build_llm_client_disables_retries():
+    """A timed-out turn must fail once, not be resubmitted three times.
+
+    The SDK default (max_retries=2) turns one slow generation into three full
+    prompt submissions against an already-saturated endpoint, and 3x the
+    request budget overruns the outer run_timeout_sec guard.
+    """
+    cfg = LLMConfig(base_url="http://x/v1", api_key="k", model="m")
+    assert build_llm_client(cfg).max_retries == 0
