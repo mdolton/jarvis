@@ -461,6 +461,81 @@ async def test_lifecycle_methods_register_and_unregister(infra):
         await scheduler.stop()
 
 
+async def test_on_updated_reregisters_with_the_new_cron(infra):
+    """An edited cron must replace the live job, not stack a second one."""
+    _, factory, audit = infra
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=None,
+    )
+    await scheduler.start()
+    try:
+        async with factory() as s:
+            row = await ScheduleRepo(s).create(
+                name="edit-me",
+                description="",
+                cron_expr=_far_future_cron_expr(),
+                timezone="UTC",
+                prompt="x",
+                output_mode="dashboard_only",
+                notify_on_error=False,
+                enabled=True,
+            )
+        await scheduler.on_created(row)
+        assert scheduler.active_job_count() == 1
+
+        new_cron = "17 4 1 1 *"
+        async with factory() as s:
+            await ScheduleRepo(s).update(row.id, cron_expr=new_cron, timezone="Europe/London")
+        async with factory() as s:
+            row = await ScheduleRepo(s).get(row.id)
+
+        await scheduler.on_updated(row)
+
+        assert scheduler.active_job_count() == 1
+        job = await scheduler._aps.get_schedule(str(row.id))
+        assert str(job.trigger.timezone) == "Europe/London"
+        assert (job.trigger.hour, job.trigger.minute) == ("4", "17")
+    finally:
+        await scheduler.stop()
+
+
+async def test_on_updated_unregisters_a_disabled_row(infra):
+    _, factory, audit = infra
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        audit=audit,
+        llm_config=LLMConfig(base_url="http://x", api_key="k", model="m"),
+        model_override=_FakeModel(),
+        mcp_servers_provider=lambda: [],
+        discord_adapter=None,
+    )
+    await scheduler.start()
+    try:
+        async with factory() as s:
+            row = await ScheduleRepo(s).create(
+                name="edited-while-off",
+                description="",
+                cron_expr=_far_future_cron_expr(),
+                timezone="UTC",
+                prompt="x",
+                output_mode="dashboard_only",
+                notify_on_error=False,
+                enabled=False,
+            )
+        # Never registered (created disabled): re-syncing must stay a no-op.
+        await scheduler.on_updated(row)
+        assert scheduler.active_job_count() == 0
+    finally:
+        await scheduler.stop()
+
+
 async def test_on_created_ignores_disabled_row(infra):
     _, factory, audit = infra
 

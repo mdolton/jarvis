@@ -207,6 +207,19 @@ class Scheduler:
         if row.enabled:
             await self._register(row.id, row.cron_expr, row.timezone)
 
+    async def on_updated(self, row: ScheduleRow) -> None:
+        """Re-register a schedule after an edit.
+
+        Unregister-then-register unconditionally: an edit can move the cron
+        expression or the timezone, and APScheduler has no in-place reschedule
+        that keeps the job id stable. Fields read at fire time (prompt, model,
+        output mode, scope) need no re-registration, but re-doing it is cheap
+        and keeps this one call correct for every edit.
+        """
+        await self._unregister(row.id)
+        if row.enabled:
+            await self._register(row.id, row.cron_expr, row.timezone)
+
     async def on_toggled(self, row: ScheduleRow) -> None:
         """Sync APScheduler registration with the row's new enabled state."""
         if row.enabled:
