@@ -3,10 +3,35 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from agents import Agent
+from agents import Agent, ModelRetrySettings, ModelSettings, RetryPolicyContext
 
 from jarvis.config.schema import LLMConfig
 from jarvis.core.types import ScheduledTrigger
+
+# One resample after a server-side failure, then give up. The failure this
+# guards is a bad *sample*, not a bad request, so a second attempt is cheap
+# and usually enough; a third would just burn another full generation.
+_MODEL_MAX_RETRIES = 1
+
+
+def retry_on_server_error(ctx: RetryPolicyContext) -> bool:
+    """Retry 5xx from the LLM endpoint, never a timeout.
+
+    A local endpoint returns 500 when it cannot parse the tool call the model
+    just generated — e.g. llama.cpp rejecting Qwen3-Coder-style XML
+    (`<function=…><parameter=…>`) where its parser wants a JSON payload. That
+    is stochastic format drift: the same prompt resampled almost always comes
+    back well-formed, so one retry rescues an otherwise dead scheduled run.
+
+    Timeouts are excluded deliberately. They are not transient here — a turn
+    that blew the request budget will blow it again, and each attempt costs a
+    full generation (see llm_client.build_llm_client, which disables the
+    OpenAI client's own retries for the same reason).
+    """
+    err = ctx.normalized
+    if err.is_timeout or err.is_network_error:
+        return False
+    return err.status_code is not None and err.status_code >= 500
 
 
 def system_prompt() -> str:
@@ -60,5 +85,11 @@ def build_agent(
         mcp_servers=mcp_servers_provider(),
         model=model,
         tools=list(tools or []),
+        model_settings=ModelSettings(
+            retry=ModelRetrySettings(
+                max_retries=_MODEL_MAX_RETRIES,
+                policy=retry_on_server_error,
+            )
+        ),
     )
     return agent, str(model)
