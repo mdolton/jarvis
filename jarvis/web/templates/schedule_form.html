@@ -1,1 +1,63 @@
-{# Reserved for future HTMX edit modal #}
+{% extends "base.html" %}
+{% block title %}Edit {{ schedule.name }}{% endblock %}
+{% block content %}
+<section class="page-head">
+    <div>
+        <h1>Edit Schedule</h1>
+        <p class="muted">
+            Prompt, model, output and scope are read at fire time; a new cron
+            expression or timezone re-registers the job immediately.
+        </p>
+    </div>
+    <div class="actions">
+        <a class="btn" href="/schedules">Back to schedules</a>
+    </div>
+</section>
+
+<section class="section-block">
+<form method="post" action="/schedules/{{ schedule.id }}" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input name="name" placeholder="Name" value="{{ schedule.name }}" required>
+    <input name="description" placeholder="Description" value="{{ schedule.description }}">
+    <input name="cron_expr" placeholder="Cron expression (e.g. 0 8 * * *)" value="{{ schedule.cron_expr }}" required>
+    <input name="timezone" placeholder="Timezone" value="{{ schedule.timezone }}" required>
+    <textarea name="prompt" placeholder="Agent prompt" rows="8" required>{{ schedule.prompt }}</textarea>
+    <select name="output_mode">
+        <option value="discord" {% if schedule.output_mode == "discord" %}selected{% endif %}>Discord</option>
+        <option value="dashboard_only" {% if schedule.output_mode == "dashboard_only" %}selected{% endif %}>Dashboard only</option>
+        <option value="discord_if_noteworthy" {% if schedule.output_mode == "discord_if_noteworthy" %}selected{% endif %}>Discord if noteworthy</option>
+    </select>
+    <input name="discord_user_id" placeholder="Discord user ID (optional)" value="{{ schedule.discord_user_id or '' }}">
+    <select name="model">
+        <option value="" {% if not schedule.model %}selected{% endif %}>Use default model</option>
+        {% if schedule.model and (available_set is none or schedule.model not in available_set) %}
+            <option value="{{ schedule.model }}" selected>{{ schedule.model }}{% if available_set is not none %} (not available){% endif %}</option>
+        {% endif %}
+        {% for m in available_models %}
+            <option value="{{ m }}"{% if schedule.model == m %} selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+    </select>
+    <fieldset class="scope-picker">
+        <legend>MCP tools</legend>
+        <p class="muted">
+            Tick nothing to use every connected server. Narrowing the scope keeps the
+            tool surface small, which makes runs faster and avoids overwhelming the
+            model (and the tool-call grammar) with tools the task never needs.
+        </p>
+        {% for name in available_mcp_servers %}
+            <label class="scope-option">
+                <input type="checkbox" name="mcp_servers" value="{{ name }}"
+                       {% if schedule.mcp_servers and name in schedule.mcp_servers %}checked{% endif %}> {{ name }}
+            </label>
+        {% else %}
+            <p class="muted">No MCP servers are connected.</p>
+        {% endfor %}
+    </fieldset>
+    <label class="scope-option">
+        <input type="checkbox" name="notify_on_error" value="true" {% if schedule.notify_on_error %}checked{% endif %}>
+        Send a Discord message when a run fails
+    </label>
+    <button type="submit">Save</button>
+</form>
+</section>
+{% endblock %}

@@ -12,6 +12,8 @@ from jarvis.web.step_up import require_step_up
 
 router = APIRouter()
 
+_VALID_OUTPUT_MODES = {"discord", "dashboard_only", "discord_if_noteworthy"}
+
 
 @router.get("/schedules", response_class=HTMLResponse)
 async def schedule_list(request: Request, template_id: str | None = Query(default=None)):
@@ -74,11 +76,9 @@ async def schedule_create(
     discord_user_id: str = Form(""),
 ):
     ctx = request.app.state.ctx
-    try:
-        validate_schedule_timing(cron_expr, timezone)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"invalid schedule: {exc}") from exc
-    scope = [name for name in (s.strip() for s in mcp_servers) if name]
+    _validate_timing(cron_expr, timezone)
+    _validate_output_mode(output_mode)
+    scope = _parse_scope(mcp_servers)
     target_user = discord_user_id.strip() or _default_discord_user_id(ctx)
     async with ctx.session_factory() as session:
         row = await ScheduleRepo(session).create(
@@ -98,6 +98,75 @@ async def schedule_create(
     return RedirectResponse(url="/schedules", status_code=303)
 
 
+@router.get("/schedules/{schedule_id}/edit", response_class=HTMLResponse)
+async def schedule_edit_form(request: Request, schedule_id: UUID):
+    ctx = request.app.state.ctx
+    templates = request.app.state.templates
+    catalog = await ctx.model_catalog.list_models()
+    async with ctx.session_factory() as session:
+        row = await ScheduleRepo(session).get(schedule_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return templates.TemplateResponse(
+        request,
+        "schedule_form.html",
+        {
+            "schedule": row,
+            "available_models": catalog.models,
+            "catalog_ok": catalog.ok,
+            "available_set": set(catalog.models) if catalog.ok else None,
+            "available_mcp_servers": ctx.mcp_manager.server_names(),
+        },
+    )
+
+
+@router.post("/schedules/{schedule_id}", dependencies=[Depends(require_step_up)])
+async def schedule_update(
+    request: Request,
+    schedule_id: UUID,
+    name: str = Form(...),
+    description: str = Form(""),
+    cron_expr: str = Form(...),
+    timezone: str = Form("UTC"),
+    prompt: str = Form(...),
+    output_mode: str = Form("discord"),
+    model: str = Form(""),
+    mcp_servers: list[str] = Form(default=[]),
+    discord_user_id: str = Form(""),
+    notify_on_error: bool = Form(default=False),
+):
+    ctx = request.app.state.ctx
+    _validate_timing(cron_expr, timezone)
+    _validate_output_mode(output_mode)
+    async with ctx.session_factory() as session:
+        repo = ScheduleRepo(session)
+        if await repo.get(schedule_id) is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        await repo.update(
+            schedule_id,
+            name=name.strip(),
+            description=description.strip(),
+            cron_expr=cron_expr.strip(),
+            timezone=timezone.strip(),
+            prompt=prompt,
+            output_mode=output_mode.strip(),
+            model=model.strip() or None,
+            mcp_servers=_parse_scope(mcp_servers) or None,
+            # Unlike create, a blank recipient here is an explicit clear: the
+            # form was prefilled with the current value, so emptying it is a
+            # deliberate act, not "I didn't say".
+            discord_user_id=discord_user_id.strip() or None,
+            notify_on_error=notify_on_error,
+        )
+    # Fresh session: the factory is expire_on_commit=False, so re-reading
+    # through `repo` would hand back the pre-update identity-map instance.
+    async with ctx.session_factory() as session:
+        row = await ScheduleRepo(session).get(schedule_id)
+    if row is not None:
+        await ctx.scheduler.on_updated(row)
+    return RedirectResponse(url="/schedules", status_code=303)
+
+
 @router.post("/schedules/{schedule_id}/scope", dependencies=[Depends(require_step_up)])
 async def schedule_set_scope(
     request: Request,
@@ -110,12 +179,11 @@ async def schedule_set_scope(
     the row at fire time, so the next run picks it up on its own.
     """
     ctx = request.app.state.ctx
-    scope = [name for name in (s.strip() for s in mcp_servers) if name]
     async with ctx.session_factory() as session:
         repo = ScheduleRepo(session)
         if await repo.get(schedule_id) is None:
             raise HTTPException(status_code=404, detail="schedule not found")
-        await repo.update(schedule_id, mcp_servers=scope or None)
+        await repo.update(schedule_id, mcp_servers=_parse_scope(mcp_servers) or None)
     return RedirectResponse(url="/schedules", status_code=303)
 
 
@@ -149,6 +217,22 @@ async def schedule_delete(request: Request, schedule_id: UUID):
         await ScheduleRepo(session).delete(schedule_id)
     await ctx.scheduler.on_deleted(schedule_id)
     return RedirectResponse(url="/schedules", status_code=303)
+
+
+def _validate_timing(cron_expr: str, timezone: str) -> None:
+    try:
+        validate_schedule_timing(cron_expr, timezone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid schedule: {exc}") from exc
+
+
+def _validate_output_mode(output_mode: str) -> None:
+    if output_mode.strip() not in _VALID_OUTPUT_MODES:
+        raise HTTPException(status_code=400, detail="Invalid output mode")
+
+
+def _parse_scope(mcp_servers: list[str]) -> list[str]:
+    return [name for name in (s.strip() for s in mcp_servers) if name]
 
 
 def _default_discord_user_id(ctx) -> str | None:

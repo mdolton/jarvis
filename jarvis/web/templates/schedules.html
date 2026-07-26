@@ -127,6 +127,7 @@
                 {% endif %}
             </td>
             <td class="actions">
+                <a class="btn" href="/schedules/{{ s.id }}/edit">Edit</a>
                 <form method="post" action="/schedules/{{ s.id }}/run" class="inline-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button>Run now</button>
