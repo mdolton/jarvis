@@ -20,6 +20,7 @@ import copy
 import hashlib
 import logging
 import re
+from collections.abc import Collection
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
@@ -240,6 +241,7 @@ class MCPManager:
     async def _collision_keys(self) -> set[str]:
         from jarvis.oauth.catalog import SEED_PROVIDERS
         from jarvis.oauth.store import MCPConnectionRepo, MCPProviderRepo
+
         keys = set(SEED_PROVIDERS)
         if self._catalog is not None:
             async with self._session_factory() as s:
@@ -249,7 +251,9 @@ class MCPManager:
 
     async def start(self) -> None:
         """Connect to every enabled server. Failures are recorded, not raised."""
-        assert_no_yaml_collision((s.name for s in self._config.servers), await self._collision_keys())
+        assert_no_yaml_collision(
+            (s.name for s in self._config.servers), await self._collision_keys()
+        )
         self._cmd_queue = asyncio.Queue()
         self._loop_task = asyncio.create_task(self._lifecycle_loop(), name="mcp-lifecycle")
 
@@ -285,9 +289,28 @@ class MCPManager:
             self._loop_task = None
             self._cmd_queue = None
 
-    def agent_mcp_servers(self) -> list[object]:
-        """Return the SDK server objects to pass into `Agent(mcp_servers=...)`."""
-        return list(self._sdk_servers.values())
+    def agent_mcp_servers(self, *, only: Collection[str] | None = None) -> list[object]:
+        """Return the SDK server objects to pass into `Agent(mcp_servers=...)`.
+
+        `only` narrows the result to the named servers; None means every
+        connected server. Filtering happens here, against the `_sdk_servers`
+        keys, because those keys are the authoritative runtime names — a
+        server object's own `.name` is the upstream SDK's and does not always
+        match the key we registered it under.
+
+        Names in `only` that match nothing are ignored (a server can be
+        disconnected or removed long after a schedule pinned it); the caller
+        logs that, since silently running with fewer tools than asked for is
+        worth noticing.
+        """
+        if only is None:
+            return list(self._sdk_servers.values())
+        wanted = set(only)
+        return [server for name, server in self._sdk_servers.items() if name in wanted]
+
+    def server_names(self) -> list[str]:
+        """Names of every connected server, for scope pickers in the UI."""
+        return sorted(self._sdk_servers)
 
     def agent_mcp_context(self) -> str:
         """Return a concise description of live MCP capabilities for the prompt."""

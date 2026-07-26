@@ -242,6 +242,11 @@ class ScheduleRow(Base):
     prompt: Mapped[str] = mapped_column(Text)
     output_mode: Mapped[str] = mapped_column(String(32))
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Allow-list of MCP server names this schedule may use. NULL means "every
+    # connected server" — the historical behavior and the default. Narrowing it
+    # keeps the tool surface (and the tool-call grammar the endpoint builds from
+    # it) small enough to stay correct and fast.
+    mcp_servers: Mapped[list | None] = mapped_column(JSON, nullable=True)
     discord_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     notify_on_error: Mapped[bool] = mapped_column(default=True)
     enabled: Mapped[bool] = mapped_column(default=True, index=True)

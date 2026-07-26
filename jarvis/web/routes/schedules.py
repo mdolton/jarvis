@@ -55,6 +55,7 @@ async def schedule_list(request: Request, template_id: str | None = Query(defaul
             "template_warning": template_warning,
             "default_timezone": ctx.config.jarvis.timezone,
             "schedule_error_links": schedule_error_links,
+            "available_mcp_servers": ctx.mcp_manager.server_names(),
         },
     )
 
@@ -69,6 +70,7 @@ async def schedule_create(
     prompt: str = Form(...),
     output_mode: str = Form("discord"),
     model: str = Form(""),
+    mcp_servers: list[str] = Form(default=[]),
     discord_user_id: str = Form(""),
 ):
     ctx = request.app.state.ctx
@@ -76,6 +78,7 @@ async def schedule_create(
         validate_schedule_timing(cron_expr, timezone)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"invalid schedule: {exc}") from exc
+    scope = [name for name in (s.strip() for s in mcp_servers) if name]
     target_user = discord_user_id.strip() or _default_discord_user_id(ctx)
     async with ctx.session_factory() as session:
         row = await ScheduleRepo(session).create(
@@ -88,9 +91,31 @@ async def schedule_create(
             notify_on_error=True,
             enabled=True,
             model=model.strip() or None,
+            mcp_servers=scope,
             discord_user_id=target_user,
         )
     await ctx.scheduler.on_created(row)
+    return RedirectResponse(url="/schedules", status_code=303)
+
+
+@router.post("/schedules/{schedule_id}/scope", dependencies=[Depends(require_step_up)])
+async def schedule_set_scope(
+    request: Request,
+    schedule_id: UUID,
+    mcp_servers: list[str] = Form(default=[]),
+):
+    """Re-scope an existing schedule's MCP servers.
+
+    No scheduler notification: unlike cron or timezone, the scope is read from
+    the row at fire time, so the next run picks it up on its own.
+    """
+    ctx = request.app.state.ctx
+    scope = [name for name in (s.strip() for s in mcp_servers) if name]
+    async with ctx.session_factory() as session:
+        repo = ScheduleRepo(session)
+        if await repo.get(schedule_id) is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        await repo.update(schedule_id, mcp_servers=scope or None)
     return RedirectResponse(url="/schedules", status_code=303)
 
 

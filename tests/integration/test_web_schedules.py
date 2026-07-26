@@ -632,3 +632,121 @@ def test_toggle_missing_schedule_is_noop(client_and_factory):
     )
     assert resp.status_code in (302, 303)
     client.app.state.ctx.scheduler.on_toggled.assert_not_awaited()
+
+
+def _create(client, name, **extra):
+    return client.post(
+        "/schedules",
+        data={
+            "name": name,
+            "description": "",
+            "cron_expr": "0 8 * * *",
+            "timezone": "UTC",
+            "prompt": "brief me",
+            "output_mode": "dashboard_only",
+            **extra,
+        },
+        follow_redirects=False,
+    )
+
+
+def test_scope_picker_lists_connected_servers(client_and_factory):
+    client, _ = client_and_factory
+    client.app.state.ctx.mcp_manager.server_names = lambda: ["gmail", "weather"]
+
+    text = client.get("/schedules").text
+
+    assert 'name="mcp_servers" value="gmail"' in text
+    assert 'name="mcp_servers" value="weather"' in text
+
+
+async def test_create_with_scope_persists_the_allow_list(client_and_factory):
+    client, factory = client_and_factory
+    client.app.state.ctx.mcp_manager.server_names = lambda: ["gmail", "weather"]
+
+    resp = _create(client, "scoped-brief", mcp_servers=["weather", "gmail"])
+    assert resp.status_code in (302, 303)
+
+    from jarvis.persistence.repositories import ScheduleRepo
+
+    async with factory() as s:
+        row = next(r for r in await ScheduleRepo(s).list_all() if r.name == "scoped-brief")
+    assert row.mcp_servers == ["weather", "gmail"]
+
+
+async def test_create_without_scope_stores_null_not_empty_list(client_and_factory):
+    """NULL is the single representation of "all servers", so an unscoped
+    schedule created today reads identically to a pre-migration row."""
+    client, factory = client_and_factory
+
+    assert _create(client, "unscoped-brief").status_code in (302, 303)
+
+    from jarvis.persistence.repositories import ScheduleRepo
+
+    async with factory() as s:
+        row = next(r for r in await ScheduleRepo(s).list_all() if r.name == "unscoped-brief")
+    assert row.mcp_servers is None
+
+
+async def test_scope_is_shown_on_existing_schedules(client_and_factory):
+    client, _ = client_and_factory
+    client.app.state.ctx.mcp_manager.server_names = lambda: ["gmail", "weather"]
+    _create(client, "scoped-brief", mcp_servers=["weather"])
+    _create(client, "unscoped-brief")
+
+    text = client.get("/schedules").text
+
+    assert "weather" in text
+    assert ">all<" in text.replace(" ", "").replace("\n", "")
+
+
+async def test_scope_can_be_changed_on_an_existing_schedule(client_and_factory):
+    """The motivating case: an already-running Daily Brief needs narrowing
+    without being deleted and recreated."""
+    client, factory = client_and_factory
+    client.app.state.ctx.mcp_manager.server_names = lambda: ["gmail", "weather"]
+    _create(client, "daily-brief")
+
+    from jarvis.persistence.repositories import ScheduleRepo
+
+    async with factory() as s:
+        row = next(r for r in await ScheduleRepo(s).list_all() if r.name == "daily-brief")
+    assert row.mcp_servers is None
+
+    resp = client.post(
+        f"/schedules/{row.id}/scope",
+        data={"mcp_servers": ["weather"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+
+    async with factory() as s:
+        refreshed = await ScheduleRepo(s).get(row.id)
+    assert refreshed.mcp_servers == ["weather"]
+
+
+async def test_clearing_the_scope_restores_all_servers(client_and_factory):
+    client, factory = client_and_factory
+    client.app.state.ctx.mcp_manager.server_names = lambda: ["gmail", "weather"]
+    _create(client, "briefly", mcp_servers=["weather"])
+
+    from jarvis.persistence.repositories import ScheduleRepo
+
+    async with factory() as s:
+        row = next(r for r in await ScheduleRepo(s).list_all() if r.name == "briefly")
+
+    client.post(f"/schedules/{row.id}/scope", data={}, follow_redirects=False)
+
+    async with factory() as s:
+        refreshed = await ScheduleRepo(s).get(row.id)
+    assert refreshed.mcp_servers is None  # NULL, not [] — "all servers"
+
+
+def test_scope_change_on_missing_schedule_404s(client_and_factory):
+    client, _ = client_and_factory
+    from uuid import uuid4
+
+    resp = client.post(
+        f"/schedules/{uuid4()}/scope", data={"mcp_servers": ["weather"]}, follow_redirects=False
+    )
+    assert resp.status_code == 404

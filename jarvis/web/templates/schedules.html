@@ -47,6 +47,21 @@
             <option value="{{ m }}"{% if selected_template and selected_template.default_model == m %} selected{% endif %}>{{ m }}</option>
         {% endfor %}
     </select>
+    <fieldset class="scope-picker">
+        <legend>MCP tools</legend>
+        <p class="muted">
+            Tick nothing to use every connected server. Narrowing the scope keeps the
+            tool surface small, which makes runs faster and avoids overwhelming the
+            model (and the tool-call grammar) with tools the task never needs.
+        </p>
+        {% for name in available_mcp_servers %}
+            <label class="scope-option">
+                <input type="checkbox" name="mcp_servers" value="{{ name }}"> {{ name }}
+            </label>
+        {% else %}
+            <p class="muted">No MCP servers are connected.</p>
+        {% endfor %}
+    </fieldset>
     <button type="submit">Create</button>
 </form>
 </section>
@@ -55,7 +70,7 @@
 <h2>Existing Schedules</h2>
 <table class="ops-table">
     <thead>
-        <tr><th>Name</th><th>Cron</th><th>Output</th><th>Discord</th><th>Model</th><th>Enabled</th><th>Last Run</th><th>Actions</th></tr>
+        <tr><th>Name</th><th>Cron</th><th>Output</th><th>Discord</th><th>Model</th><th>MCP tools</th><th>Enabled</th><th>Last Run</th><th>Actions</th></tr>
     </thead>
     <tbody>
     {% for s in schedules %}
@@ -72,6 +87,26 @@
                     {% endif %}
                 {% else %}
                     <span class="muted">default</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if available_mcp_servers %}
+                    <form method="post" action="/schedules/{{ s.id }}/scope" class="scope-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        {% for name in available_mcp_servers %}
+                            <label class="scope-option">
+                                <input type="checkbox" name="mcp_servers" value="{{ name }}"
+                                       {% if s.mcp_servers and name in s.mcp_servers %}checked{% endif %}>
+                                {{ name }}
+                            </label>
+                        {% endfor %}
+                        <button type="submit">Save scope</button>
+                        {% if not s.mcp_servers %}<span class="muted">all</span>{% endif %}
+                    </form>
+                {% elif s.mcp_servers %}
+                    {{ s.mcp_servers | join(", ") }}
+                {% else %}
+                    <span class="muted">all</span>
                 {% endif %}
             </td>
             <td>
